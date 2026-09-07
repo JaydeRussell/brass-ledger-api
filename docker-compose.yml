@@ -18,9 +18,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tmm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tmm}
-      POSTGRES_DB: ${POSTGRES_DB:-teams_match_making}
+      POSTGRES_USER: ${POSTGRES_USER:-brassledger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brassledger}
+      POSTGRES_DB: ${POSTGRES_DB:-brass_ledger}
     volumes:
       - db-data:/var/lib/postgresql/data
     ports:
@@ -29,7 +29,7 @@ services:
       # from the other containers.
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tmm} -d ${POSTGRES_DB:-teams_match_making}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-brassledger} -d ${POSTGRES_DB:-brass_ledger}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -43,7 +43,7 @@ services:
       # Talks to the db container by its service name ("db"), not
       # localhost — containers on the same compose network resolve each
       # other by service name.
-      DATABASE_URL: postgres://${POSTGRES_USER:-tmm}:${POSTGRES_PASSWORD:-tmm}@db:5432/${POSTGRES_DB:-teams_match_making}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-brassledger}:${POSTGRES_PASSWORD:-brassledger}@db:5432/${POSTGRES_DB:-brass_ledger}?sslmode=disable
       # Google sign-in — optional, passed through from your shell/.env
       # if set. Leave unset and the backend starts with sign-in
       # disabled. See .env.example / README for setup.
