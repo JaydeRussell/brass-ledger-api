@@ -12,8 +12,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/JaydeRussell/teams-match-making-be/internal/bcp"
-	"github.com/JaydeRussell/teams-match-making-be/internal/user"
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 // SetBcpUserID extends fakeUserStore (defined in auth_test.go) to

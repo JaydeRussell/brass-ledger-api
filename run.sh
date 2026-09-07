@@ -2,7 +2,7 @@
 # Builds and starts the whole stack — Postgres, the backend, and the
 # frontend — with one command. Requires Docker Desktop (or another local
 # Docker engine) running, and this repo to sit next to
-# ../teams-match-making-fe on disk (see the comment in docker-compose.yml).
+# ../brass-ledger-web on disk (see the comment in docker-compose.yml).
 #
 # Usage:
 #   ./run.sh          start everything, rebuilding images that changed
@@ -23,7 +23,7 @@ else
   # user, and a directory Docker auto-creates for a bind mount would
   # otherwise be owned by root with no write access for that user,
   # causing the server to fail to open its log file at startup.
-  mkdir -p logs ../teams-match-making-fe/logs
-  chmod 777 logs ../teams-match-making-fe/logs
+  mkdir -p logs ../brass-ledger-web/logs
+  chmod 777 logs ../brass-ledger-web/logs
   docker compose up --build "$@"
 fi

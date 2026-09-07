@@ -1,4 +1,4 @@
-module github.com/JaydeRussell/teams-match-making-be
+module github.com/JaydeRussell/brass-ledger-api
 
 go 1.22
 

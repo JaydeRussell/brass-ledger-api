@@ -7,7 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/JaydeRussell/teams-match-making-be/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
 // staleEventAfter is how long past its listed end date an event that BCP

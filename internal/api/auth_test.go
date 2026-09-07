@@ -15,8 +15,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/JaydeRussell/teams-match-making-be/internal/auth"
-	"github.com/JaydeRussell/teams-match-making-be/internal/user"
+	"github.com/JaydeRussell/brass-ledger-api/internal/auth"
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 // fakeUserStore is an in-memory stand-in for *user.Store, so these

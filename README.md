@@ -1,8 +1,8 @@
-# teams-match-making-be
+# Brass Ledger
 
-Backend for the [teams-match-making-fe](../teams-match-making-fe) Warhammer
-40k tournament aid. Written in Go, using [Echo](https://echo.labstack.com/)
-and Postgres.
+**Tournament Companion** for Warhammer 40k — this is the backend for
+[brass-ledger-web](../brass-ledger-web). Written in Go, using
+[Echo](https://echo.labstack.com/) and Postgres.
 
 This service does three things:
 
@@ -65,7 +65,7 @@ doesn't let an app create this for you, so it's a one-time manual setup:
    and sign in with any Google account (this can be a brand new,
    personal project — it doesn't need to belong to an organization).
 2. Create a new project (top-left project picker → "New Project"). Any
-   name works, e.g. "Teams Match Making".
+   name works, e.g. "Brass Ledger".
 3. In the left sidebar, go to **APIs & Services → OAuth consent
    screen**.
    - User type: **External** (unless you have a Google Workspace
@@ -85,7 +85,7 @@ doesn't let an app create this for you, so it's a one-time manual setup:
 4. Go to **APIs & Services → Credentials → Create Credentials → OAuth
    client ID**.
    - Application type: **Web application**.
-   - Name: anything, e.g. "Teams Match Making (local)".
+   - Name: anything, e.g. "Brass Ledger (local)".
    - **Authorized redirect URIs**: add exactly
      `http://localhost:8080/auth/google/callback` (or whatever you set
      `GOOGLE_REDIRECT_URL` to below — it must match byte-for-byte,
@@ -119,7 +119,7 @@ app requests are unlikely to trigger that.
 
 This repo also has a `docker-compose.yml` that brings up Postgres, this
 backend, and the frontend together — three containers, one command. It
-assumes this repo sits next to `../teams-match-making-fe` on disk, which
+assumes this repo sits next to `../brass-ledger-web` on disk, which
 is the layout both repos are already in.
 
 ```bash

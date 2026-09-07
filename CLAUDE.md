@@ -2,7 +2,7 @@
 
 ## Scope limit — no pairing logic, ever
 
-This app (and its sibling frontend, `teams-match-making-fe`) only ever
+This app (and its sibling frontend, `brass-ledger-web`) only ever
 displays data Best Coast Pairings (BCP) has already published — rosters,
 event info, already-decided pairings, already-computed placings.
 **Never add anything that computes, ranks, or suggests a pairing or
@@ -108,7 +108,7 @@ stale, rather than appending to it forever.
     frontend's `CLAUDE.md`/`myEventsPanel.tsx`'s `RosterPicker` for the
     implementation; pasting a raw id/URL is kept as a manual fallback.
   - Frontend: `app/lib/myEvents.ts` +
-    `app/components/auth/myEventsPanel.tsx` in `teams-match-making-fe`,
+    `app/components/auth/myEventsPanel.tsx` in `brass-ledger-web`,
     rendered inside `AuthStatus`'s account dropdown (the user's explicit
     placement choice — no dedicated tab). Note: the frontend has since
     moved this onto its own `/my-events` route and added a left-hand nav
@@ -195,7 +195,7 @@ stale, rather than appending to it forever.
   in for real; `logs/backend.log` shows the full
   `/auth/google/login` → Google callback (matching state) →
   `google callback: signed in user 1 (...)` → `/api/me` 200 sequence,
-  and `teams-match-making-fe`'s `logs/frontend.log` shows the client's
+  and `brass-ledger-web`'s `logs/frontend.log` shows the client's
   auth check flipping from `signedIn: false` to
   `signedIn: true, userId: 1` at the same moment — the two logs
   corroborating each other end-to-end, which is exactly what the
@@ -223,7 +223,7 @@ stale, rather than appending to it forever.
 
 **As of 2026-09-07, work happens directly in a terminal on the user's own
 Mac** — this Claude Code session's `Bash` tool runs natively in
-`teams-match-making-be` (darwin/arm64), with `teams-match-making-fe` as a
+`brass-ledger-api` (darwin/arm64), with `brass-ledger-web` as a
 true sibling directory at the same level, no bridge/device tools
 involved. The remote-devices bridge + separate cloud-sandbox split
 described in earlier sessions (two different filesystems, `device_bash`
@@ -232,8 +232,8 @@ applies** — ignore any instinct to route around a missing toolchain or
 copy files between environments.
 
 **The frontend is in scope from this repo too.** The user has said to
-treat `teams-match-making-fe` (sibling directory, `cd
-../teams-match-making-fe`) as part of the same working session going
+treat `brass-ledger-web` (sibling directory, `cd
+../brass-ledger-web`) as part of the same working session going
 forward, not a separate repo to be handed off to a different context —
 read/edit/build/test it directly here when a task touches it, same as
 any package in this repo. It's still its own git repo with its own
@@ -246,7 +246,7 @@ all pass tree-wide in this repo, including `internal/db`, `internal/user`,
 `internal/api`, and `cmd/server` (the pgx/echo-dependent packages the old
 cloud sandbox couldn't reach the module proxy for) — no more reason to
 hedge build/test claims for those packages. `npm run build` in
-`teams-match-making-fe` also passes cleanly (Next.js 16 + Turbopack,
+`brass-ledger-web` also passes cleanly (Next.js 16 + Turbopack,
 confirmed 2026-09-07) — the old "SWC binary for linux/arm64" failure was
 specific to the previous sandboxed Linux VM and does not reproduce on
 this native darwin/arm64 terminal.

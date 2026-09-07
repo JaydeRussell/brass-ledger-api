@@ -2,8 +2,8 @@
 # frontend — each in its own container, with one command: `./run.sh`
 # (or `docker compose up --build` directly).
 #
-# Assumes this repo sits next to teams-match-making-fe on disk (the
-# `context: ../teams-match-making-fe` below is a sibling-directory
+# Assumes this repo sits next to brass-ledger-web on disk (the
+# `context: ../brass-ledger-web` below is a sibling-directory
 # relative path) — the layout both repos are already in. If you ever
 # move one repo without the other, update that path.
 #
@@ -11,7 +11,7 @@
 # file in this directory, e.g. POSTGRES_PASSWORD=something-else, if
 # you'd rather not use them) — this is for local development, not for
 # how a real deployment would manage secrets.
-name: teams-match-making
+name: brass-ledger
 
 services:
   db:
@@ -68,7 +68,7 @@ services:
 
   frontend:
     build:
-      context: ../teams-match-making-fe
+      context: ../brass-ledger-web
     restart: unless-stopped
     environment:
       PORT: "3000"
@@ -77,7 +77,7 @@ services:
       # repo's own logs/ directory on the host.
       LOG_FILE: /app/logs/frontend.log
     volumes:
-      - ../teams-match-making-fe/logs:/app/logs
+      - ../brass-ledger-web/logs:/app/logs
     depends_on:
       - backend
     ports:

@@ -7,7 +7,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/JaydeRussell/teams-match-making-be/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
 // RegisterBCPRoutes wires up every BCP-backed endpoint the frontend

@@ -1,4 +1,4 @@
-// Command server is the entry point for the teams-match-making backend
+// Command server is the entry point for the brass-ledger backend
 // API. Health checks, a database connection, the BCP proxy/cache
 // (internal/bcp) that used to live entirely in the frontend, and now
 // Google sign-in + server-side sessions (internal/auth, internal/user) —
@@ -23,13 +23,13 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 
-	"github.com/JaydeRussell/teams-match-making-be/internal/api"
-	"github.com/JaydeRussell/teams-match-making-be/internal/applog"
-	"github.com/JaydeRussell/teams-match-making-be/internal/auth"
-	"github.com/JaydeRussell/teams-match-making-be/internal/bcp"
-	"github.com/JaydeRussell/teams-match-making-be/internal/config"
-	"github.com/JaydeRussell/teams-match-making-be/internal/db"
-	"github.com/JaydeRussell/teams-match-making-be/internal/user"
+	"github.com/JaydeRussell/brass-ledger-api/internal/api"
+	"github.com/JaydeRussell/brass-ledger-api/internal/applog"
+	"github.com/JaydeRussell/brass-ledger-api/internal/auth"
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/config"
+	"github.com/JaydeRussell/brass-ledger-api/internal/db"
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 func main() {

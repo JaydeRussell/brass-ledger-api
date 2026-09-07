@@ -1,6 +1,6 @@
 -- Cross-device sync for the two pieces of per-browser localStorage state
 -- the frontend previously kept entirely client-side (see
--- teams-match-making-fe's app/page.tsx `following`/`followingKey` and
+-- brass-ledger-web's app/page.tsx `following`/`followingKey` and
 -- app/lib/recentEvents.ts): which teams/players a signed-in user follows
 -- within a given event, and which events they've recently viewed. Both
 -- are scoped to a user_id, mirroring bcp_user_id's manual-link model —

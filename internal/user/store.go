@@ -136,7 +136,7 @@ func (s *Store) SetBcpUserID(ctx context.Context, userID int64, bcpUserID string
 }
 
 // MaxRecentEvents mirrors the frontend's own trim limit (see
-// teams-match-making-fe's app/lib/recentEvents.ts MAX_RECENT_EVENTS) —
+// brass-ledger-web's app/lib/recentEvents.ts MAX_RECENT_EVENTS) —
 // kept here too so the server-side list is trimmed the same way
 // regardless of which client wrote to it.
 const MaxRecentEvents = 8

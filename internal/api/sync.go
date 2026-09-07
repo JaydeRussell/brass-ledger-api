@@ -6,12 +6,12 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/JaydeRussell/teams-match-making-be/internal/user"
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 // followResponse is one entry in GET/POST /api/me/events/:eventId/follows
 // — the wire shape mirrors the frontend's own Followed union (see
-// teams-match-making-fe's app/page.tsx) directly enough that the client
+// brass-ledger-web's app/page.tsx) directly enough that the client
 // doesn't need to reshape it.
 type followResponse struct {
 	Kind  string `json:"kind"`
