@@ -180,13 +180,16 @@ stale, rather than appending to it forever.
   compile. Renamed `bcp_test.go`'s pair to `newBCPTestEcho`/`doBCPRequest`
   (matching `newMeTestEcho`/`newSyncTestEcho`'s per-feature naming in the
   other test files here) rather than touching `auth_test.go`, which many
-  more tests already depend on. This slipped through because `internal/api`
-  can't actually be built/tested in this sandbox (needs echo/pgx — see
-  "Environment quirks" below), so a same-package name collision like this
-  had no way to surface here; only `gofmt -l` (which just parses each file
+  more tests already depend on. This slipped through because at the time
+  `internal/api` couldn't actually be built/tested in the old cloud
+  sandbox (needs echo/pgx), so a same-package name collision like this had
+  no way to surface there; only `gofmt -l` (which just parses each file
   independently, so it's blind to cross-file redeclarations) had been run
-  against it. Worth an actual `go build ./...`/`go test ./...` on the
-  user's own machine to catch anything else in this category.
+  against it. **Since resolved**: now that work happens in a real terminal
+  on the user's own machine (see "Environment quirks" below), `go build
+  ./...`, `go vet ./...`, and `go test ./...` all run for real and all
+  pass tree-wide, including `internal/api` — this category of bug now
+  surfaces immediately.
 - ~~Nobody has actually run the sign-in flow end-to-end yet~~ —
   **confirmed working 2026-09-07.** The user ran `./run.sh` and signed
   in for real; `logs/backend.log` shows the full
@@ -218,44 +221,37 @@ stale, rather than appending to it forever.
 
 ## Environment quirks that will trip up a new session
 
-This project is worked on through a bridge to the user's own Mac (a
-`teams-match-making-be`/`teams-match-making-fe` pair of folders,
-connected via `mcp__remote-devices__*` tools), **not** by running
-anything in Claude's own cloud sandbox filesystem. Two important
-consequences:
+**As of 2026-09-07, work happens directly in a terminal on the user's own
+Mac** — this Claude Code session's `Bash` tool runs natively in
+`teams-match-making-be` (darwin/arm64), with `teams-match-making-fe` as a
+true sibling directory at the same level, no bridge/device tools
+involved. The remote-devices bridge + separate cloud-sandbox split
+described in earlier sessions (two different filesystems, `device_bash`
+vs `Bash`, `device_commit_files` to sync changes across) **no longer
+applies** — ignore any instinct to route around a missing toolchain or
+copy files between environments.
 
-1. **Neither available shell can actually build or run this stack.** The
-   user's own machine, reached via `device_bash`, has no Go toolchain and
-   no Docker installed in the sandboxed local VM those tools run
-   in — `which go` and `which docker` both fail there. Claude's separate
-   cloud sandbox (reached via the plain `Bash` tool, a fully different
-   filesystem) *does* have Go and Node, and is useful for `gofmt`,
-   `go vet`, and `go test` on packages that only need the standard
-   library (`internal/applog`, `internal/config`, `internal/bcp`,
-   `internal/auth`) — but it can't build anything importing `pgx` or
-   `echo` (`internal/db`, `internal/user`, `internal/api`, `cmd/server`)
-   because the Go module proxy isn't reachable from there either, even
-   though `go.sum` already has the right entries. **Practically:** verify
-   what you can with `gofmt -l` (works tree-wide) and targeted
-   `go test`/`go vet` on the stdlib-only packages, but don't claim
-   something "builds" or "passes" for anything touching pgx/echo unless
-   the user has actually run it on their own terminal — say so
-   explicitly rather than implying more confidence than the tooling here
-   can back up.
-2. **A file edited in Claude's cloud sandbox is not automatically on the
-   user's machine.** The working pattern this session established:
-   write/edit files in the cloud sandbox (fast iteration, gofmt/test
-   available), then `SendUserFile` each changed file and
-   `mcp__remote-devices__device_commit_files` it into the matching path
-   under the connected folder, verifying byte counts match on both
-   sides. `Makefile` specifically is blocked from `device_commit_files`
-   ("protected file") — edit it directly on the device via `device_bash`
-   (e.g. a small Python read-modify-write script) instead, and keep a
-   synced copy in the cloud sandbox too so the two don't drift.
-3. Also on the device's local VM: `npm run build` fails there with a
-   "Failed to load SWC binary for linux/arm64" error — an environment
-   limitation (a missing optional native binary), not a real bug.
-   `npm test`, `npm run lint`, and `npx tsc --noEmit` all work fine there
-   and are what this project actually leans on for frontend
-   verification; the real production build only needs to work inside the
-   Docker image (fresh `npm ci`) or on the user's own terminal.
+**The frontend is in scope from this repo too.** The user has said to
+treat `teams-match-making-fe` (sibling directory, `cd
+../teams-match-making-fe`) as part of the same working session going
+forward, not a separate repo to be handed off to a different context —
+read/edit/build/test it directly here when a task touches it, same as
+any package in this repo. It's still its own git repo with its own
+`CLAUDE.md` (read that before editing anything under it), just no longer
+a hard context boundary.
+
+Confirmed directly in this terminal: `go`, `docker`, `node`, and `npm`
+are all on `PATH`. `go build ./...`, `go vet ./...`, and `go test ./...`
+all pass tree-wide in this repo, including `internal/db`, `internal/user`,
+`internal/api`, and `cmd/server` (the pgx/echo-dependent packages the old
+cloud sandbox couldn't reach the module proxy for) — no more reason to
+hedge build/test claims for those packages. `npm run build` in
+`teams-match-making-fe` also passes cleanly (Next.js 16 + Turbopack,
+confirmed 2026-09-07) — the old "SWC binary for linux/arm64" failure was
+specific to the previous sandboxed Linux VM and does not reproduce on
+this native darwin/arm64 terminal.
+
+Still true regardless of environment: `DATABASE_URL` in `.env` is a
+placeholder that's only fine for the `./run.sh` Docker Compose path (see
+"What's NOT yet done" above) — `go run ./cmd/server` outside Docker needs
+a real value.
