@@ -216,26 +216,38 @@ func TestMyEvents_ClassifiesPastPresentFuture(t *testing.T) {
 	if !resp.Linked {
 		t.Fatal("linked = false, want true")
 	}
-	if len(resp.Past) != 1 || resp.Past[0].EventID != "evt-past" {
-		t.Errorf("past = %+v, want exactly evt-past", resp.Past)
+	// Past now legitimately holds two entries — evt-past (from the
+	// placings-history endpoint, with a real placing) and evt-stale
+	// (registered but never placed, reclassified out of Present purely
+	// for being long past its end date with the organizer never marking
+	// it ended — see isStaleEvent) — so this looks each up by id rather
+	// than assuming a single entry at index 0.
+	if len(resp.Past) != 2 {
+		t.Fatalf("past = %+v, want exactly 2 entries (evt-past, evt-stale)", resp.Past)
 	}
-	if resp.Past[0].Placing == nil || *resp.Past[0].Placing != 4 {
-		t.Errorf("past[0].Placing = %v, want 4", resp.Past[0].Placing)
+	var pastEvent, staleEvent *myEvent
+	for i := range resp.Past {
+		switch resp.Past[i].EventID {
+		case "evt-past":
+			pastEvent = &resp.Past[i]
+		case "evt-stale":
+			staleEvent = &resp.Past[i]
+		}
+	}
+	if pastEvent == nil {
+		t.Fatalf("past = %+v, want evt-past included", resp.Past)
+	}
+	if pastEvent.Placing == nil || *pastEvent.Placing != 4 {
+		t.Errorf("evt-past.Placing = %v, want 4", pastEvent.Placing)
+	}
+	if staleEvent == nil {
+		t.Errorf("past = %+v, want evt-stale included (started, never ended, long past its end date)", resp.Past)
 	}
 	if len(resp.Present) != 1 || resp.Present[0].EventID != "evt-present" {
 		t.Errorf("present = %+v, want exactly evt-present (evt-stale should not be here)", resp.Present)
 	}
 	if len(resp.Future) != 1 || resp.Future[0].EventID != "evt-future" {
 		t.Errorf("future = %+v, want exactly evt-future", resp.Future)
-	}
-	staleFound := false
-	for _, ev := range resp.Past {
-		if ev.EventID == "evt-stale" {
-			staleFound = true
-		}
-	}
-	if !staleFound {
-		t.Errorf("past = %+v, want evt-stale included (started, never ended, long past its end date)", resp.Past)
 	}
 }
 

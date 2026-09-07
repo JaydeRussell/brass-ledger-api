@@ -174,6 +174,19 @@ stale, rather than appending to it forever.
 
 ## What's NOT yet done / verified
 
+- **Fixed 2026-09-07**: `internal/api/bcp_test.go` and `internal/api/auth_test.go`
+  both independently declared a `newTestEcho`/`doRequest` helper pair with
+  different signatures — a same-package redeclaration that would fail to
+  compile. Renamed `bcp_test.go`'s pair to `newBCPTestEcho`/`doBCPRequest`
+  (matching `newMeTestEcho`/`newSyncTestEcho`'s per-feature naming in the
+  other test files here) rather than touching `auth_test.go`, which many
+  more tests already depend on. This slipped through because `internal/api`
+  can't actually be built/tested in this sandbox (needs echo/pgx — see
+  "Environment quirks" below), so a same-package name collision like this
+  had no way to surface here; only `gofmt -l` (which just parses each file
+  independently, so it's blind to cross-file redeclarations) had been run
+  against it. Worth an actual `go build ./...`/`go test ./...` on the
+  user's own machine to catch anything else in this category.
 - ~~Nobody has actually run the sign-in flow end-to-end yet~~ —
   **confirmed working 2026-09-07.** The user ran `./run.sh` and signed
   in for real; `logs/backend.log` shows the full

@@ -58,13 +58,19 @@ func alwaysFailServer(t *testing.T) *httptest.Server {
 	return server
 }
 
-func newTestEcho(client *bcp.Client) *echo.Echo {
+// newBCPTestEcho/doBCPRequest are named distinctly from auth_test.go's
+// own newTestEcho/doRequest (same package, so a same-named pair here
+// would be a redeclaration — these two files were written independently
+// and happened to pick the same generic names) — matching the
+// newMeTestEcho/newSyncTestEcho naming convention the other test files
+// in this package already use for their own per-feature Echo helpers.
+func newBCPTestEcho(client *bcp.Client) *echo.Echo {
 	e := echo.New()
 	RegisterBCPRoutes(e, client)
 	return e
 }
 
-func doRequest(e *echo.Echo, method, path string) *httptest.ResponseRecorder {
+func doBCPRequest(e *echo.Echo, method, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
@@ -77,7 +83,7 @@ func doRequest(e *echo.Echo, method, path string) *httptest.ResponseRecorder {
 func TestRegisterBCPRoutes_Success(t *testing.T) {
 	server := stubBCPServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
-	e := newTestEcho(client)
+	e := newBCPTestEcho(client)
 
 	cases := []struct {
 		name       string
@@ -95,7 +101,7 @@ func TestRegisterBCPRoutes_Success(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := doRequest(e, http.MethodGet, tc.path)
+			rec := doBCPRequest(e, http.MethodGet, tc.path)
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("GET %s: status = %d, want %d (body: %s)", tc.path, rec.Code, tc.wantStatus, rec.Body.String())
 			}
@@ -114,7 +120,7 @@ func TestRegisterBCPRoutes_Success(t *testing.T) {
 func TestRegisterBCPRoutes_ParamValidation(t *testing.T) {
 	server := alwaysFailServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
-	e := newTestEcho(client)
+	e := newBCPTestEcho(client)
 
 	cases := []struct {
 		name string
@@ -133,7 +139,7 @@ func TestRegisterBCPRoutes_ParamValidation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := doRequest(e, http.MethodGet, tc.path)
+			rec := doBCPRequest(e, http.MethodGet, tc.path)
 			if rec.Code != http.StatusBadRequest {
 				t.Errorf("GET %s: status = %d, want %d (body: %s)", tc.path, rec.Code, http.StatusBadRequest, rec.Body.String())
 			}
@@ -154,7 +160,7 @@ func TestRegisterBCPRoutes_ParamValidation(t *testing.T) {
 func TestRegisterBCPRoutes_UpstreamFailure(t *testing.T) {
 	server := alwaysFailServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
-	e := newTestEcho(client)
+	e := newBCPTestEcho(client)
 
 	cases := []struct {
 		name string
@@ -170,7 +176,7 @@ func TestRegisterBCPRoutes_UpstreamFailure(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := doRequest(e, http.MethodGet, tc.path)
+			rec := doBCPRequest(e, http.MethodGet, tc.path)
 			if rec.Code != http.StatusBadGateway {
 				t.Errorf("GET %s: status = %d, want %d (body: %s)", tc.path, rec.Code, http.StatusBadGateway, rec.Body.String())
 			}
@@ -190,9 +196,9 @@ func TestRegisterBCPRoutes_ItcLeagueNotFound(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := bcp.NewClientWithBaseURL(server.URL)
-	e := newTestEcho(client)
+	e := newBCPTestEcho(client)
 
-	rec := doRequest(e, http.MethodGet, "/api/itc/leagues/gs-1")
+	rec := doBCPRequest(e, http.MethodGet, "/api/itc/leagues/gs-1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
@@ -212,9 +218,9 @@ func TestRegisterBCPRoutes_ItcRankingNotFound(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := bcp.NewClientWithBaseURL(server.URL)
-	e := newTestEcho(client)
+	e := newBCPTestEcho(client)
 
-	rec := doRequest(e, http.MethodGet, "/api/itc/rankings?leagueId=league-1&userId=u1")
+	rec := doBCPRequest(e, http.MethodGet, "/api/itc/rankings?leagueId=league-1&userId=u1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
