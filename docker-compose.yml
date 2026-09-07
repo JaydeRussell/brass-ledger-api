@@ -1,0 +1,87 @@
+# Runs the whole stack — Postgres, the Go backend, and the Next.js
+# frontend — each in its own container, with one command: `./run.sh`
+# (or `docker compose up --build` directly).
+#
+# Assumes this repo sits next to teams-match-making-fe on disk (the
+# `context: ../teams-match-making-fe` below is a sibling-directory
+# relative path) — the layout both repos are already in. If you ever
+# move one repo without the other, update that path.
+#
+# Credentials below are dev-only defaults (override via a local .env
+# file in this directory, e.g. POSTGRES_PASSWORD=something-else, if
+# you'd rather not use them) — this is for local development, not for
+# how a real deployment would manage secrets.
+name: teams-match-making
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tmm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tmm}
+      POSTGRES_DB: ${POSTGRES_DB:-teams_match_making}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      # Exposed on the host too, so you can `psql` in directly while
+      # developing — drop this if you'd rather keep it reachable only
+      # from the other containers.
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tmm} -d ${POSTGRES_DB:-teams_match_making}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      # Talks to the db container by its service name ("db"), not
+      # localhost — containers on the same compose network resolve each
+      # other by service name.
+      DATABASE_URL: postgres://${POSTGRES_USER:-tmm}:${POSTGRES_PASSWORD:-tmm}@db:5432/${POSTGRES_DB:-teams_match_making}?sslmode=disable
+      # Google sign-in — optional, passed through from your shell/.env
+      # if set. Leave unset and the backend starts with sign-in
+      # disabled. See .env.example / README for setup.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8080/auth/google/callback}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Written inside the container at /logs, bind-mounted below to
+      # ./logs on the host — so `make logs`/`make logs-tail` (which read
+      # the same LOG_FILE-relative path from the host) see exactly what
+      # the containerized server wrote, without needing `docker compose
+      # exec`/`docker cp` to get at it.
+      LOG_FILE: /logs/backend.log
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: ../teams-match-making-fe
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      # Same idea as the backend's LOG_FILE above — written to /app/logs
+      # in the container (its WORKDIR), bind-mounted to the frontend
+      # repo's own logs/ directory on the host.
+      LOG_FILE: /app/logs/frontend.log
+    volumes:
+      - ../teams-match-making-fe/logs:/app/logs
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  db-data:

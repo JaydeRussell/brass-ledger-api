@@ -1,0 +1,263 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/JaydeRussell/teams-match-making-be/internal/bcp"
+	"github.com/JaydeRussell/teams-match-making-be/internal/user"
+)
+
+// SetBcpUserID extends fakeUserStore (defined in auth_test.go) to
+// satisfy the fuller userStore interface these routes need — same fake,
+// same package, just adding the one method auth_test.go's cases never
+// exercised.
+func (f *fakeUserStore) SetBcpUserID(_ context.Context, userID int64, bcpUserID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for sub, u := range f.byGoogle {
+		if u.ID == userID {
+			u.BcpUserID = bcpUserID
+			f.byGoogle[sub] = u
+			return nil
+		}
+	}
+	return user.ErrSessionNotFound
+}
+
+// signedInSession signs a fake user in (bypassing the Google flow
+// entirely, since these tests are only about the /api/me/* routes'
+// own logic) and returns a session cookie for them plus their id.
+func signedInSession(t *testing.T, store *fakeUserStore) (*http.Cookie, int64) {
+	t.Helper()
+	u, err := store.UpsertUserFromGoogle(context.Background(), "sub-1", "a@example.com", "Anna Adams", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	token, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	return &http.Cookie{Name: sessionCookieName, Value: token}, u.ID
+}
+
+func newMeTestEcho(store userStore, bcpClient *bcp.Client) *echo.Echo {
+	e := echo.New()
+	RegisterMeRoutes(e, store, bcpClient)
+	return e
+}
+
+func TestBcpProfile_RequiresSignIn(t *testing.T) {
+	e := newMeTestEcho(newFakeUserStore(), bcp.NewClient())
+	req := httptest.NewRequest(http.MethodPost, "/api/me/bcp-profile", strings.NewReader(`{"bcpUserId": "u1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestBcpProfile_LinksAndUnlinks(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	e := newMeTestEcho(store, bcp.NewClient())
+
+	link := func(bcpUserID string) *httptest.ResponseRecorder {
+		body := fmt.Sprintf(`{"bcpUserId": %q}`, bcpUserID)
+		req := httptest.NewRequest(http.MethodPost, "/api/me/bcp-profile", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := link("  L8GE7LCQ0B  ") // leading/trailing space, as a pasted value might have
+	if rec.Code != http.StatusOK {
+		t.Fatalf("link status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	if body["bcpUserId"] != "L8GE7LCQ0B" {
+		t.Errorf("bcpUserId = %v, want trimmed L8GE7LCQ0B", body["bcpUserId"])
+	}
+
+	u, err := store.GetUserBySession(context.Background(), cookie.Value)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if u.BcpUserID != "L8GE7LCQ0B" || u.ID != userID {
+		t.Errorf("store user = %+v, want BcpUserID L8GE7LCQ0B for user %d", u, userID)
+	}
+
+	// Unlinking (empty string) works too.
+	rec = link("")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unlink status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	u, err = store.GetUserBySession(context.Background(), cookie.Value)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if u.BcpUserID != "" {
+		t.Errorf("BcpUserID after unlinking = %q, want empty", u.BcpUserID)
+	}
+}
+
+func TestMyEvents_RequiresSignIn(t *testing.T) {
+	e := newMeTestEcho(newFakeUserStore(), bcp.NewClient())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events", nil)
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestMyEvents_NotLinked(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+	e := newMeTestEcho(store, bcp.NewClient())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp myEventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	if resp.Linked {
+		t.Error("linked = true, want false for an account with no BCP profile set")
+	}
+	if len(resp.Past) != 0 || len(resp.Present) != 0 || len(resp.Future) != 0 {
+		t.Errorf("expected all three sections empty, got %+v", resp)
+	}
+}
+
+// stubBCPHistoryServer serves the three BCP endpoints GET /api/me/events
+// needs: the registration list, the placings history, and per-event
+// info for whatever isn't covered by the placings history.
+func stubBCPHistoryServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": [
+			{"event": {"id": "evt-past", "name": "Already Placed"}},
+			{"event": {"id": "evt-present", "name": "Happening Now"}},
+			{"event": {"id": "evt-future", "name": "Not Started Yet"}},
+			{"event": {"id": "evt-stale", "name": "Forgotten About"}}
+		]}`))
+	})
+	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": [
+			{"placing": 4, "points": 55.5, "event": {"id": "evt-past", "name": "Already Placed", "eventDate": "2024-01-01T00:00:00.000Z"}}
+		]}`))
+	})
+	mux.HandleFunc("/events/evt-present", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-present", "name": "Happening Now", "status": {"started": true, "ended": false}}`))
+	})
+	mux.HandleFunc("/events/evt-future", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-future", "name": "Not Started Yet", "status": {"started": false, "ended": false}}`))
+	})
+	// Never marked "ended" by its organizer, but its listed end date was
+	// weeks ago — TestMyEvents_ClassifiesPastPresentFuture checks this
+	// still lands in Past, not stuck in Present forever (see
+	// isStaleEvent).
+	mux.HandleFunc("/events/evt-stale", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-stale", "name": "Forgotten About", "status": {"started": true, "ended": false}, "dates": {"start": "2020-01-01", "end": "2020-01-02"}}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestMyEvents_ClassifiesPastPresentFuture(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	if err := store.SetBcpUserID(context.Background(), userID, "bcp-user-1"); err != nil {
+		t.Fatalf("SetBcpUserID: %v", err)
+	}
+
+	server := stubBCPHistoryServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newMeTestEcho(store, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp myEventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+
+	if !resp.Linked {
+		t.Fatal("linked = false, want true")
+	}
+	if len(resp.Past) != 1 || resp.Past[0].EventID != "evt-past" {
+		t.Errorf("past = %+v, want exactly evt-past", resp.Past)
+	}
+	if resp.Past[0].Placing == nil || *resp.Past[0].Placing != 4 {
+		t.Errorf("past[0].Placing = %v, want 4", resp.Past[0].Placing)
+	}
+	if len(resp.Present) != 1 || resp.Present[0].EventID != "evt-present" {
+		t.Errorf("present = %+v, want exactly evt-present (evt-stale should not be here)", resp.Present)
+	}
+	if len(resp.Future) != 1 || resp.Future[0].EventID != "evt-future" {
+		t.Errorf("future = %+v, want exactly evt-future", resp.Future)
+	}
+	staleFound := false
+	for _, ev := range resp.Past {
+		if ev.EventID == "evt-stale" {
+			staleFound = true
+		}
+	}
+	if !staleFound {
+		t.Errorf("past = %+v, want evt-stale included (started, never ended, long past its end date)", resp.Past)
+	}
+}
+
+func TestIsStaleEvent(t *testing.T) {
+	cases := []struct {
+		name    string
+		endDate string
+		want    bool
+	}{
+		{"empty date can't be judged, so not stale", "", false},
+		{"unparseable date can't be judged, so not stale", "not a date", false},
+		{"far in the future is not stale", time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339), false},
+		{"just now is not stale yet", time.Now().Format(time.RFC3339), false},
+		{"within the grace period is not stale yet", time.Now().Add(-2 * 24 * time.Hour).Format(time.RFC3339), false},
+		{"past the grace period is stale (RFC3339)", time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339), true},
+		{"past the grace period is stale (bare date)", time.Now().Add(-10 * 24 * time.Hour).Format("2006-01-02"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isStaleEvent(tc.endDate); got != tc.want {
+				t.Errorf("isStaleEvent(%q) = %v, want %v", tc.endDate, got, tc.want)
+			}
+		})
+	}
+}

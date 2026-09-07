@@ -1,0 +1,8 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+*.md
+bin/
+tmp/
