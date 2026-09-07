@@ -2,7 +2,6 @@
 /bin/
 /tmp/
 teams-match-making-be
-server
 
 # Go workspace/test artifacts
 *.test
