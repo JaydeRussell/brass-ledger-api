@@ -175,6 +175,93 @@ func TestCache_Get(t *testing.T) {
 	}
 }
 
+func TestCache_Invalidate(t *testing.T) {
+	t.Run("clears the entry once the manual-invalidate floor has elapsed, so the next Get refetches", func(t *testing.T) {
+		orig := minManualInvalidateInterval
+		minManualInvalidateInterval = 0 // no real sleep needed — see that var's doc comment
+		defer func() { minManualInvalidateInterval = orig }()
+
+		var calls int32
+		c := NewCache(func(ctx context.Context, key string) (int, error) {
+			return int(atomic.AddInt32(&calls, 1)), nil
+		})
+
+		first, err := c.Get(context.Background(), "k1")
+		if err != nil {
+			t.Fatalf("first Get: %v", err)
+		}
+		if first != 1 {
+			t.Fatalf("first Get = %d, want 1", first)
+		}
+
+		c.Invalidate("k1")
+
+		second, err := c.Get(context.Background(), "k1")
+		if err != nil {
+			t.Fatalf("second Get: %v", err)
+		}
+		if second != 2 {
+			t.Errorf("second Get = %d, want 2 (Invalidate should have forced a real refetch)", second)
+		}
+		if calls != 2 {
+			t.Errorf("fetch called %d times, want 2", calls)
+		}
+	})
+
+	t.Run("does nothing if the entry was fetched more recently than the manual-invalidate floor", func(t *testing.T) {
+		var calls int32
+		c := NewCache(func(ctx context.Context, key string) (int, error) {
+			return int(atomic.AddInt32(&calls, 1)), nil
+		})
+
+		if _, err := c.Get(context.Background(), "k1"); err != nil {
+			t.Fatalf("first Get: %v", err)
+		}
+
+		// Called immediately after — well within the default 10s floor —
+		// so this should be a no-op rather than clearing the entry.
+		c.Invalidate("k1")
+
+		got, err := c.Get(context.Background(), "k1")
+		if err != nil {
+			t.Fatalf("second Get: %v", err)
+		}
+		if got != 1 {
+			t.Errorf("second Get = %d, want 1 (still cached — Invalidate should have been throttled)", got)
+		}
+		if calls != 1 {
+			t.Errorf("fetch called %d times, want 1", calls)
+		}
+	})
+
+	t.Run("invalidating a key that was never fetched is a safe no-op", func(t *testing.T) {
+		c := NewCache(func(ctx context.Context, key string) (int, error) { return 1, nil })
+		c.Invalidate("never-fetched") // must not panic
+	})
+}
+
+func TestCache_FetchedAt(t *testing.T) {
+	c := NewCache(func(ctx context.Context, key string) (string, error) { return "v", nil })
+
+	if _, ok := c.FetchedAt("k1"); ok {
+		t.Error("FetchedAt on a never-fetched key reported ok=true, want false")
+	}
+
+	before := time.Now()
+	if _, err := c.Get(context.Background(), "k1"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	after := time.Now()
+
+	fetchedAt, ok := c.FetchedAt("k1")
+	if !ok {
+		t.Fatal("FetchedAt reported ok=false right after a successful Get")
+	}
+	if fetchedAt.Before(before) || fetchedAt.After(after) {
+		t.Errorf("FetchedAt = %v, want between %v and %v", fetchedAt, before, after)
+	}
+}
+
 // TestCache_Get_minRefetchIntervalIsPositive is a small sanity check that
 // the interval this whole cache exists to enforce hasn't been zeroed out
 // by accident — the behavioral tests above only prove caching happens

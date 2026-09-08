@@ -338,6 +338,18 @@ func (c *Client) FetchEventInfo(ctx context.Context, eventID string) (EventInfo,
 	return c.eventInfo.Get(ctx, eventID)
 }
 
+// InvalidateEventInfo forces the next FetchEventInfo call for this event
+// to hit BCP for real — used alongside InvalidatePlayerEventHistory so a
+// present/future event's own status (e.g. one that just started, or
+// just concluded) is also rechecked on a manual "refresh my events"
+// request, not just whether new registrations appeared. A no-op for an
+// event whose info is already durably cached (an already-concluded
+// event never needs rechecking at all) since fetchEventInfoUncached
+// checks the durable cache before ever reaching this in-memory one.
+func (c *Client) InvalidateEventInfo(eventID string) {
+	c.eventInfo.Invalidate(eventID)
+}
+
 // --- Players / rosters -------------------------------------------------
 
 type bcpPlayerRecord struct {
@@ -940,6 +952,26 @@ func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID 
 // not covered there, FetchEventInfo to classify each one.
 func (c *Client) FetchPlayerEventHistory(ctx context.Context, bcpUserID string) ([]PlayerEventRecord, error) {
 	return c.playerEventHistory.Get(ctx, bcpUserID)
+}
+
+// InvalidatePlayerEventHistory forces the next FetchPlayerEventHistory
+// call for this user to hit BCP for real — the registration list is the
+// only signal source for "did I just sign up for something new," which
+// the normal cache TTL can't detect on its own. See Cache.Invalidate's
+// doc comment for why this is meant for an explicit "check again now"
+// action, not routine use.
+func (c *Client) InvalidatePlayerEventHistory(bcpUserID string) {
+	c.playerEventHistory.Invalidate(bcpUserID)
+}
+
+// PlayerEventHistoryFetchedAt reports when this user's registration list
+// was last actually fetched from BCP, or ok=false if it's never been
+// fetched at all this process's lifetime. The "last updated" timestamp
+// for the Ongoing/Future sections of My Events — Past isn't covered by
+// this since an already-concluded event's placing never changes, so it
+// has no meaningful staleness to report.
+func (c *Client) PlayerEventHistoryFetchedAt(bcpUserID string) (time.Time, bool) {
+	return c.playerEventHistory.FetchedAt(bcpUserID)
 }
 
 type bcpPlacingHistoryEventRef struct {

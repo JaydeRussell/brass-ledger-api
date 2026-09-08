@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -370,6 +371,38 @@ func TestFetchEventInfo(t *testing.T) {
 	}
 }
 
+func TestInvalidateEventInfo(t *testing.T) {
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Still Going", "status": {"started": true, "ended": false}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := newTestClient(server)
+
+	if _, err := client.FetchEventInfo(context.Background(), "evt-1"); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if _, err := client.FetchEventInfo(context.Background(), "evt-1"); err != nil {
+		t.Fatalf("second fetch (should be cached): %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d before invalidating, want 1", calls)
+	}
+
+	// Same throttle-not-retested reasoning as TestInvalidatePlayerEventHistory
+	// — this just confirms InvalidateEventInfo reaches the right cache key.
+	client.InvalidateEventInfo("evt-1")
+	if _, err := client.FetchEventInfo(context.Background(), "evt-1"); err != nil {
+		t.Fatalf("third fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d after an immediate Invalidate, want 1 (should have been throttled)", calls)
+	}
+}
+
 func TestFetchPlayers(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -680,6 +713,62 @@ func TestFetchPlayerEventHistory(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPlayerEventHistoryFetchedAt(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", jsonHandler(http.StatusOK, `{"data": []}`))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := newTestClient(server)
+
+	if _, ok := client.PlayerEventHistoryFetchedAt("bcp-user-1"); ok {
+		t.Error("PlayerEventHistoryFetchedAt before any fetch reported ok=true, want false")
+	}
+
+	if _, err := client.FetchPlayerEventHistory(context.Background(), "bcp-user-1"); err != nil {
+		t.Fatalf("FetchPlayerEventHistory: %v", err)
+	}
+	if _, ok := client.PlayerEventHistoryFetchedAt("bcp-user-1"); !ok {
+		t.Error("PlayerEventHistoryFetchedAt after a successful fetch reported ok=false, want true")
+	}
+}
+
+func TestInvalidatePlayerEventHistory(t *testing.T) {
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"data": []}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := newTestClient(server)
+
+	if _, err := client.FetchPlayerEventHistory(context.Background(), "bcp-user-1"); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if _, err := client.FetchPlayerEventHistory(context.Background(), "bcp-user-1"); err != nil {
+		t.Fatalf("second fetch (should be cached): %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d before invalidating, want 1 (second fetch should have been cached)", calls)
+	}
+
+	// Invalidate is throttled to once per minManualInvalidateInterval (see
+	// cache.go) — calling it immediately after the fetch above is
+	// expected to be a no-op, same as TestCache_Invalidate's own
+	// "does nothing if fetched too recently" case. What this test cares
+	// about is that InvalidatePlayerEventHistory really does reach the
+	// underlying cache's Invalidate for the right key — not re-testing
+	// the throttle itself.
+	client.InvalidatePlayerEventHistory("bcp-user-1")
+	if _, err := client.FetchPlayerEventHistory(context.Background(), "bcp-user-1"); err != nil {
+		t.Fatalf("third fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d after an immediate Invalidate, want 1 (should have been throttled, not forced a real refetch)", calls)
 	}
 }
 

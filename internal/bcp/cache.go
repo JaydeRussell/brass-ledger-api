@@ -14,6 +14,16 @@ import (
 // rate limit against BCP, instead of each browser tab enforcing its own.
 const minRefetchInterval = 60 * time.Second
 
+// minManualInvalidateInterval is a much shorter floor than
+// minRefetchInterval, applied only to Invalidate (an explicit "check
+// again now" request, e.g. a user-facing Refresh button) — not to blunt
+// legitimate use, just to stop a rapidly double-clicked button from
+// turning into back-to-back real BCP requests. A var rather than a
+// const purely so cache_test.go can shrink it to make the "the floor
+// actually elapses" case fast and deterministic instead of sleeping for
+// 10 real seconds — production behavior is unaffected.
+var minManualInvalidateInterval = 10 * time.Second
+
 type cacheEntry[T any] struct {
 	data      T
 	fetchedAt time.Time
@@ -85,4 +95,31 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	close(inf.done)
 
 	return data, err
+}
+
+// Invalidate clears key's cached entry (if fetched more than
+// minManualInvalidateInterval ago — a very recent entry is left alone,
+// see that const's doc comment), so the next Get performs a real fetch
+// regardless of the normal minRefetchInterval TTL. Meant for an explicit,
+// user-initiated "check again now" action — e.g. a signed-in account's
+// own event list, which can go stale in ways only they'd know to ask
+// about (registering for something new) — not for routine use.
+func (c *Cache[T]) Invalidate(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < minManualInvalidateInterval {
+		return
+	}
+	delete(c.entries, key)
+}
+
+// FetchedAt reports when key's cached entry was last actually fetched
+// from BCP, without triggering a fetch itself — the "last updated"
+// timestamp a caller can surface to the frontend. ok is false if there's
+// no cached entry at all yet (nothing has ever been fetched for key).
+func (c *Cache[T]) FetchedAt(key string) (t time.Time, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	return e.fetchedAt, ok
 }

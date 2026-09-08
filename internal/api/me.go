@@ -80,11 +80,22 @@ type myEvent struct {
 // BCP profile yet — a normal, expected state for a new account, not an
 // error — so the frontend can tell "not linked" apart from "linked but
 // no events yet".
+//
+// UpcomingFetchedAt is when the Present/Future sections were last
+// actually checked against BCP (RFC3339, omitted if never fetched this
+// process's lifetime) — the registration list they're built from can go
+// stale in a way only the signed-in user would know to ask about
+// (registering for something new, or an event starting), so this is
+// surfaced to the frontend as a "last updated" indicator alongside the
+// ?refresh=true param below. Past isn't covered by this: an
+// already-concluded event's placing never changes, so it has no
+// meaningful staleness to report.
 type myEventsResponse struct {
-	Linked  bool      `json:"linked"`
-	Past    []myEvent `json:"past"`
-	Present []myEvent `json:"present"`
-	Future  []myEvent `json:"future"`
+	Linked            bool      `json:"linked"`
+	Past              []myEvent `json:"past"`
+	Present           []myEvent `json:"present"`
+	Future            []myEvent `json:"future"`
+	UpcomingFetchedAt string    `json:"upcomingFetchedAt,omitempty"`
 }
 
 func emptyMyEventsResponse(linked bool) myEventsResponse {
@@ -142,6 +153,19 @@ func RegisterMeRoutes(e *echo.Echo, store userStore, bcpClient *bcp.Client) {
 
 		ctx := c.Request().Context()
 
+		// An explicit "check again now" request — see
+		// bcp.Cache.Invalidate's doc comment for why this is scoped to
+		// just the registration list (and, below, each not-yet-concluded
+		// event's own info) rather than also forcing FetchPlacingHistory
+		// to bypass its cache: an already-concluded event's placing can
+		// never change, so there's nothing there a refresh could
+		// meaningfully improve — only Present/Future can go stale in a
+		// way the user would know to ask about.
+		refresh := c.QueryParam("refresh") == "true"
+		if refresh {
+			bcpClient.InvalidatePlayerEventHistory(u.BcpUserID)
+		}
+
 		placingHistory, err := bcpClient.FetchPlacingHistory(ctx, u.BcpUserID)
 		if err != nil {
 			return bcpError(c, err)
@@ -177,6 +201,9 @@ func RegisterMeRoutes(e *echo.Echo, store userStore, bcpClient *bcp.Client) {
 			if concluded[r.EventID] {
 				continue
 			}
+			if refresh {
+				bcpClient.InvalidateEventInfo(r.EventID)
+			}
 			info, err := bcpClient.FetchEventInfo(ctx, r.EventID)
 			if err != nil {
 				// One event's metadata failing to load shouldn't take down
@@ -197,6 +224,10 @@ func RegisterMeRoutes(e *echo.Echo, store userStore, bcpClient *bcp.Client) {
 				// bucket is Past even without placing details.
 				resp.Past = append(resp.Past, ev)
 			}
+		}
+
+		if fetchedAt, ok := bcpClient.PlayerEventHistoryFetchedAt(u.BcpUserID); ok {
+			resp.UpcomingFetchedAt = fetchedAt.Format(time.RFC3339)
 		}
 
 		return c.JSON(http.StatusOK, resp)

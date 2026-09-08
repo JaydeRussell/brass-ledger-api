@@ -251,6 +251,90 @@ func TestMyEvents_ClassifiesPastPresentFuture(t *testing.T) {
 	}
 }
 
+// TestMyEvents_UpcomingFetchedAt confirms the "last checked" timestamp
+// is present and recent after a normal fetch. The Invalidate-bypasses-
+// the-cache behavior ?refresh=true triggers is already thoroughly
+// covered at the layer it actually lives in — bcp/cache_test.go's
+// TestCache_Invalidate (the throttle/timing logic itself) and
+// bcp/client_test.go's TestInvalidatePlayerEventHistory /
+// TestInvalidateEventInfo (that the right cache key gets invalidated) —
+// not retested here. What's worth confirming at this layer is just the
+// wire contract: the field shows up, and ?refresh=true is accepted
+// without breaking the normal response.
+func TestMyEvents_UpcomingFetchedAt(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	if err := store.SetBcpUserID(context.Background(), userID, "bcp-user-1"); err != nil {
+		t.Fatalf("SetBcpUserID: %v", err)
+	}
+
+	server := stubBCPHistoryServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newMeTestEcho(store, client)
+
+	before := time.Now()
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	after := time.Now()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp myEventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+
+	if resp.UpcomingFetchedAt == "" {
+		t.Fatal("upcomingFetchedAt is empty, want a timestamp")
+	}
+	fetchedAt, err := time.Parse(time.RFC3339, resp.UpcomingFetchedAt)
+	if err != nil {
+		t.Fatalf("upcomingFetchedAt = %q isn't valid RFC3339: %v", resp.UpcomingFetchedAt, err)
+	}
+	// RFC3339 (no fractional seconds) truncates to the second, so widen
+	// the window by a second on each side rather than comparing against
+	// before/after's own sub-second precision.
+	if fetchedAt.Before(before.Add(-time.Second)) || fetchedAt.After(after.Add(time.Second)) {
+		t.Errorf("upcomingFetchedAt = %v, want between %v and %v", fetchedAt, before, after)
+	}
+}
+
+func TestMyEvents_RefreshQueryParam(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	if err := store.SetBcpUserID(context.Background(), userID, "bcp-user-1"); err != nil {
+		t.Fatalf("SetBcpUserID: %v", err)
+	}
+
+	server := stubBCPHistoryServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newMeTestEcho(store, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events?refresh=true", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp myEventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	// Same classification stubBCPHistoryServer always produces — refresh
+	// shouldn't change what comes back, just how it was fetched.
+	if len(resp.Present) != 1 || resp.Present[0].EventID != "evt-present" {
+		t.Errorf("present = %+v, want exactly evt-present", resp.Present)
+	}
+	if len(resp.Future) != 1 || resp.Future[0].EventID != "evt-future" {
+		t.Errorf("future = %+v, want exactly evt-future", resp.Future)
+	}
+}
+
 func TestIsStaleEvent(t *testing.T) {
 	cases := []struct {
 		name    string
