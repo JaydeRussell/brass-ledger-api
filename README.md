@@ -137,7 +137,10 @@ above. Once it's up:
 
 - Frontend: http://localhost:3000
 - Backend: http://localhost:8080/healthz
-- Postgres: localhost:5432 (reachable directly too, e.g. for `psql`)
+- Postgres: localhost:5432 (reachable directly too — the dev-only
+  defaults are user/db/password `brassledger`/`brass_ledger`/
+  `brassledger`, or just `make db-shell` for a `psql` shell without
+  needing to remember them)
 
 `./run.sh down` stops everything (add `-v` to also delete the Postgres
 data volume, if you want a clean slate). `./run.sh -d` runs it detached.
@@ -145,7 +148,9 @@ data volume, if you want a clean slate). `./run.sh -d` runs it detached.
 Already have the stack running and just changed some code? `make
 docker-reset` rebuilds the images from your latest changes and restarts
 everything (detached), without needing to think about which flags
-`run.sh`/`docker compose` want for that.
+`run.sh`/`docker compose` want for that. Then `make smoke` for a fast
+"did it actually come up" check (healthz/readyz/auth routing/frontend —
+no BCP calls) before digging in further by hand.
 
 One prerequisite: the backend's Docker build copies `go.sum`, so run `go
 mod tidy` locally at least once (see "Running locally" above) before the

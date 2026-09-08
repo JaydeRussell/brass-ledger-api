@@ -1,4 +1,4 @@
-.PHONY: help build run test lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail
+.PHONY: help build run test lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -49,6 +49,12 @@ docker-reset: ## Rebuild images from your latest code changes and restart the st
 	@mkdir -p logs ../brass-ledger-web/logs && chmod 777 logs ../brass-ledger-web/logs
 	docker compose down
 	docker compose up --build --force-recreate -d
+
+db-shell: ## Open a psql shell against the local (docker compose) Postgres
+	docker compose exec db psql -U $${POSTGRES_USER:-brassledger} -d $${POSTGRES_DB:-brass_ledger}
+
+smoke: ## Quick post-rebuild sanity check (healthz/readyz/auth/frontend) — no BCP calls
+	./scripts/smoke-test.sh
 
 logs: ## Show this service's log file so far (see LOG_FILE in .env.example)
 	@f="$${LOG_FILE:-logs/backend.log}"; \

@@ -201,12 +201,20 @@ stale, rather than appending to it forever.
   corroborating each other end-to-end, which is exactly what the
   logging work was for. If something regresses later, that's the shape
   of evidence to look for again.
-- `DATABASE_URL` in `.env` is still the placeholder value. That's fine
-  *only* for the Docker Compose path (`./run.sh`) — `docker-compose.yml`
-  hardcodes the backend's real `DATABASE_URL` from
-  `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB` and ignores whatever
-  `.env` says. It would need a real value for `go run ./cmd/server`
-  outside Docker.
+- ~~`DATABASE_URL` in `.env` is still the placeholder value...~~ **fixed
+  2026-09-08**: it now points at the Docker Compose stack's real
+  credentials (`brassledger`/`brassledger`/`brass_ledger`), so `go run
+  ./cmd/server` outside Docker works against the same Postgres `./run.sh`
+  starts, without needing a separate local install. (It was stale
+  because `docker-compose.yml` hardcodes the backend container's own
+  `DATABASE_URL` from `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`
+  and ignores `.env` entirely — so the placeholder never actually broke
+  anything running via `./run.sh`, it only would have bitten `go run
+  ./cmd/server` outside Docker.) Also added `make db-shell` (a `psql`
+  shell against that same Postgres, no need to remember the
+  credentials) and `make smoke` (`scripts/smoke-test.sh` — a fast
+  healthz/readyz/auth/frontend check after a rebuild, before digging in
+  further by hand).
 - ~~Cross-device follows/notes (the actual feature accounts unlock) — not
   started.~~ Follows + recent events are now synced (see above); a
   "notes" feature was never actually specced beyond that TODO-list
