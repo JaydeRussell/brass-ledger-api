@@ -38,14 +38,22 @@ type fakeUserStore struct {
 	// label if already followed" semantics are easy to reproduce.
 	follows      map[int64]map[string]user.Follow
 	recentEvents map[int64][]user.RecentEvent
+
+	// calendarTokens is keyed by userID — CalendarToken isn't a field on
+	// user.User (same as the real Store: it's a DB-only column, not part
+	// of the domain struct returned by GetUserBySession etc.), so it
+	// needs its own map here rather than living on the byGoogle entries
+	// the way BcpUserID does.
+	calendarTokens map[int64]string
 }
 
 func newFakeUserStore() *fakeUserStore {
 	return &fakeUserStore{
-		byGoogle:     make(map[string]user.User),
-		sessions:     make(map[string]int64),
-		follows:      make(map[int64]map[string]user.Follow),
-		recentEvents: make(map[int64][]user.RecentEvent),
+		byGoogle:       make(map[string]user.User),
+		sessions:       make(map[string]int64),
+		follows:        make(map[int64]map[string]user.Follow),
+		recentEvents:   make(map[int64][]user.RecentEvent),
+		calendarTokens: make(map[int64]string),
 	}
 }
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -180,25 +181,55 @@ func (h *MeHandler) Events(c echo.Context) error {
 	// meaningfully improve — only Present/Future can go stale in a
 	// way the user would know to ask about.
 	refresh := c.QueryParam("refresh") == "true"
-	if refresh {
-		h.client.InvalidatePlayerEventHistory(u.BcpUserID)
-	}
-
-	placingHistory, err := h.client.FetchPlacingHistory(ctx, u.BcpUserID)
-	if err != nil {
-		return bcpError(c, err)
-	}
-	registrations, err := h.client.FetchPlayerEventHistory(ctx, u.BcpUserID)
+	past, present, future, err := classifyMyEvents(ctx, h.client, u.BcpUserID, refresh)
 	if err != nil {
 		return bcpError(c, err)
 	}
 
 	resp := emptyMyEventsResponse(true)
+	resp.Past, resp.Present, resp.Future = past, present, future
+
+	if fetchedAt, ok := h.client.PlayerEventHistoryFetchedAt(u.BcpUserID); ok {
+		resp.UpcomingFetchedAt = fetchedAt.Format(time.RFC3339)
+	}
+
+	return c.JSON(http.StatusOK, resp)
+}
+
+// classifyMyEvents fetches bcpUserID's placing history and registration
+// list and classifies them into past/present/future — the shared core
+// both MeHandler.Events (JSON) and CalendarHandler's .ics feed
+// (internal/api/calendar.go) build their own response around. refresh
+// mirrors MeHandler.Events' ?refresh=true (see its doc comment above for
+// why this bypasses the registration-list/per-event cache but never
+// FetchPlacingHistory).
+//
+// The three return slices start non-nil (empty, not nil) rather than as
+// the named-return zero value — a section that ends up with zero
+// entries (e.g. no events currently Present) must still encode as JSON
+// `[]`, not `null`: the frontend spreads it directly
+// (`[...events.present, ...events.future]`, see app/calendar/page.tsx),
+// which throws on null.
+func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, refresh bool) (past, present, future []myEvent, err error) {
+	past, present, future = []myEvent{}, []myEvent{}, []myEvent{}
+
+	if refresh {
+		client.InvalidatePlayerEventHistory(bcpUserID)
+	}
+
+	placingHistory, err := client.FetchPlacingHistory(ctx, bcpUserID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	registrations, err := client.FetchPlayerEventHistory(ctx, bcpUserID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
 	concluded := make(map[string]bool, len(placingHistory))
 	for _, p := range placingHistory {
 		concluded[p.EventID] = true
-		resp.Past = append(resp.Past, myEvent{
+		past = append(past, myEvent{
 			EventID:   p.EventID,
 			EventName: p.EventName,
 			StartDate: p.EventDate,
@@ -220,9 +251,9 @@ func (h *MeHandler) Events(c echo.Context) error {
 			continue
 		}
 		if refresh {
-			h.client.InvalidateEventInfo(r.EventID)
+			client.InvalidateEventInfo(r.EventID)
 		}
-		info, err := h.client.FetchEventInfo(ctx, r.EventID)
+		info, err := client.FetchEventInfo(ctx, r.EventID)
 		if err != nil {
 			// One event's metadata failing to load shouldn't take down
 			// the whole list — skip just that event.
@@ -231,22 +262,18 @@ func (h *MeHandler) Events(c echo.Context) error {
 		ev := myEvent{EventID: info.ID, EventName: info.Name, StartDate: info.StartDate, EndDate: info.EndDate}
 		switch {
 		case info.Started && !info.Ended && !isStaleEvent(info.EndDate):
-			resp.Present = append(resp.Present, ev)
+			present = append(present, ev)
 		case !info.Started:
-			resp.Future = append(resp.Future, ev)
+			future = append(future, ev)
 		default:
 			// Either started and ended, or started-and-unended-but-
 			// stale (see isStaleEvent) — either way BCP hasn't
 			// published this user's placing yet (results still being
 			// finalized, or the organizer never will), so the closest
 			// bucket is Past even without placing details.
-			resp.Past = append(resp.Past, ev)
+			past = append(past, ev)
 		}
 	}
 
-	if fetchedAt, ok := h.client.PlayerEventHistoryFetchedAt(u.BcpUserID); ok {
-		resp.UpcomingFetchedAt = fetchedAt.Format(time.RFC3339)
-	}
-
-	return c.JSON(http.StatusOK, resp)
+	return past, present, future, nil
 }

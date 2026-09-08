@@ -335,6 +335,50 @@ func TestMyEvents_RefreshQueryParam(t *testing.T) {
 	}
 }
 
+// TestMyEvents_EmptySectionsEncodeAsEmptyArrays is a regression test: an
+// account linked to BCP but with zero registrations anywhere must still
+// get `"past":[],"present":[],"future":[]` in the wire response, not
+// `null` for whichever section(s) end up empty. Checked against the raw
+// JSON bytes, not by unmarshaling into myEventsResponse — a `null` and
+// an absent/empty array both unmarshal to the same nil Go slice, so that
+// wouldn't have caught this. A frontend that spreads these arrays
+// directly (`[...events.present, ...events.future]`, see
+// brass-ledger-web's app/calendar/page.tsx) throws on `null`.
+func TestMyEvents_EmptySectionsEncodeAsEmptyArrays(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	if err := store.SetBcpUserID(context.Background(), userID, "bcp-user-1"); err != nil {
+		t.Fatalf("SetBcpUserID: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": []}`))
+	})
+	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": []}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newMeTestEcho(store, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, field := range []string{`"past":[]`, `"present":[]`, `"future":[]`} {
+		if !strings.Contains(body, field) {
+			t.Errorf("body = %s, want it to contain %s (not null)", body, field)
+		}
+	}
+}
+
 func TestIsStaleEvent(t *testing.T) {
 	cases := []struct {
 		name    string

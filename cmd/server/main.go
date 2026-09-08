@@ -173,6 +173,11 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
 		api.NewStatsHandler(userStore, bcpClient).Register(e)
+		// The calendar-URL lookup is session-gated like the above, but
+		// the .ics feed itself (GET /api/calendar/:token) is not — see
+		// CalendarHandler's doc comment for why a session cookie can't
+		// gate a route a calendar app polls on its own schedule.
+		api.NewCalendarHandler(userStore, bcpClient, cfg.FrontendBaseURL).Register(e)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 	} else {
 		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example)")
