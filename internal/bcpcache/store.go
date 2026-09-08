@@ -23,6 +23,7 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// New wraps an existing connection pool (see internal/db) as a Store.
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }

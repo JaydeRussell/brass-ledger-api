@@ -73,6 +73,7 @@ func (h *SyncHandler) Register(e *echo.Echo) {
 	e.POST("/api/me/recent-events", h.RecordRecentEvent)
 }
 
+// ListFollows is GET /api/me/events/:eventId/follows.
 func (h *SyncHandler) ListFollows(c echo.Context) error {
 	u, err := requireUser(c, h.store)
 	if err != nil {
@@ -87,6 +88,7 @@ func (h *SyncHandler) ListFollows(c echo.Context) error {
 	return c.JSON(http.StatusOK, toFollowResponses(follows))
 }
 
+// AddFollow is POST /api/me/events/:eventId/follows.
 func (h *SyncHandler) AddFollow(c echo.Context) error {
 	u, err := requireUser(c, h.store)
 	if err != nil {
@@ -110,6 +112,7 @@ func (h *SyncHandler) AddFollow(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// RemoveFollow is DELETE /api/me/events/:eventId/follows/:kind/:refId.
 func (h *SyncHandler) RemoveFollow(c echo.Context) error {
 	u, err := requireUser(c, h.store)
 	if err != nil {
@@ -125,6 +128,7 @@ func (h *SyncHandler) RemoveFollow(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// ListRecentEvents is GET /api/me/recent-events.
 func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
 	u, err := requireUser(c, h.store)
 	if err != nil {
@@ -147,6 +151,7 @@ func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
+// RecordRecentEvent is POST /api/me/recent-events.
 func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 	u, err := requireUser(c, h.store)
 	if err != nil {
@@ -169,10 +174,9 @@ func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 }
 
 // requireUser is the same session-cookie-then-store-lookup check
-// RegisterMeRoutes' routes each repeat inline; factored out here since
-// this file adds five more routes needing it (me.go's two are left
-// as-is rather than churning an already-tested file for a style-only
-// change).
+// MeHandler's methods each repeat inline; factored out here since this
+// file adds five more routes needing it (me.go's two are left as-is
+// rather than churning an already-tested file for a style-only change).
 func requireUser(c echo.Context, store userStore) (user.User, error) {
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {

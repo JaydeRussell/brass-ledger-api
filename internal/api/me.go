@@ -20,8 +20,9 @@ const staleEventAfter = 3 * 24 * time.Hour
 // bcpDateLayouts are the two date shapes this service has actually seen
 // from BCP: FetchEventInfo's Dates.Start/End come back as a bare date
 // ("2026-01-01"), while FetchPlacingHistory's EventDate/EventEndDate come
-// back full RFC3339 ("2024-01-01T00:00:00.000Z") — see client_test.go's
-// fixtures for both. Tried in order; the first that parses wins.
+// back full RFC3339 ("2024-01-01T00:00:00.000Z") — see internal/bcp's
+// events_test.go and history_test.go fixtures for both. Tried in order;
+// the first that parses wins.
 var bcpDateLayouts = []string{time.RFC3339, "2006-01-02"}
 
 // parseBCPDate parses whichever of bcpDateLayouts matches, or reports ok
@@ -127,6 +128,8 @@ func (h *MeHandler) Register(e *echo.Echo) {
 	e.GET("/api/me/events", h.Events)
 }
 
+// SetBcpProfile is POST /api/me/bcp-profile: links (or unlinks) a BCP
+// profile to the signed-in account.
 func (h *MeHandler) SetBcpProfile(c echo.Context) error {
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {
@@ -150,6 +153,8 @@ func (h *MeHandler) SetBcpProfile(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"bcpUserId": bcpUserID})
 }
 
+// Events is GET /api/me/events: the signed-in account's BCP events,
+// classified into past/present/future.
 func (h *MeHandler) Events(c echo.Context) error {
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {

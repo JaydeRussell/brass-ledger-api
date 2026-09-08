@@ -39,8 +39,8 @@ var ErrSessionNotFound = errors.New("session not found or expired")
 
 // Store is this service's user/session persistence, backed by Postgres.
 // Its methods satisfy internal/api's userStore interface, which is what
-// RegisterAuthRoutes actually depends on — that's what lets the routes
-// be tested against an in-memory fake instead of a real database.
+// AuthHandler and friends actually depend on — that's what lets their
+// routes be tested against an in-memory fake instead of a real database.
 type Store struct {
 	pool *pgxpool.Pool
 }

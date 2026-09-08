@@ -65,11 +65,11 @@ stale, rather than appending to it forever.
   - `internal/db/migrations/0002_bcp_profile.sql` — adds `bcp_user_id`
     (nullable, unindexed) to `users`.
   - `internal/user/store.go` — `User.BcpUserID` field, `SetBcpUserID`.
-  - `internal/bcp/types.go`/`client.go` — two new cached, paginated
+  - `internal/bcp/types.go`/`history.go` — two new cached, paginated
     fetch methods: `FetchPlayerEventHistory` (every event ever
     registered for — `/v1/players?userId=...`, no dates) and
     `FetchPlacingHistory` (already-concluded events with dates/placing —
-    `/v1/eventplacings?userId=...`). See client.go's "Per-user event
+    `/v1/eventplacings?userId=...`). See history.go's "Per-user event
     history" section comment for the full design rationale — worth
     reading before touching this, since it encodes real API shapes
     discovered via live browser research (BCP's API is undocumented).
@@ -77,7 +77,7 @@ stale, rather than appending to it forever.
     `GET /api/me/events` (fetches both BCP endpoints above, plus a
     `FetchEventInfo` fallback call for any registered-but-not-yet-placed
     event, to tell Present from Future via `Started`/`Ended`).
-  - Full test coverage: `internal/bcp/client_test.go` (pagination,
+  - Full test coverage: `internal/bcp/history_test.go` (pagination,
     edge cases) and `internal/api/me_test.go` (auth gating, linking,
     classification) — all passing via `go test`.
   - **Confirmed working end-to-end against a real Postgres and a real
@@ -134,14 +134,14 @@ stale, rather than appending to it forever.
     `last_viewed_at`, then trims anything past `MaxRecentEvents` in the
     same call so the cap holds regardless of which device wrote most
     recently).
-  - `internal/api/sync.go` — `RegisterSyncRoutes`, all session-gated the
+  - `internal/api/sync.go` — `SyncHandler`, all session-gated the
     same way `me.go`'s routes are (`requireUser` factors out the
     cookie-then-store-lookup check both files' routes need):
     `GET`/`POST /api/me/events/:eventId/follows`,
     `DELETE /api/me/events/:eventId/follows/:kind/:refId`, and
     `GET`/`POST /api/me/recent-events`. Deliberately action-shaped (add
     one follow, remove one follow) rather than "replace the whole list"
-    — see the doc comment on `RegisterSyncRoutes` for why a
+    — see the doc comment on `SyncHandler` for why a
     replace-the-whole-array approach is a bad fit for a server multiple
     devices can hit concurrently.
   - `internal/api/auth.go`'s `userStore` interface grew the five new

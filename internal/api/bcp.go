@@ -31,6 +31,7 @@ func (h *BCPHandler) Register(e *echo.Echo) {
 	e.GET("/api/itc/rankings", h.ItcRanking)
 }
 
+// EventInfo is GET /api/events/:id.
 func (h *BCPHandler) EventInfo(c echo.Context) error {
 	info, err := h.client.FetchEventInfo(c.Request().Context(), c.Param("id"))
 	if err != nil {
@@ -39,6 +40,7 @@ func (h *BCPHandler) EventInfo(c echo.Context) error {
 	return c.JSON(http.StatusOK, info)
 }
 
+// Players is GET /api/events/:id/players.
 func (h *BCPHandler) Players(c echo.Context) error {
 	players, err := h.client.FetchPlayers(c.Request().Context(), c.Param("id"))
 	if err != nil {
@@ -47,6 +49,7 @@ func (h *BCPHandler) Players(c echo.Context) error {
 	return c.JSON(http.StatusOK, players)
 }
 
+// Pairings is GET /api/events/:id/pairings.
 func (h *BCPHandler) Pairings(c echo.Context) error {
 	pairingType := c.QueryParam("type")
 	if pairingType != "Pairing" && pairingType != "TeamPairing" {
@@ -68,6 +71,7 @@ func (h *BCPHandler) Pairings(c echo.Context) error {
 	return c.JSON(http.StatusOK, records)
 }
 
+// Placings is GET /api/events/:id/placings.
 func (h *BCPHandler) Placings(c echo.Context) error {
 	teamEvent := c.QueryParam("team") == "true"
 	entries, err := h.client.FetchPlacings(c.Request().Context(), c.Param("id"), teamEvent)
@@ -77,6 +81,7 @@ func (h *BCPHandler) Placings(c echo.Context) error {
 	return c.JSON(http.StatusOK, entries)
 }
 
+// ItcLeagueID is GET /api/itc/leagues/:gameSystemId.
 func (h *BCPHandler) ItcLeagueID(c echo.Context) error {
 	leagueID, err := h.client.FetchCurrentItcLeagueID(c.Request().Context(), c.Param("gameSystemId"))
 	if err != nil {
@@ -88,6 +93,7 @@ func (h *BCPHandler) ItcLeagueID(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"leagueId": leagueID})
 }
 
+// ItcRanking is GET /api/itc/rankings.
 func (h *BCPHandler) ItcRanking(c echo.Context) error {
 	leagueID := c.QueryParam("leagueId")
 	bcpUserID := c.QueryParam("userId")

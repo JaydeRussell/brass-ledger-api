@@ -256,11 +256,11 @@ func TestMyEvents_ClassifiesPastPresentFuture(t *testing.T) {
 // the-cache behavior ?refresh=true triggers is already thoroughly
 // covered at the layer it actually lives in — bcp/cache_test.go's
 // TestCache_Invalidate (the throttle/timing logic itself) and
-// bcp/client_test.go's TestInvalidatePlayerEventHistory /
-// TestInvalidateEventInfo (that the right cache key gets invalidated) —
-// not retested here. What's worth confirming at this layer is just the
-// wire contract: the field shows up, and ?refresh=true is accepted
-// without breaking the normal response.
+// bcp/history_test.go's TestInvalidatePlayerEventHistory and
+// bcp/events_test.go's TestInvalidateEventInfo (that the right cache key
+// gets invalidated) — not retested here. What's worth confirming at this
+// layer is just the wire contract: the field shows up, and ?refresh=true
+// is accepted without breaking the normal response.
 func TestMyEvents_UpcomingFetchedAt(t *testing.T) {
 	store := newFakeUserStore()
 	cookie, userID := signedInSession(t, store)

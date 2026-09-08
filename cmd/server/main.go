@@ -4,8 +4,7 @@
 // Google sign-in + server-side sessions (internal/auth, internal/user) —
 // every browser shares this one server-side cache/rate limit against
 // BCP, and every user's account lives here instead of per-browser
-// localStorage. Follows/notes get built on top of this as the frontend's
-// remaining TODO items land.
+// localStorage.
 package main
 
 import (

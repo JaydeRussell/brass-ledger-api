@@ -1,6 +1,7 @@
-// Package db owns this service's connection to Postgres. Just a thin
-// wrapper around pgxpool for now (connect + health-check) — query/schema
-// code gets added here as real features (users, follows, notes) land.
+// Package db owns this service's connection to Postgres and its schema
+// migrations. Feature-specific query code lives in its own package
+// instead of here (internal/user, internal/bcpcache) — this package
+// stays a thin, feature-agnostic base every one of them builds on.
 package db
 
 import (

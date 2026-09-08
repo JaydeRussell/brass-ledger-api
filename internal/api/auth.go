@@ -34,25 +34,25 @@ func isSafeReturnPath(path string) bool {
 	return !strings.Contains(path, "://")
 }
 
-// userStore is the persistence RegisterAuthRoutes needs. *user.Store
+// userStore is the persistence this package's handlers need. *user.Store
 // satisfies it in production; tests satisfy it with an in-memory fake,
-// so these routes' cookie/redirect/error-mapping logic can be tested
-// without a real database — the same interface-at-the-point-of-use
-// pattern as internal/api/bcp.go's *bcp.Client dependency.
+// so cookie/redirect/error-mapping logic can be tested without a real
+// database — the same interface-at-the-point-of-use pattern as deps.go's
+// bcpClient.
 type userStore interface {
 	UpsertUserFromGoogle(ctx context.Context, googleSub, email, name, avatarURL string) (user.User, error)
 	CreateSession(ctx context.Context, userID int64) (string, error)
 	GetUserBySession(ctx context.Context, token string) (user.User, error)
 	DeleteSession(ctx context.Context, token string) error
-	// SetBcpUserID is used by RegisterMeRoutes (internal/api/me.go), not
-	// by anything in this file — declared here anyway since userStore is
-	// this package's one shared "what RegisterAuthRoutes' store argument
-	// needs" interface, and every route that touches the signed-in
-	// user's row goes through it.
+	// SetBcpUserID is used by MeHandler (internal/api/me.go), not by
+	// anything in this file — declared here anyway since userStore is
+	// this package's one shared "what a handler's store field needs"
+	// interface, and every handler that touches the signed-in user's row
+	// goes through it.
 	SetBcpUserID(ctx context.Context, userID int64, bcpUserID string) error
-	// The following are used by RegisterSyncRoutes (internal/api/sync.go)
-	// for the same reason SetBcpUserID is declared here rather than in
-	// its own file's own interface.
+	// The following are used by SyncHandler (internal/api/sync.go) for
+	// the same reason SetBcpUserID is declared here rather than in its
+	// own file's own interface.
 	ListFollows(ctx context.Context, userID int64, eventID string) ([]user.Follow, error)
 	AddFollow(ctx context.Context, userID int64, eventID, kind, refID, label string) error
 	RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error
@@ -95,6 +95,7 @@ func (h *AuthHandler) Register(e *echo.Echo) {
 	e.GET("/api/me", h.Me)
 }
 
+// Login is GET /auth/google/login: redirects to Google's consent screen.
 func (h *AuthHandler) Login(c echo.Context) error {
 	state, err := auth.NewState()
 	if err != nil {
@@ -115,6 +116,8 @@ func (h *AuthHandler) Login(c echo.Context) error {
 	return c.Redirect(http.StatusFound, h.google.AuthCodeURL(state))
 }
 
+// Callback is GET /auth/google/callback: completes the OAuth flow and
+// starts a session.
 func (h *AuthHandler) Callback(c echo.Context) error {
 	// Both cookies are single-use — cleared regardless of how this
 	// request turns out.
@@ -187,6 +190,7 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	return c.Redirect(http.StatusFound, redirectTo)
 }
 
+// Logout is POST /auth/logout: ends the caller's session.
 func (h *AuthHandler) Logout(c echo.Context) error {
 	if cookie, err := c.Cookie(sessionCookieName); err == nil {
 		// Best-effort: whether or not the row still existed, the
@@ -199,6 +203,7 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// Me is GET /api/me: returns the signed-in user's own profile.
 func (h *AuthHandler) Me(c echo.Context) error {
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {

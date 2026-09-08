@@ -121,6 +121,9 @@ type PlacingEntry struct {
 	Metrics []PlacingMetric `json:"metrics"`
 }
 
+// PlacingMetric is one named scoring value BCP reports for a placing
+// (e.g. "Wins", "Battle Points") — see PlacingEntry's doc comment for
+// why these vary by event/scoring format instead of being fixed fields.
 type PlacingMetric struct {
 	Name  string  `json:"name"`
 	Value float64 `json:"value"`

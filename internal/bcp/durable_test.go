@@ -9,7 +9,7 @@ import (
 )
 
 // fakeDurableCache is a plain in-memory stand-in for bcp.DurableCache —
-// good enough to test the *decision logic* in client.go (persist only
+// good enough to test this package's *decision logic* (persist only
 // once-immutable data, trust anything durably cached unconditionally on
 // read) without a real Postgres. internal/bcpcache.Store itself isn't
 // unit tested for the same reason internal/user/store.go isn't: it's a

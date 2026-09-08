@@ -270,7 +270,7 @@ As more real features land (follows, notes), they'll get their own
   Best Coast Pairings profile (`bcp_user_id` on `users`,
   `POST /api/me/bcp-profile`) and fetch its full BCP tournament history,
   classified into Past/Present/Future (`GET /api/me/events`,
-  `internal/api/me.go`). See `internal/bcp/client.go`'s "Per-user event
+  `internal/api/me.go`). See `internal/bcp/history.go`'s "Per-user event
   history" section for the two BCP endpoints this combines
   (`FetchPlayerEventHistory`/`FetchPlacingHistory`) and why a plain
   registration list alone can't tell past from present from future.

@@ -11,8 +11,9 @@ import "context"
 // A nil DurableCache (the default — NewClient/NewClientWithBaseURL don't
 // set one) just means every fetch behaves exactly as it always has: real
 // BCP calls, deduped/rate-limited only by the in-memory Cache in
-// cache.go. Every fetch* function in client.go that supports durable
-// caching checks for nil before touching it, so this is entirely
+// cache.go. Every fetch* function across this package that supports
+// durable caching (events.go, players.go, pairings.go, placings.go,
+// itc.go) checks for nil before touching it, so this is entirely
 // optional and every existing test (which never sets one) is unaffected.
 //
 // Get decodes the stored JSON into dest (a pointer) and reports whether

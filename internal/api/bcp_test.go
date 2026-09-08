@@ -13,7 +13,7 @@ import (
 )
 
 // stubBCPServer serves just enough of BCP's real response shapes for
-// every route RegisterBCPRoutes wires up to succeed against it — one
+// every route BCPHandler wires up to succeed against it — one
 // shared stub, reused across the success-path table below, since each
 // case only cares about how this service's own route maps a request to
 // a response, not about varying the upstream data.
@@ -77,10 +77,10 @@ func doBCPRequest(e *echo.Echo, method, path string) *httptest.ResponseRecorder 
 	return rec
 }
 
-// TestRegisterBCPRoutes_Success checks every route's happy path: status
+// TestBCPHandler_Success checks every route's happy path: status
 // 200, and a shape/field that proves the response is this route's own
 // data rather than another route's or an empty default value.
-func TestRegisterBCPRoutes_Success(t *testing.T) {
+func TestBCPHandler_Success(t *testing.T) {
 	server := stubBCPServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
 	e := newBCPTestEcho(client)
@@ -112,12 +112,12 @@ func TestRegisterBCPRoutes_Success(t *testing.T) {
 	}
 }
 
-// TestRegisterBCPRoutes_ParamValidation checks that malformed query
+// TestBCPHandler_ParamValidation checks that malformed query
 // params are rejected with 400 before this service ever calls out to
 // BCP — the client here is deliberately pointed at a server that would
 // fail any real request, so a case that reaches it (a bug in the
 // validation) would show up as a 502 instead of the expected 400.
-func TestRegisterBCPRoutes_ParamValidation(t *testing.T) {
+func TestBCPHandler_ParamValidation(t *testing.T) {
 	server := alwaysFailServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
 	e := newBCPTestEcho(client)
@@ -154,10 +154,10 @@ func TestRegisterBCPRoutes_ParamValidation(t *testing.T) {
 	}
 }
 
-// TestRegisterBCPRoutes_UpstreamFailure checks that every route maps a
+// TestBCPHandler_UpstreamFailure checks that every route maps a
 // BCP failure to 502 (this service is a working proxy whose dependency
 // failed), not 500 (which would suggest a bug here) or a silent success.
-func TestRegisterBCPRoutes_UpstreamFailure(t *testing.T) {
+func TestBCPHandler_UpstreamFailure(t *testing.T) {
 	server := alwaysFailServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
 	e := newBCPTestEcho(client)
@@ -184,11 +184,11 @@ func TestRegisterBCPRoutes_UpstreamFailure(t *testing.T) {
 	}
 }
 
-// TestRegisterBCPRoutes_ItcLeagueNotFound checks the one success path
+// TestBCPHandler_ItcLeagueNotFound checks the one success path
 // that isn't a passthrough of BCP's data: no matching league resolves to
 // a 200 with a null leagueId, not a 404 or an error — "not found" is a
 // normal, expected outcome here (e.g. a game system with no ITC league).
-func TestRegisterBCPRoutes_ItcLeagueNotFound(t *testing.T) {
+func TestBCPHandler_ItcLeagueNotFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/leagues", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data": []}`))
@@ -207,10 +207,10 @@ func TestRegisterBCPRoutes_ItcLeagueNotFound(t *testing.T) {
 	}
 }
 
-// TestRegisterBCPRoutes_ItcRankingNotFound mirrors the case above for
+// TestBCPHandler_ItcRankingNotFound mirrors the case above for
 // rankings: no ranking for this player in this league is a normal 200
 // with a null body, not an error.
-func TestRegisterBCPRoutes_ItcRankingNotFound(t *testing.T) {
+func TestBCPHandler_ItcRankingNotFound(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/placings", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data": [{}]}`))

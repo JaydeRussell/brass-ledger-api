@@ -297,6 +297,8 @@ func (h *StatsHandler) Register(e *echo.Echo) {
 	e.GET("/api/me/stats", h.Stats)
 }
 
+// Stats is GET /api/me/stats: the signed-in account's player-stats
+// summary.
 func (h *StatsHandler) Stats(c echo.Context) error {
 	u, err := requireUser(c, h.store)
 	if err != nil {
