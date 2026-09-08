@@ -157,6 +157,14 @@ type PlayerEventRecord struct {
 // event's own dates — BCP's placings-history endpoint expands these
 // inline, unlike the plain registration endpoint PlayerEventRecord comes
 // from.
+//
+// LeagueID matters more than it looks: BCP scores one event under
+// several leagues/circuits at once (its flagship ITC ranking, a
+// separate "Hobby Track" scoring, sometimes an old legacy default league
+// too), so a single event can appear here as *multiple* entries sharing
+// an EventID but with different LeagueID/Placing/Points — see
+// FetchLeagueInfo and internal/api/stats.go's canonicalPlacingPerEvent
+// for how a caller picks the one that actually counts as "the" placing.
 type PlacingHistoryEntry struct {
 	EventID      string   `json:"eventId"`
 	EventName    string   `json:"eventName"`
@@ -166,4 +174,15 @@ type PlacingHistoryEntry struct {
 	Points       *float64 `json:"points,omitempty"`
 	Faction      string   `json:"faction,omitempty"`
 	Team         string   `json:"team,omitempty"`
+	LeagueID     string   `json:"leagueId,omitempty"`
+}
+
+// LeagueInfo is what a caller needs to know about one of BCP's
+// leagues/circuits to decide whether a placing scored under it is "the"
+// competitive placing for an event, as opposed to a parallel Hobby
+// Track score or an old legacy default league — see FetchLeagueInfo.
+type LeagueInfo struct {
+	Name  string `json:"name"`
+	GwItc bool   `json:"gwItc"`
+	Hobby bool   `json:"hobby"`
 }

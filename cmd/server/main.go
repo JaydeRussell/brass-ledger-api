@@ -162,6 +162,10 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// Cross-device follows/recent-events sync — also session-gated,
 		// so it only makes sense once sign-in itself is enabled.
 		api.RegisterSyncRoutes(e, userStore)
+		// Player stats summary (best placing, faction breakdown) — same
+		// session gating, built on the same BCP data "my events" already
+		// fetches.
+		api.RegisterStatsRoutes(e, userStore, bcpClient)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 	} else {
 		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example)")

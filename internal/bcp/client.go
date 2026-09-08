@@ -46,6 +46,7 @@ type Client struct {
 	itcRanking         *Cache[*ItcRanking]
 	playerEventHistory *Cache[[]PlayerEventRecord]
 	placingHistory     *Cache[[]PlacingHistoryEntry]
+	leagueInfo         *Cache[*LeagueInfo]
 }
 
 // NewClient builds a ready-to-use Client pointed at the real BCP API.
@@ -112,6 +113,15 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	c.placingHistory = NewCache(func(ctx context.Context, bcpUserID string) ([]PlacingHistoryEntry, error) {
 		return c.fetchPlacingHistoryUncached(ctx, bcpUserID)
 	})
+	// Leagues are a small, shared set reused across every event and every
+	// user of this app (there are only a handful of leagues per game
+	// system per year), so this cache is unusually effective — unlike
+	// most of this client's other caches, a leagueId's gw_itc/hobby flags
+	// aren't even user-specific, so one lookup here effectively serves
+	// every account that has a placing under that league.
+	c.leagueInfo = NewCache(func(ctx context.Context, leagueID string) (*LeagueInfo, error) {
+		return c.fetchLeagueInfoUncached(ctx, leagueID)
+	})
 
 	return c
 }
@@ -148,7 +158,15 @@ type bcpEventInfoResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Format      struct {
+	// Nested under "format" — confirmed against the real /v2/events/{id}
+	// response (the endpoint this client actually calls, via apiBaseV2).
+	// Don't "fix" this to a top-level teamEvent field: BCP's *v1* events
+	// endpoint does put it top-level, and it's easy to test against that
+	// one by mistake (a real mistake made once already, caught by
+	// re-verifying against the exact endpoint/query this client uses
+	// rather than the API in general) — v1 and v2 genuinely disagree on
+	// this field's shape.
+	Format struct {
 		TeamEvent bool `json:"teamEvent"`
 	} `json:"format"`
 	Status struct {
@@ -611,6 +629,33 @@ func (c *Client) FetchCurrentItcLeagueID(ctx context.Context, gameSystemID strin
 	return c.itcLeagueID.Get(ctx, gameSystemID)
 }
 
+type bcpLeagueInfoResponse struct {
+	Name  string `json:"name"`
+	GwItc bool   `json:"gw_itc"`
+	Hobby bool   `json:"hobby"`
+}
+
+func (c *Client) fetchLeagueInfoUncached(ctx context.Context, leagueID string) (*LeagueInfo, error) {
+	rawURL := fmt.Sprintf("%s/leagues/%s", c.apiBaseV1, url.PathEscape(leagueID))
+	var body bcpLeagueInfoResponse
+	if err := c.get(ctx, rawURL, &body); err != nil {
+		return nil, err
+	}
+	return &LeagueInfo{Name: body.Name, GwItc: body.GwItc, Hobby: body.Hobby}, nil
+}
+
+// FetchLeagueInfo returns one league's name and gw_itc/hobby flags —
+// BCP's own signal for whether a placing scored under this league is
+// its flagship, "counts as your real placing" ranking (gw_itc && !hobby)
+// as opposed to a parallel Hobby Track score or an old legacy default
+// league. See PlacingHistoryEntry's doc comment for why this matters:
+// the same event can appear multiple times in a player's placing
+// history, once per league it's scored under, each with a different
+// placing/points for the same underlying result.
+func (c *Client) FetchLeagueInfo(ctx context.Context, leagueID string) (*LeagueInfo, error) {
+	return c.leagueInfo.Get(ctx, leagueID)
+}
+
 type bcpItcPlacingRecord struct {
 	UserID    string   `json:"userId"`
 	ITCPoints *float64 `json:"ITCPoints"`
@@ -809,10 +854,11 @@ type bcpPlacingHistoryEventRef struct {
 }
 
 type bcpPlacingHistoryRecord struct {
-	Placing *int                      `json:"placing,omitempty"`
-	Points  *float64                  `json:"points,omitempty"`
-	Event   bcpPlacingHistoryEventRef `json:"event"`
-	Faction struct {
+	Placing  *int                      `json:"placing,omitempty"`
+	Points   *float64                  `json:"points,omitempty"`
+	Event    bcpPlacingHistoryEventRef `json:"event"`
+	LeagueID string                    `json:"leagueId,omitempty"`
+	Faction  struct {
 		Name string `json:"name"`
 	} `json:"faction"`
 	Team struct {
@@ -864,6 +910,7 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 				Points:       r.Points,
 				Faction:      r.Faction.Name,
 				Team:         r.Team.Name,
+				LeagueID:     r.LeagueID,
 			})
 		}
 		next, err := decodeNextKey(body.NextKey)

@@ -311,6 +311,20 @@ func TestFetchEventInfo(t *testing.T) {
 			},
 		},
 		{
+			// Regression test: a stray top-level "teamEvent" (the shape
+			// BCP's *v1* events endpoint actually uses — a genuinely
+			// different, unrelated API version from the /v2 endpoint this
+			// client calls) must NOT be picked up in place of the real
+			// nested format.teamEvent this endpoint uses. Caught once by
+			// testing against v1 by mistake instead of the exact endpoint
+			// this client hits — worth keeping this case so it can't
+			// silently regress the other way either.
+			name:       "a stray top-level teamEvent (the v1 shape) is ignored — only format.teamEvent counts",
+			respStatus: http.StatusOK,
+			respBody:   `{"id": "evt-3", "name": "Ignore Top-Level", "teamEvent": true, "format": {"teamEvent": false}}`,
+			want:       EventInfo{ID: "evt-3", Name: "Ignore Top-Level", TeamEvent: false, Circuits: []string{}},
+		},
+		{
 			name:       "falls back to the event owner when no Tournament Organizer role is present",
 			respStatus: http.StatusOK,
 			respBody:   `{"id": "evt-2", "name": "Local RTT", "owner": {"firstName": "Owner", "lastName": "Only"}}`,
@@ -508,6 +522,22 @@ func TestFetchCurrentItcLeagueID(t *testing.T) {
 				t.Errorf("FetchCurrentItcLeagueID = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFetchLeagueInfo(t *testing.T) {
+	body := `{"name": "Warhammer Global Rankings 2026", "gw_itc": true, "hobby": false}`
+	server := httptest.NewServer(jsonHandler(http.StatusOK, body))
+	defer server.Close()
+	client := newTestClient(server)
+
+	got, err := client.FetchLeagueInfo(context.Background(), "league-1")
+	if err != nil {
+		t.Fatalf("FetchLeagueInfo returned error: %v", err)
+	}
+	want := &LeagueInfo{Name: "Warhammer Global Rankings 2026", GwItc: true, Hobby: false}
+	if got == nil || *got != *want {
+		t.Errorf("FetchLeagueInfo = %+v, want %+v", got, want)
 	}
 }
 
@@ -749,6 +779,31 @@ func TestFetchPlacingHistory(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// FetchPlacingHistory's table-driven test above only checks EventID
+// ordering, so a regression in decoding any other field (like LeagueID,
+// which internal/api/stats.go's canonicalPlacingPerEvent depends on to
+// tell a flagship-league placing apart from a Hobby Track one) wouldn't
+// be caught there — checked separately here.
+func TestFetchPlacingHistory_DecodesLeagueID(t *testing.T) {
+	body := `{"data": [
+		{"placing": 5, "event": {"id": "evt-a", "name": "A", "eventDate": "2024-01-01T00:00:00.000Z"}, "leagueId": "league-flagship"}
+	]}`
+	server := httptest.NewServer(jsonHandler(http.StatusOK, body))
+	defer server.Close()
+	client := newTestClient(server)
+
+	got, err := client.FetchPlacingHistory(context.Background(), "bcp-user-1")
+	if err != nil {
+		t.Fatalf("FetchPlacingHistory returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if got[0].LeagueID != "league-flagship" {
+		t.Errorf("LeagueID = %q, want %q", got[0].LeagueID, "league-flagship")
 	}
 }
 
