@@ -153,7 +153,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	api.RegisterBCPRoutes(e, bcpClient)
+	api.NewBCPHandler(bcpClient).Register(e)
 
 	// Google sign-in is opt-in: only registered once real credentials
 	// are configured, so the rest of this service (BCP proxy, health
@@ -162,18 +162,18 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
 		userStore := user.NewStore(pool)
-		api.RegisterAuthRoutes(e, google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure)
+		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure).Register(e)
 		// The BCP-profile-link + "my events" routes are session-gated (see
 		// internal/api/me.go), so there's no point registering them
 		// without sign-in itself also being enabled.
-		api.RegisterMeRoutes(e, userStore, bcpClient)
+		api.NewMeHandler(userStore, bcpClient).Register(e)
 		// Cross-device follows/recent-events sync — also session-gated,
 		// so it only makes sense once sign-in itself is enabled.
-		api.RegisterSyncRoutes(e, userStore)
+		api.NewSyncHandler(userStore).Register(e)
 		// Player stats summary (best placing, faction breakdown) — same
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
-		api.RegisterStatsRoutes(e, userStore, bcpClient)
+		api.NewStatsHandler(userStore, bcpClient).Register(e)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 	} else {
 		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example)")

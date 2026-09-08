@@ -41,13 +41,13 @@ type recordRecentEventRequest struct {
 	TeamEvent bool   `json:"teamEvent"`
 }
 
-// RegisterSyncRoutes wires up cross-device sync for the two pieces of
-// state that used to live only in per-browser localStorage: per-event
-// follows (teams/players a user is tracking — see app/page.tsx's
+// SyncHandler wires up cross-device sync for the two pieces of state
+// that used to live only in per-browser localStorage: per-event follows
+// (teams/players a user is tracking — see app/page.tsx's
 // `following`/followingKey) and the global recently-viewed-events list
 // (app/lib/recentEvents.ts). Every route here is session-gated the same
-// way RegisterMeRoutes' routes are — a signed-out request gets a 401,
-// never a fallback to some anonymous/shared state.
+// way MeHandler's routes are — a signed-out request gets a 401, never a
+// fallback to some anonymous/shared state.
 //
 // Deliberately action-shaped (POST to add a follow, DELETE to remove
 // one) rather than "replace the whole list" — the frontend's localStorage
@@ -55,101 +55,117 @@ type recordRecentEventRequest struct {
 // server multiple tabs/devices can hit concurrently: two devices each
 // replacing the whole list would let one silently clobber the other's
 // most recent change. Adding/removing one entry at a time avoids that.
-func RegisterSyncRoutes(e *echo.Echo, store userStore) {
-	e.GET("/api/me/events/:eventId/follows", func(c echo.Context) error {
-		u, err := requireUser(c, store)
-		if err != nil {
-			return err
-		}
-		eventID := c.Param("eventId")
+type SyncHandler struct {
+	store userStore
+}
 
-		follows, err := store.ListFollows(c.Request().Context(), u.ID, eventID)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		return c.JSON(http.StatusOK, toFollowResponses(follows))
-	})
+// NewSyncHandler builds a SyncHandler.
+func NewSyncHandler(store userStore) *SyncHandler {
+	return &SyncHandler{store: store}
+}
 
-	e.POST("/api/me/events/:eventId/follows", func(c echo.Context) error {
-		u, err := requireUser(c, store)
-		if err != nil {
-			return err
-		}
-		eventID := c.Param("eventId")
+// Register wires this handler's routes onto e.
+func (h *SyncHandler) Register(e *echo.Echo) {
+	e.GET("/api/me/events/:eventId/follows", h.ListFollows)
+	e.POST("/api/me/events/:eventId/follows", h.AddFollow)
+	e.DELETE("/api/me/events/:eventId/follows/:kind/:refId", h.RemoveFollow)
+	e.GET("/api/me/recent-events", h.ListRecentEvents)
+	e.POST("/api/me/recent-events", h.RecordRecentEvent)
+}
 
-		var req addFollowRequest
-		if err := c.Bind(&req); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		}
-		kind := strings.TrimSpace(req.Kind)
-		refID := strings.TrimSpace(req.RefID)
-		if (kind != "team" && kind != "player") || refID == "" {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "kind must be \"team\" or \"player\", and refId is required"})
-		}
+func (h *SyncHandler) ListFollows(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+	eventID := c.Param("eventId")
 
-		if err := store.AddFollow(c.Request().Context(), u.ID, eventID, kind, refID, req.Label); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		return c.NoContent(http.StatusNoContent)
-	})
+	follows, err := h.store.ListFollows(c.Request().Context(), u.ID, eventID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, toFollowResponses(follows))
+}
 
-	e.DELETE("/api/me/events/:eventId/follows/:kind/:refId", func(c echo.Context) error {
-		u, err := requireUser(c, store)
-		if err != nil {
-			return err
-		}
-		eventID := c.Param("eventId")
-		kind := c.Param("kind")
-		refID := c.Param("refId")
+func (h *SyncHandler) AddFollow(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+	eventID := c.Param("eventId")
 
-		if err := store.RemoveFollow(c.Request().Context(), u.ID, eventID, kind, refID); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		return c.NoContent(http.StatusNoContent)
-	})
+	var req addFollowRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	kind := strings.TrimSpace(req.Kind)
+	refID := strings.TrimSpace(req.RefID)
+	if (kind != "team" && kind != "player") || refID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "kind must be \"team\" or \"player\", and refId is required"})
+	}
 
-	e.GET("/api/me/recent-events", func(c echo.Context) error {
-		u, err := requireUser(c, store)
-		if err != nil {
-			return err
-		}
+	if err := h.store.AddFollow(c.Request().Context(), u.ID, eventID, kind, refID, req.Label); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
 
-		events, err := store.ListRecentEvents(c.Request().Context(), u.ID)
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		resp := make([]recentEventResponse, len(events))
-		for i, ev := range events {
-			resp[i] = recentEventResponse{
-				EventID:      ev.EventID,
-				EventName:    ev.EventName,
-				TeamEvent:    ev.TeamEvent,
-				LastViewedAt: ev.LastViewedAt.UnixMilli(),
-			}
-		}
-		return c.JSON(http.StatusOK, resp)
-	})
+func (h *SyncHandler) RemoveFollow(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+	eventID := c.Param("eventId")
+	kind := c.Param("kind")
+	refID := c.Param("refId")
 
-	e.POST("/api/me/recent-events", func(c echo.Context) error {
-		u, err := requireUser(c, store)
-		if err != nil {
-			return err
-		}
+	if err := h.store.RemoveFollow(c.Request().Context(), u.ID, eventID, kind, refID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
 
-		var req recordRecentEventRequest
-		if err := c.Bind(&req); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		}
-		eventID := strings.TrimSpace(req.EventID)
-		if eventID == "" {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "eventId is required"})
-		}
+func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
 
-		if err := store.RecordRecentEvent(c.Request().Context(), u.ID, eventID, req.EventName, req.TeamEvent); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	events, err := h.store.ListRecentEvents(c.Request().Context(), u.ID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	resp := make([]recentEventResponse, len(events))
+	for i, ev := range events {
+		resp[i] = recentEventResponse{
+			EventID:      ev.EventID,
+			EventName:    ev.EventName,
+			TeamEvent:    ev.TeamEvent,
+			LastViewedAt: ev.LastViewedAt.UnixMilli(),
 		}
-		return c.NoContent(http.StatusNoContent)
-	})
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+
+	var req recordRecentEventRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	eventID := strings.TrimSpace(req.EventID)
+	if eventID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "eventId is required"})
+	}
+
+	if err := h.store.RecordRecentEvent(c.Request().Context(), u.ID, eventID, req.EventName, req.TeamEvent); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // requireUser is the same session-cookie-then-store-lookup check

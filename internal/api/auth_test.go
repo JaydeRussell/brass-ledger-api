@@ -192,7 +192,7 @@ const frontendURL = "http://frontend.example.com/"
 
 func newTestEcho(google *auth.GoogleOAuth, store userStore) *echo.Echo {
 	e := echo.New()
-	RegisterAuthRoutes(e, google, store, frontendURL, false)
+	NewAuthHandler(google, store, frontendURL, false).Register(e)
 	return e
 }
 

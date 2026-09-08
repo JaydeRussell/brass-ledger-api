@@ -66,7 +66,7 @@ func alwaysFailServer(t *testing.T) *httptest.Server {
 // in this package already use for their own per-feature Echo helpers.
 func newBCPTestEcho(client *bcp.Client) *echo.Echo {
 	e := echo.New()
-	RegisterBCPRoutes(e, client)
+	NewBCPHandler(client).Register(e)
 	return e
 }
 

@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-
-	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
 // staleEventAfter is how long past its listed end date an event that BCP
@@ -107,129 +105,143 @@ func emptyMyEventsResponse(linked bool) myEventsResponse {
 	}
 }
 
-// RegisterMeRoutes wires up the signed-in user's own BCP-profile link
-// and "my events" (past/present/future) endpoints — see the design note
-// in internal/bcp/client.go's "Per-user event history" section for why
+// MeHandler wires up the signed-in user's own BCP-profile link and "my
+// events" (past/present/future) endpoints — see the design note in
+// internal/bcp/history.go's "Per-user event history" section for why
 // classification needs two BCP endpoints plus a per-event fallback
 // call, and CLAUDE.md's scope note: this only ever displays BCP's own
 // already-published data, same as everything else in this service.
-func RegisterMeRoutes(e *echo.Echo, store userStore, bcpClient *bcp.Client) {
-	e.POST("/api/me/bcp-profile", func(c echo.Context) error {
-		cookie, err := c.Cookie(sessionCookieName)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-		}
-		u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-		}
+type MeHandler struct {
+	store  userStore
+	client bcpClient
+}
 
-		var req bcpProfileRequest
-		if err := c.Bind(&req); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+// NewMeHandler builds a MeHandler.
+func NewMeHandler(store userStore, client bcpClient) *MeHandler {
+	return &MeHandler{store: store, client: client}
+}
+
+// Register wires this handler's routes onto e.
+func (h *MeHandler) Register(e *echo.Echo) {
+	e.POST("/api/me/bcp-profile", h.SetBcpProfile)
+	e.GET("/api/me/events", h.Events)
+}
+
+func (h *MeHandler) SetBcpProfile(c echo.Context) error {
+	cookie, err := c.Cookie(sessionCookieName)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+
+	var req bcpProfileRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+	bcpUserID := strings.TrimSpace(req.BcpUserID)
+
+	if err := h.store.SetBcpUserID(c.Request().Context(), u.ID, bcpUserID); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{"bcpUserId": bcpUserID})
+}
+
+func (h *MeHandler) Events(c echo.Context) error {
+	cookie, err := c.Cookie(sessionCookieName)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+
+	if u.BcpUserID == "" {
+		return c.JSON(http.StatusOK, emptyMyEventsResponse(false))
+	}
+
+	ctx := c.Request().Context()
+
+	// An explicit "check again now" request — see
+	// bcp.Cache.Invalidate's doc comment for why this is scoped to
+	// just the registration list (and, below, each not-yet-concluded
+	// event's own info) rather than also forcing FetchPlacingHistory
+	// to bypass its cache: an already-concluded event's placing can
+	// never change, so there's nothing there a refresh could
+	// meaningfully improve — only Present/Future can go stale in a
+	// way the user would know to ask about.
+	refresh := c.QueryParam("refresh") == "true"
+	if refresh {
+		h.client.InvalidatePlayerEventHistory(u.BcpUserID)
+	}
+
+	placingHistory, err := h.client.FetchPlacingHistory(ctx, u.BcpUserID)
+	if err != nil {
+		return bcpError(c, err)
+	}
+	registrations, err := h.client.FetchPlayerEventHistory(ctx, u.BcpUserID)
+	if err != nil {
+		return bcpError(c, err)
+	}
+
+	resp := emptyMyEventsResponse(true)
+
+	concluded := make(map[string]bool, len(placingHistory))
+	for _, p := range placingHistory {
+		concluded[p.EventID] = true
+		resp.Past = append(resp.Past, myEvent{
+			EventID:   p.EventID,
+			EventName: p.EventName,
+			StartDate: p.EventDate,
+			EndDate:   p.EventEndDate,
+			Placing:   p.Placing,
+			Points:    p.Points,
+			Faction:   p.Faction,
+			Team:      p.Team,
+		})
+	}
+
+	// Anything registered but not yet in the placings history is the
+	// small number of current/upcoming events (see the design note on
+	// MeHandler above) — each needs its own FetchEventInfo call to learn
+	// Started/Ended, since the registration list alone doesn't carry
+	// dates.
+	for _, r := range registrations {
+		if concluded[r.EventID] {
+			continue
 		}
-		bcpUserID := strings.TrimSpace(req.BcpUserID)
-
-		if err := store.SetBcpUserID(c.Request().Context(), u.ID, bcpUserID); err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-
-		return c.JSON(http.StatusOK, map[string]any{"bcpUserId": bcpUserID})
-	})
-
-	e.GET("/api/me/events", func(c echo.Context) error {
-		cookie, err := c.Cookie(sessionCookieName)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-		}
-		u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-		}
-
-		if u.BcpUserID == "" {
-			return c.JSON(http.StatusOK, emptyMyEventsResponse(false))
-		}
-
-		ctx := c.Request().Context()
-
-		// An explicit "check again now" request — see
-		// bcp.Cache.Invalidate's doc comment for why this is scoped to
-		// just the registration list (and, below, each not-yet-concluded
-		// event's own info) rather than also forcing FetchPlacingHistory
-		// to bypass its cache: an already-concluded event's placing can
-		// never change, so there's nothing there a refresh could
-		// meaningfully improve — only Present/Future can go stale in a
-		// way the user would know to ask about.
-		refresh := c.QueryParam("refresh") == "true"
 		if refresh {
-			bcpClient.InvalidatePlayerEventHistory(u.BcpUserID)
+			h.client.InvalidateEventInfo(r.EventID)
 		}
-
-		placingHistory, err := bcpClient.FetchPlacingHistory(ctx, u.BcpUserID)
+		info, err := h.client.FetchEventInfo(ctx, r.EventID)
 		if err != nil {
-			return bcpError(c, err)
+			// One event's metadata failing to load shouldn't take down
+			// the whole list — skip just that event.
+			continue
 		}
-		registrations, err := bcpClient.FetchPlayerEventHistory(ctx, u.BcpUserID)
-		if err != nil {
-			return bcpError(c, err)
+		ev := myEvent{EventID: info.ID, EventName: info.Name, StartDate: info.StartDate, EndDate: info.EndDate}
+		switch {
+		case info.Started && !info.Ended && !isStaleEvent(info.EndDate):
+			resp.Present = append(resp.Present, ev)
+		case !info.Started:
+			resp.Future = append(resp.Future, ev)
+		default:
+			// Either started and ended, or started-and-unended-but-
+			// stale (see isStaleEvent) — either way BCP hasn't
+			// published this user's placing yet (results still being
+			// finalized, or the organizer never will), so the closest
+			// bucket is Past even without placing details.
+			resp.Past = append(resp.Past, ev)
 		}
+	}
 
-		resp := emptyMyEventsResponse(true)
+	if fetchedAt, ok := h.client.PlayerEventHistoryFetchedAt(u.BcpUserID); ok {
+		resp.UpcomingFetchedAt = fetchedAt.Format(time.RFC3339)
+	}
 
-		concluded := make(map[string]bool, len(placingHistory))
-		for _, p := range placingHistory {
-			concluded[p.EventID] = true
-			resp.Past = append(resp.Past, myEvent{
-				EventID:   p.EventID,
-				EventName: p.EventName,
-				StartDate: p.EventDate,
-				EndDate:   p.EventEndDate,
-				Placing:   p.Placing,
-				Points:    p.Points,
-				Faction:   p.Faction,
-				Team:      p.Team,
-			})
-		}
-
-		// Anything registered but not yet in the placings history is the
-		// small number of current/upcoming events (see the design note on
-		// RegisterMeRoutes above) — each needs its own FetchEventInfo call
-		// to learn Started/Ended, since the registration list alone
-		// doesn't carry dates.
-		for _, r := range registrations {
-			if concluded[r.EventID] {
-				continue
-			}
-			if refresh {
-				bcpClient.InvalidateEventInfo(r.EventID)
-			}
-			info, err := bcpClient.FetchEventInfo(ctx, r.EventID)
-			if err != nil {
-				// One event's metadata failing to load shouldn't take down
-				// the whole list — skip just that event.
-				continue
-			}
-			ev := myEvent{EventID: info.ID, EventName: info.Name, StartDate: info.StartDate, EndDate: info.EndDate}
-			switch {
-			case info.Started && !info.Ended && !isStaleEvent(info.EndDate):
-				resp.Present = append(resp.Present, ev)
-			case !info.Started:
-				resp.Future = append(resp.Future, ev)
-			default:
-				// Either started and ended, or started-and-unended-but-
-				// stale (see isStaleEvent) — either way BCP hasn't
-				// published this user's placing yet (results still being
-				// finalized, or the organizer never will), so the closest
-				// bucket is Past even without placing details.
-				resp.Past = append(resp.Past, ev)
-			}
-		}
-
-		if fetchedAt, ok := bcpClient.PlayerEventHistoryFetchedAt(u.BcpUserID); ok {
-			resp.UpcomingFetchedAt = fetchedAt.Format(time.RFC3339)
-		}
-
-		return c.JSON(http.StatusOK, resp)
-	})
+	return c.JSON(http.StatusOK, resp)
 }

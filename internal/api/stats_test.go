@@ -12,9 +12,9 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
-func newStatsTestEcho(store userStore, bcpClient *bcp.Client) *echo.Echo {
+func newStatsTestEcho(store userStore, client *bcp.Client) *echo.Echo {
 	e := echo.New()
-	RegisterStatsRoutes(e, store, bcpClient)
+	NewStatsHandler(store, client).Register(e)
 	return e
 }
 

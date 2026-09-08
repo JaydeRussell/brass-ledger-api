@@ -13,7 +13,7 @@ import (
 
 func newSyncTestEcho(store userStore) *echo.Echo {
 	e := echo.New()
-	RegisterSyncRoutes(e, store)
+	NewSyncHandler(store).Register(e)
 	return e
 }
 

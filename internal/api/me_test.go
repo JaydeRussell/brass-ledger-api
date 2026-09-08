@@ -49,9 +49,9 @@ func signedInSession(t *testing.T, store *fakeUserStore) (*http.Cookie, int64) {
 	return &http.Cookie{Name: sessionCookieName, Value: token}, u.ID
 }
 
-func newMeTestEcho(store userStore, bcpClient *bcp.Client) *echo.Echo {
+func newMeTestEcho(store userStore, client *bcp.Client) *echo.Echo {
 	e := echo.New()
-	RegisterMeRoutes(e, store, bcpClient)
+	NewMeHandler(store, client).Register(e)
 	return e
 }
 

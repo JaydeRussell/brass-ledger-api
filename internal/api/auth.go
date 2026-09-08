@@ -60,139 +60,160 @@ type userStore interface {
 	RecordRecentEvent(ctx context.Context, userID int64, eventID, eventName string, teamEvent bool) error
 }
 
-// RegisterAuthRoutes wires up Google sign-in, sign-out, and the
-// signed-in-user lookup the frontend calls on load.
+// AuthHandler wires up Google sign-in, sign-out, and the signed-in-user
+// lookup the frontend calls on load.
+type AuthHandler struct {
+	google       *auth.GoogleOAuth
+	store        userStore
+	frontendURL  string
+	cookieSecure bool
+}
+
+// NewAuthHandler builds an AuthHandler.
 //
 // cookieSecure should be true for any real (HTTPS) deployment and false
 // for local http://localhost development — browsers refuse to store a
 // Secure cookie at all over plain HTTP, which would otherwise silently
 // break sign-in locally.
-func RegisterAuthRoutes(e *echo.Echo, google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool) {
-	// Normalized once here rather than trusting callers/config not to
-	// include one — a trailing slash would otherwise turn
-	// frontendURL+"/welcome" into a double slash.
-	frontendURL = strings.TrimSuffix(frontendURL, "/")
+func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool) *AuthHandler {
+	return &AuthHandler{
+		google: google,
+		store:  store,
+		// Normalized once here rather than trusting callers/config not to
+		// include one — a trailing slash would otherwise turn
+		// frontendURL+"/welcome" into a double slash.
+		frontendURL:  strings.TrimSuffix(frontendURL, "/"),
+		cookieSecure: cookieSecure,
+	}
+}
 
-	e.GET("/auth/google/login", func(c echo.Context) error {
-		state, err := auth.NewState()
-		if err != nil {
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		}
-		setCookie(c, stateCookieName, state, stateCookieMaxAge, cookieSecure)
+// Register wires this handler's routes onto e.
+func (h *AuthHandler) Register(e *echo.Echo) {
+	e.GET("/auth/google/login", h.Login)
+	e.GET("/auth/google/callback", h.Callback)
+	e.POST("/auth/logout", h.Logout)
+	e.GET("/api/me", h.Me)
+}
 
-		// Optional: the frontend passes ?return_to=<path> so a returning,
-		// already-linked user signing back in from (say) /stats lands
-		// back on /stats instead of always the homepage. Silently ignored
-		// if unsafe or absent — see isSafeReturnPath. Never honored for a
-		// not-yet-linked account either way (see the callback below),
-		// since that always goes through onboarding first.
-		if returnTo := c.QueryParam("return_to"); isSafeReturnPath(returnTo) {
-			setCookie(c, returnToCookieName, returnTo, stateCookieMaxAge, cookieSecure)
-		}
+func (h *AuthHandler) Login(c echo.Context) error {
+	state, err := auth.NewState()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	setCookie(c, stateCookieName, state, stateCookieMaxAge, h.cookieSecure)
 
-		return c.Redirect(http.StatusFound, google.AuthCodeURL(state))
-	})
+	// Optional: the frontend passes ?return_to=<path> so a returning,
+	// already-linked user signing back in from (say) /stats lands
+	// back on /stats instead of always the homepage. Silently ignored
+	// if unsafe or absent — see isSafeReturnPath. Never honored for a
+	// not-yet-linked account either way (see Callback below),
+	// since that always goes through onboarding first.
+	if returnTo := c.QueryParam("return_to"); isSafeReturnPath(returnTo) {
+		setCookie(c, returnToCookieName, returnTo, stateCookieMaxAge, h.cookieSecure)
+	}
 
-	e.GET("/auth/google/callback", func(c echo.Context) error {
-		// Both cookies are single-use — cleared regardless of how this
-		// request turns out.
-		stateCookie, cookieErr := c.Cookie(stateCookieName)
-		clearCookie(c, stateCookieName, cookieSecure)
-		returnToCookie, returnToErr := c.Cookie(returnToCookieName)
-		clearCookie(c, returnToCookieName, cookieSecure)
+	return c.Redirect(http.StatusFound, h.google.AuthCodeURL(state))
+}
 
-		if cookieErr != nil || c.QueryParam("state") == "" || stateCookie.Value != c.QueryParam("state") {
-			// Logged at the level a normal, expected-to-happen-sometimes
-			// event deserves (an expired 10-minute state cookie, a
-			// double-click, someone poking the callback URL directly) —
-			// not an error. Never logs the state values themselves;
-			// "match/no match" is all that matters here.
-			log.Printf("google callback: state check failed (cookie present: %v, query state present: %v)",
-				cookieErr == nil, c.QueryParam("state") != "")
-			return c.String(http.StatusBadRequest, "invalid or expired sign-in attempt — please try signing in again")
-		}
+func (h *AuthHandler) Callback(c echo.Context) error {
+	// Both cookies are single-use — cleared regardless of how this
+	// request turns out.
+	stateCookie, cookieErr := c.Cookie(stateCookieName)
+	clearCookie(c, stateCookieName, h.cookieSecure)
+	returnToCookie, returnToErr := c.Cookie(returnToCookieName)
+	clearCookie(c, returnToCookieName, h.cookieSecure)
 
-		code := c.QueryParam("code")
-		if code == "" {
-			log.Printf("google callback: missing authorization code")
-			return c.String(http.StatusBadRequest, "missing authorization code")
-		}
+	if cookieErr != nil || c.QueryParam("state") == "" || stateCookie.Value != c.QueryParam("state") {
+		// Logged at the level a normal, expected-to-happen-sometimes
+		// event deserves (an expired 10-minute state cookie, a
+		// double-click, someone poking the callback URL directly) —
+		// not an error. Never logs the state values themselves;
+		// "match/no match" is all that matters here.
+		log.Printf("google callback: state check failed (cookie present: %v, query state present: %v)",
+			cookieErr == nil, c.QueryParam("state") != "")
+		return c.String(http.StatusBadRequest, "invalid or expired sign-in attempt — please try signing in again")
+	}
 
-		// Never logs the authorization code or the access token it
-		// exchanges for — only that the exchange happened and whether it
-		// succeeded — since either one is a live, usable credential for
-		// as long as it hasn't expired.
-		accessToken, err := google.Exchange(c.Request().Context(), code)
-		if err != nil {
-			log.Printf("google callback: token exchange failed: %v", err)
-			return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
-		}
-		info, err := google.FetchUserInfo(c.Request().Context(), accessToken)
-		if err != nil {
-			log.Printf("google callback: fetching user info failed: %v", err)
-			return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
-		}
+	code := c.QueryParam("code")
+	if code == "" {
+		log.Printf("google callback: missing authorization code")
+		return c.String(http.StatusBadRequest, "missing authorization code")
+	}
 
-		u, err := store.UpsertUserFromGoogle(c.Request().Context(), info.Sub, info.Email, info.Name, info.Picture)
-		if err != nil {
-			log.Printf("google callback: upserting user %s failed: %v", info.Email, err)
-			return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
-		}
-		sessionToken, err := store.CreateSession(c.Request().Context(), u.ID)
-		if err != nil {
-			log.Printf("google callback: creating session for user %d failed: %v", u.ID, err)
-			return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
-		}
+	// Never logs the authorization code or the access token it
+	// exchanges for — only that the exchange happened and whether it
+	// succeeded — since either one is a live, usable credential for
+	// as long as it hasn't expired.
+	accessToken, err := h.google.Exchange(c.Request().Context(), code)
+	if err != nil {
+		log.Printf("google callback: token exchange failed: %v", err)
+		return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
+	}
+	info, err := h.google.FetchUserInfo(c.Request().Context(), accessToken)
+	if err != nil {
+		log.Printf("google callback: fetching user info failed: %v", err)
+		return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
+	}
 
-		log.Printf("google callback: signed in user %d (%s)", u.ID, u.Email)
-		setCookie(c, sessionCookieName, sessionToken, user.SessionDuration, cookieSecure)
+	u, err := h.store.UpsertUserFromGoogle(c.Request().Context(), info.Sub, info.Email, info.Name, info.Picture)
+	if err != nil {
+		log.Printf("google callback: upserting user %s failed: %v", info.Email, err)
+		return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
+	}
+	sessionToken, err := h.store.CreateSession(c.Request().Context(), u.ID)
+	if err != nil {
+		log.Printf("google callback: creating session for user %d failed: %v", u.ID, err)
+		return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
+	}
 
-		redirectTo := frontendURL
-		switch {
-		case u.BcpUserID == "":
-			// First sign-in ever, or an existing account that's never
-			// gotten around to linking a BCP profile — either way, send
-			// them through the dedicated onboarding page instead of the
-			// plain homepage, so connecting a profile (and then seeing
-			// their event history) is the very next thing that happens
-			// rather than something they have to go find themselves.
-			// return_to is deliberately ignored on this path: onboarding
-			// always comes first regardless of where sign-in started.
-			redirectTo = frontendURL + "/welcome"
-		case returnToErr == nil && isSafeReturnPath(returnToCookie.Value):
-			redirectTo = frontendURL + returnToCookie.Value
-		}
-		return c.Redirect(http.StatusFound, redirectTo)
-	})
+	log.Printf("google callback: signed in user %d (%s)", u.ID, u.Email)
+	setCookie(c, sessionCookieName, sessionToken, user.SessionDuration, h.cookieSecure)
 
-	e.POST("/auth/logout", func(c echo.Context) error {
-		if cookie, err := c.Cookie(sessionCookieName); err == nil {
-			// Best-effort: whether or not the row still existed, the
-			// caller's desired end state (no valid session) now holds.
-			if err := store.DeleteSession(c.Request().Context(), cookie.Value); err != nil {
-				log.Printf("logout: deleting session failed (proceeding anyway): %v", err)
-			}
-		}
-		clearCookie(c, sessionCookieName, cookieSecure)
-		return c.NoContent(http.StatusNoContent)
-	})
+	redirectTo := h.frontendURL
+	switch {
+	case u.BcpUserID == "":
+		// First sign-in ever, or an existing account that's never
+		// gotten around to linking a BCP profile — either way, send
+		// them through the dedicated onboarding page instead of the
+		// plain homepage, so connecting a profile (and then seeing
+		// their event history) is the very next thing that happens
+		// rather than something they have to go find themselves.
+		// return_to is deliberately ignored on this path: onboarding
+		// always comes first regardless of where sign-in started.
+		redirectTo = h.frontendURL + "/welcome"
+	case returnToErr == nil && isSafeReturnPath(returnToCookie.Value):
+		redirectTo = h.frontendURL + returnToCookie.Value
+	}
+	return c.Redirect(http.StatusFound, redirectTo)
+}
 
-	e.GET("/api/me", func(c echo.Context) error {
-		cookie, err := c.Cookie(sessionCookieName)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+func (h *AuthHandler) Logout(c echo.Context) error {
+	if cookie, err := c.Cookie(sessionCookieName); err == nil {
+		// Best-effort: whether or not the row still existed, the
+		// caller's desired end state (no valid session) now holds.
+		if err := h.store.DeleteSession(c.Request().Context(), cookie.Value); err != nil {
+			log.Printf("logout: deleting session failed (proceeding anyway): %v", err)
 		}
-		u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
-		if err != nil {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-		}
-		return c.JSON(http.StatusOK, map[string]any{
-			"id":        u.ID,
-			"email":     u.Email,
-			"name":      u.Name,
-			"avatarUrl": u.AvatarURL,
-			"bcpUserId": u.BcpUserID,
-		})
+	}
+	clearCookie(c, sessionCookieName, h.cookieSecure)
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (h *AuthHandler) Me(c echo.Context) error {
+	cookie, err := c.Cookie(sessionCookieName)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"id":        u.ID,
+		"email":     u.Email,
+		"name":      u.Name,
+		"avatarUrl": u.AvatarURL,
+		"bcpUserId": u.BcpUserID,
 	})
 }
 

@@ -132,7 +132,7 @@ func classifyEventCategory(h bcp.PlacingHistoryEntry, teamEvent bool) (category 
 // cached set (a handful per game system per year, and not user-specific
 // at all), so this stays well within "fetch only what's needed" even for
 // a long history.
-func canonicalPlacingPerEvent(ctx context.Context, bcpClient *bcp.Client, history []bcp.PlacingHistoryEntry) []bcp.PlacingHistoryEntry {
+func canonicalPlacingPerEvent(ctx context.Context, client bcpClient, history []bcp.PlacingHistoryEntry) []bcp.PlacingHistoryEntry {
 	type group struct {
 		fallback bcp.PlacingHistoryEntry
 		flagship *bcp.PlacingHistoryEntry
@@ -150,7 +150,7 @@ func canonicalPlacingPerEvent(ctx context.Context, bcpClient *bcp.Client, histor
 		if g.flagship != nil || h.LeagueID == "" {
 			continue
 		}
-		info, err := bcpClient.FetchLeagueInfo(ctx, h.LeagueID)
+		info, err := client.FetchLeagueInfo(ctx, h.LeagueID)
 		if err != nil || info == nil {
 			continue // an unresolvable league just means this row can't win flagship status — not a failed request
 		}
@@ -179,13 +179,13 @@ func canonicalPlacingPerEvent(ctx context.Context, bcpClient *bcp.Client, histor
 // just the most recent one. One cached FetchEventInfo call per distinct
 // event; an event whose info fails to load just can't be classified or
 // counted toward a game system, rather than failing the whole request.
-func eventInfoByID(ctx context.Context, bcpClient *bcp.Client, history []bcp.PlacingHistoryEntry) map[string]bcp.EventInfo {
+func eventInfoByID(ctx context.Context, client bcpClient, history []bcp.PlacingHistoryEntry) map[string]bcp.EventInfo {
 	infos := make(map[string]bcp.EventInfo, len(history))
 	for _, h := range history {
 		if _, ok := infos[h.EventID]; ok {
 			continue
 		}
-		info, err := bcpClient.FetchEventInfo(ctx, h.EventID)
+		info, err := client.FetchEventInfo(ctx, h.EventID)
 		if err != nil {
 			continue
 		}
@@ -267,49 +267,62 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 	return resp
 }
 
-// RegisterStatsRoutes wires up the signed-in user's own player-stats
-// summary — best placing (overall, GT, RTT, Team) and a per-faction
-// breakdown, built on the same FetchPlacingHistory call "My Events"
-// already makes, plus two extra passes over that history: one
-// FetchLeagueInfo call per distinct league encountered (see
-// canonicalPlacingPerEvent) and one FetchEventInfo call per distinct
-// event (see eventInfoByID, needed for an accurate Team/GT/RTT split —
-// PlacingHistoryEntry's own Team field isn't reliable enough on its
-// own). Both are small, cached, mostly-shared-across-users lookups, not
-// per-round or per-user fan-out. See playerStatsResponse's doc comment
-// for why win/loss isn't part of this: reconstructing it would mean
-// fetching every past event's full pairings board round by round, which
-// for a long history is on the order of hundreds of extra BCP requests
-// just for one stat — decided against, in keeping with this service's
-// "fetch only what's needed" rule.
-func RegisterStatsRoutes(e *echo.Echo, store userStore, bcpClient *bcp.Client) {
-	e.GET("/api/me/stats", func(c echo.Context) error {
-		u, err := requireUser(c, store)
-		if err != nil {
-			return err
-		}
-		if u.BcpUserID == "" {
-			return c.JSON(http.StatusOK, emptyPlayerStatsResponse(false))
-		}
+// StatsHandler wires up the signed-in user's own player-stats summary —
+// best placing (overall, GT, RTT, Team) and a per-faction breakdown,
+// built on the same FetchPlacingHistory call "My Events" already makes,
+// plus two extra passes over that history: one FetchLeagueInfo call per
+// distinct league encountered (see canonicalPlacingPerEvent) and one
+// FetchEventInfo call per distinct event (see eventInfoByID, needed for
+// an accurate Team/GT/RTT split — PlacingHistoryEntry's own Team field
+// isn't reliable enough on its own). Both are small, cached, mostly-
+// shared-across-users lookups, not per-round or per-user fan-out. See
+// playerStatsResponse's doc comment for why win/loss isn't part of
+// this: reconstructing it would mean fetching every past event's full
+// pairings board round by round, which for a long history is on the
+// order of hundreds of extra BCP requests just for one stat — decided
+// against, in keeping with this service's "fetch only what's needed"
+// rule.
+type StatsHandler struct {
+	store  userStore
+	client bcpClient
+}
 
-		ctx := c.Request().Context()
-		rawHistory, err := bcpClient.FetchPlacingHistory(ctx, u.BcpUserID)
-		if err != nil {
-			return bcpError(c, err)
-		}
-		history := canonicalPlacingPerEvent(ctx, bcpClient, rawHistory)
-		infos := eventInfoByID(ctx, bcpClient, history)
+// NewStatsHandler builds a StatsHandler.
+func NewStatsHandler(store userStore, client bcpClient) *StatsHandler {
+	return &StatsHandler{store: store, client: client}
+}
 
-		resp := computePlayerStats(history, infos)
+// Register wires this handler's routes onto e.
+func (h *StatsHandler) Register(e *echo.Echo) {
+	e.GET("/api/me/stats", h.Stats)
+}
 
-		if len(history) > 0 {
-			// history is sorted most-recent-first (FetchPlacingHistory's own
-			// contract, preserved by canonicalPlacingPerEvent) — a missing
-			// entry here just means no ITC section on the frontend, not a
-			// failed request.
-			resp.MostRecentGameSystemID = infos[history[0].EventID].GameSystemID
-		}
+func (h *StatsHandler) Stats(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+	if u.BcpUserID == "" {
+		return c.JSON(http.StatusOK, emptyPlayerStatsResponse(false))
+	}
 
-		return c.JSON(http.StatusOK, resp)
-	})
+	ctx := c.Request().Context()
+	rawHistory, err := h.client.FetchPlacingHistory(ctx, u.BcpUserID)
+	if err != nil {
+		return bcpError(c, err)
+	}
+	history := canonicalPlacingPerEvent(ctx, h.client, rawHistory)
+	infos := eventInfoByID(ctx, h.client, history)
+
+	resp := computePlayerStats(history, infos)
+
+	if len(history) > 0 {
+		// history is sorted most-recent-first (FetchPlacingHistory's own
+		// contract, preserved by canonicalPlacingPerEvent) — a missing
+		// entry here just means no ITC section on the frontend, not a
+		// failed request.
+		resp.MostRecentGameSystemID = infos[history[0].EventID].GameSystemID
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
