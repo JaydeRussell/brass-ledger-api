@@ -197,11 +197,11 @@ func (h *MeHandler) Events(c echo.Context) error {
 }
 
 // classifyMyEvents fetches bcpUserID's placing history and registration
-// list and classifies them into past/present/future — the shared core
-// both MeHandler.Events (JSON) and CalendarHandler's .ics feed
-// (internal/api/calendar.go) build their own response around. refresh
-// mirrors MeHandler.Events' ?refresh=true (see its doc comment above for
-// why this bypasses the registration-list/per-event cache but never
+// list and classifies them into past/present/future — factored out of
+// MeHandler.Events as its own fetch/classify step, separate from
+// building the HTTP response around it. refresh mirrors
+// MeHandler.Events' ?refresh=true (see its doc comment above for why
+// this bypasses the registration-list/per-event cache but never
 // FetchPlacingHistory).
 //
 // The three return slices start non-nil (empty, not nil) rather than as

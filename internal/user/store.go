@@ -37,11 +37,6 @@ type User struct {
 // should treat both the same way (not signed in), not distinguish them.
 var ErrSessionNotFound = errors.New("session not found or expired")
 
-// ErrCalendarTokenNotFound is returned by GetUserByCalendarToken when no
-// account has that token — see EnsureCalendarToken's doc comment for
-// what this token is.
-var ErrCalendarTokenNotFound = errors.New("calendar token not found")
-
 // Store is this service's user/session persistence, backed by Postgres.
 // Its methods satisfy internal/api's userStore interface, which is what
 // AuthHandler and friends actually depend on — that's what lets their
@@ -138,56 +133,6 @@ func (s *Store) SetBcpUserID(ctx context.Context, userID int64, bcpUserID string
 		return fmt.Errorf("setting bcp_user_id: %w", err)
 	}
 	return nil
-}
-
-// EnsureCalendarToken returns the account's calendar-feed token,
-// generating and persisting one first if it doesn't have one yet.
-// Idempotent — a second call for the same account returns the same
-// token unchanged, the same "generate once, use forever" shape as a
-// session token, except this one never expires (a calendar app's
-// subscription is meant to keep working indefinitely). See
-// internal/api/calendar.go for what the token actually authenticates:
-// the subscribable .ics feed, which — unlike every other route in this
-// service — can't be gated behind a session cookie, since a calendar
-// app polls it on its own schedule with no cookie to send.
-func (s *Store) EnsureCalendarToken(ctx context.Context, userID int64) (string, error) {
-	var existing string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(calendar_token, '') FROM users WHERE id = $1`, userID,
-	).Scan(&existing); err != nil {
-		return "", fmt.Errorf("reading calendar_token: %w", err)
-	}
-	if existing != "" {
-		return existing, nil
-	}
-
-	token, err := newCalendarToken()
-	if err != nil {
-		return "", err
-	}
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE users SET calendar_token = $1 WHERE id = $2`, token, userID,
-	); err != nil {
-		return "", fmt.Errorf("setting calendar_token: %w", err)
-	}
-	return token, nil
-}
-
-// GetUserByCalendarToken returns the account a calendar-feed token
-// belongs to, or ErrCalendarTokenNotFound.
-func (s *Store) GetUserByCalendarToken(ctx context.Context, token string) (User, error) {
-	var u User
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, '')
-		FROM users WHERE calendar_token = $1
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return User{}, ErrCalendarTokenNotFound
-		}
-		return User{}, fmt.Errorf("looking up calendar token: %w", err)
-	}
-	return u, nil
 }
 
 // MaxRecentEvents mirrors the frontend's own trim limit (see
@@ -330,14 +275,6 @@ func newSessionToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("generating session token: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func newCalendarToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generating calendar token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

@@ -58,10 +58,6 @@ type userStore interface {
 	RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error
 	ListRecentEvents(ctx context.Context, userID int64) ([]user.RecentEvent, error)
 	RecordRecentEvent(ctx context.Context, userID int64, eventID, eventName string, teamEvent bool) error
-	// The following two are used by CalendarHandler (internal/api/calendar.go),
-	// same reasoning as SetBcpUserID above.
-	EnsureCalendarToken(ctx context.Context, userID int64) (string, error)
-	GetUserByCalendarToken(ctx context.Context, token string) (user.User, error)
 }
 
 // AuthHandler wires up Google sign-in, sign-out, and the signed-in-user
