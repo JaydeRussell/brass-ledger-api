@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -20,6 +21,16 @@ type factionStat struct {
 	BestPlacing *int   `json:"bestPlacing,omitempty"`
 }
 
+// placingWithField is a best placing plus the size of the field it was
+// achieved in — "8th of 53" reads very differently from a bare "8th",
+// and EventInfo.PlayerCount (already resolved for every event by
+// eventInfoByID, for TeamEvent/GameSystemID) makes this free to attach.
+// FieldSize is nil if that event's PlayerCount was never published.
+type placingWithField struct {
+	Placing   int  `json:"placing"`
+	FieldSize *int `json:"fieldSize,omitempty"`
+}
+
 // playerStatsResponse is GET /api/me/stats' body. Linked is false (with
 // every other field at its zero value) for an account that hasn't pasted
 // a BCP profile yet — same "not linked" vs "linked but nothing yet"
@@ -34,15 +45,20 @@ type factionStat struct {
 // and /api/itc/rankings endpoints) — omitted if that one lookup fails,
 // in which case the frontend just doesn't show an ITC score rather than
 // failing the whole stats card.
+//
+// CompetingSince is the earliest EventDate across the player's whole
+// (deduped) history — BCP already publishes it per event; this just
+// takes the min.
 type playerStatsResponse struct {
-	Linked                 bool          `json:"linked"`
-	TotalEvents            int           `json:"totalEvents"`
-	BestPlacing            *int          `json:"bestPlacing,omitempty"`
-	BestPlacingRTT         *int          `json:"bestPlacingRtt,omitempty"`
-	BestPlacingGT          *int          `json:"bestPlacingGt,omitempty"`
-	BestPlacingTeams       *int          `json:"bestPlacingTeams,omitempty"`
-	Factions               []factionStat `json:"factions"`
-	MostRecentGameSystemID string        `json:"mostRecentGameSystemId,omitempty"`
+	Linked                 bool              `json:"linked"`
+	TotalEvents            int               `json:"totalEvents"`
+	BestPlacing            *placingWithField `json:"bestPlacing,omitempty"`
+	BestPlacingRTT         *placingWithField `json:"bestPlacingRtt,omitempty"`
+	BestPlacingGT          *placingWithField `json:"bestPlacingGt,omitempty"`
+	BestPlacingTeams       *placingWithField `json:"bestPlacingTeams,omitempty"`
+	Factions               []factionStat     `json:"factions"`
+	MostRecentGameSystemID string            `json:"mostRecentGameSystemId,omitempty"`
+	CompetingSince         string            `json:"competingSince,omitempty"`
 }
 
 func emptyPlayerStatsResponse(linked bool) playerStatsResponse {
@@ -192,27 +208,41 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 
 	factionIndex := make(map[string]int, len(history))
 
-	keepBest := func(best *int, placing int) *int {
+	keepBestPlain := func(best *int, placing int) *int {
 		if best == nil || placing < *best {
 			p := placing
 			return &p
 		}
 		return best
 	}
+	keepBestWithField := func(best *placingWithField, placing int, fieldSize *int) *placingWithField {
+		if best == nil || placing < best.Placing {
+			return &placingWithField{Placing: placing, FieldSize: fieldSize}
+		}
+		return best
+	}
 
+	var earliest time.Time
 	for _, h := range history {
+		fieldSize := infos[h.EventID].PlayerCount
+
 		if h.Placing != nil {
-			resp.BestPlacing = keepBest(resp.BestPlacing, *h.Placing)
+			resp.BestPlacing = keepBestWithField(resp.BestPlacing, *h.Placing, fieldSize)
 			if category, ok := classifyEventCategory(h, infos[h.EventID].TeamEvent); ok {
 				switch category {
 				case categoryTeams:
-					resp.BestPlacingTeams = keepBest(resp.BestPlacingTeams, *h.Placing)
+					resp.BestPlacingTeams = keepBestWithField(resp.BestPlacingTeams, *h.Placing, fieldSize)
 				case categoryGT:
-					resp.BestPlacingGT = keepBest(resp.BestPlacingGT, *h.Placing)
+					resp.BestPlacingGT = keepBestWithField(resp.BestPlacingGT, *h.Placing, fieldSize)
 				case categoryRTT:
-					resp.BestPlacingRTT = keepBest(resp.BestPlacingRTT, *h.Placing)
+					resp.BestPlacingRTT = keepBestWithField(resp.BestPlacingRTT, *h.Placing, fieldSize)
 				}
 			}
+		}
+
+		if t, ok := parseBCPDate(h.EventDate); ok && (earliest.IsZero() || t.Before(earliest)) {
+			earliest = t
+			resp.CompetingSince = h.EventDate
 		}
 
 		if h.Faction == "" {
@@ -226,7 +256,7 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 		}
 		resp.Factions[idx].EventCount++
 		if h.Placing != nil {
-			resp.Factions[idx].BestPlacing = keepBest(resp.Factions[idx].BestPlacing, *h.Placing)
+			resp.Factions[idx].BestPlacing = keepBestPlain(resp.Factions[idx].BestPlacing, *h.Placing)
 		}
 	}
 

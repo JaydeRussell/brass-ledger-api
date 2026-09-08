@@ -86,16 +86,18 @@ func stubBCPStatsServer(t *testing.T) *httptest.Server {
 		_, _ = w.Write([]byte(`{"name": "Hobby Track", "gw_itc": true, "hobby": true}`))
 	})
 	mux.HandleFunc("/events/evt-gt", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id": "evt-gt", "name": "A GT", "format": {"teamEvent": false}, "gameSystem": {"id": "gs-40k", "name": "Warhammer 40,000"}}`))
+		_, _ = w.Write([]byte(`{"id": "evt-gt", "name": "A GT", "format": {"teamEvent": false}, "gameSystem": {"id": "gs-40k", "name": "Warhammer 40,000"}, "playerCounts": {"total": 53}}`))
 	})
 	mux.HandleFunc("/events/evt-rtt", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": "evt-rtt", "name": "An RTT", "format": {"teamEvent": false}}`))
 	})
+	// No playerCounts here — evt-nodate is the "best overall" (1st) entry,
+	// so this doubles as the case where a field size just isn't known.
 	mux.HandleFunc("/events/evt-nodate", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": "evt-nodate", "name": "No End Date", "format": {"teamEvent": false}}`))
 	})
 	mux.HandleFunc("/events/evt-team", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id": "evt-team", "name": "A Team GT", "format": {"teamEvent": true}}`))
+		_, _ = w.Write([]byte(`{"id": "evt-team", "name": "A Team GT", "format": {"teamEvent": true}, "teamPlayerCounts": {"total": 12}}`))
 	})
 	mux.HandleFunc("/events/evt-club-solo", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": "evt-club-solo", "name": "A Solo RTT With A Club Tag", "format": {"teamEvent": false}}`))
@@ -136,18 +138,26 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 		t.Errorf("totalEvents = %d, want 5", resp.TotalEvents)
 	}
 	// Best placing overall is the GT's 2nd... except evt-nodate placed 1st,
-	// which is better, so the overall best is 1.
-	if resp.BestPlacing == nil || *resp.BestPlacing != 1 {
+	// which is better, so the overall best is 1. evt-nodate has no
+	// published playerCounts, so FieldSize should be nil.
+	if resp.BestPlacing == nil || resp.BestPlacing.Placing != 1 {
 		t.Errorf("bestPlacing = %v, want 1", resp.BestPlacing)
 	}
-	if resp.BestPlacingGT == nil || *resp.BestPlacingGT != 2 {
+	if resp.BestPlacing != nil && resp.BestPlacing.FieldSize != nil {
+		t.Errorf("bestPlacing.fieldSize = %v, want nil (evt-nodate never published a player count)", *resp.BestPlacing.FieldSize)
+	}
+	// evt-gt published 53 players.
+	if resp.BestPlacingGT == nil || resp.BestPlacingGT.Placing != 2 {
 		t.Errorf("bestPlacingGt = %v, want 2 (evt-gt)", resp.BestPlacingGT)
+	}
+	if resp.BestPlacingGT != nil && (resp.BestPlacingGT.FieldSize == nil || *resp.BestPlacingGT.FieldSize != 53) {
+		t.Errorf("bestPlacingGt.fieldSize = %v, want 53", resp.BestPlacingGT.FieldSize)
 	}
 	// evt-rtt (10th), evt-nodate (1st, no end date -> treated as
 	// single-day), and evt-club-solo (3rd, has a club/team name but
 	// EventInfo says teamEvent: false) all count as RTT, so the best of
 	// the three is 1.
-	if resp.BestPlacingRTT == nil || *resp.BestPlacingRTT != 1 {
+	if resp.BestPlacingRTT == nil || resp.BestPlacingRTT.Placing != 1 {
 		t.Errorf("bestPlacingRtt = %v, want 1 (evt-nodate, no end date treated as single-day)", resp.BestPlacingRTT)
 	}
 	// evt-team is the only entry whose EventInfo says teamEvent: true, so
@@ -156,9 +166,19 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 	// isn't actually team-format per its EventInfo) must NOT land here.
 	// It's also scored under two leagues (flagship: 5th, hobby track:
 	// 2nd) — the flagship one should win, not the numerically-better-
-	// looking hobby one.
-	if resp.BestPlacingTeams == nil || *resp.BestPlacingTeams != 5 {
+	// looking hobby one. Its field size (12) comes from teamPlayerCounts,
+	// since team events report a team-player count, not a plain player
+	// count.
+	if resp.BestPlacingTeams == nil || resp.BestPlacingTeams.Placing != 5 {
 		t.Errorf("bestPlacingTeams = %v, want 5 (the flagship-league row, not hobby track's better-looking 2, and not evt-club-solo)", resp.BestPlacingTeams)
+	}
+	if resp.BestPlacingTeams != nil && (resp.BestPlacingTeams.FieldSize == nil || *resp.BestPlacingTeams.FieldSize != 12) {
+		t.Errorf("bestPlacingTeams.fieldSize = %v, want 12", resp.BestPlacingTeams.FieldSize)
+	}
+
+	// evt-club-solo (2025-11-01) is the earliest event in this history.
+	if resp.CompetingSince != "2025-11-01T00:00:00.000Z" {
+		t.Errorf("competingSince = %q, want %q (evt-club-solo, the earliest event)", resp.CompetingSince, "2025-11-01T00:00:00.000Z")
 	}
 
 	if len(resp.Factions) != 2 {
