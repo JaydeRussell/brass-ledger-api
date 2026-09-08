@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -13,10 +14,25 @@ import (
 )
 
 const (
-	sessionCookieName = "session"
-	stateCookieName   = "oauth_state"
-	stateCookieMaxAge = 10 * time.Minute
+	sessionCookieName  = "session"
+	stateCookieName    = "oauth_state"
+	returnToCookieName = "oauth_return_to"
+	stateCookieMaxAge  = 10 * time.Minute
 )
+
+// isSafeReturnPath reports whether path is safe to redirect the browser
+// to after sign-in — a same-origin relative path, nothing else. This is
+// the one thing standing between "remember where the user was" and an
+// open-redirect vector: rejects an empty path, anything not starting
+// with "/", a protocol-relative path ("//evil.com" — browsers treat that
+// as a same-scheme link to a different host), and anything containing
+// "://" (a full absolute URL to somewhere else entirely).
+func isSafeReturnPath(path string) bool {
+	if path == "" || path[0] != '/' || strings.HasPrefix(path, "//") {
+		return false
+	}
+	return !strings.Contains(path, "://")
+}
 
 // userStore is the persistence RegisterAuthRoutes needs. *user.Store
 // satisfies it in production; tests satisfy it with an in-memory fake,
@@ -52,20 +68,38 @@ type userStore interface {
 // Secure cookie at all over plain HTTP, which would otherwise silently
 // break sign-in locally.
 func RegisterAuthRoutes(e *echo.Echo, google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool) {
+	// Normalized once here rather than trusting callers/config not to
+	// include one — a trailing slash would otherwise turn
+	// frontendURL+"/welcome" into a double slash.
+	frontendURL = strings.TrimSuffix(frontendURL, "/")
+
 	e.GET("/auth/google/login", func(c echo.Context) error {
 		state, err := auth.NewState()
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 		setCookie(c, stateCookieName, state, stateCookieMaxAge, cookieSecure)
+
+		// Optional: the frontend passes ?return_to=<path> so a returning,
+		// already-linked user signing back in from (say) /stats lands
+		// back on /stats instead of always the homepage. Silently ignored
+		// if unsafe or absent — see isSafeReturnPath. Never honored for a
+		// not-yet-linked account either way (see the callback below),
+		// since that always goes through onboarding first.
+		if returnTo := c.QueryParam("return_to"); isSafeReturnPath(returnTo) {
+			setCookie(c, returnToCookieName, returnTo, stateCookieMaxAge, cookieSecure)
+		}
+
 		return c.Redirect(http.StatusFound, google.AuthCodeURL(state))
 	})
 
 	e.GET("/auth/google/callback", func(c echo.Context) error {
-		// The state cookie is single-use either way — cleared whether
-		// this turns out to be a match or not.
+		// Both cookies are single-use — cleared regardless of how this
+		// request turns out.
 		stateCookie, cookieErr := c.Cookie(stateCookieName)
 		clearCookie(c, stateCookieName, cookieSecure)
+		returnToCookie, returnToErr := c.Cookie(returnToCookieName)
+		clearCookie(c, returnToCookieName, cookieSecure)
 
 		if cookieErr != nil || c.QueryParam("state") == "" || stateCookie.Value != c.QueryParam("state") {
 			// Logged at the level a normal, expected-to-happen-sometimes
@@ -112,7 +146,23 @@ func RegisterAuthRoutes(e *echo.Echo, google *auth.GoogleOAuth, store userStore,
 
 		log.Printf("google callback: signed in user %d (%s)", u.ID, u.Email)
 		setCookie(c, sessionCookieName, sessionToken, user.SessionDuration, cookieSecure)
-		return c.Redirect(http.StatusFound, frontendURL)
+
+		redirectTo := frontendURL
+		switch {
+		case u.BcpUserID == "":
+			// First sign-in ever, or an existing account that's never
+			// gotten around to linking a BCP profile — either way, send
+			// them through the dedicated onboarding page instead of the
+			// plain homepage, so connecting a profile (and then seeing
+			// their event history) is the very next thing that happens
+			// rather than something they have to go find themselves.
+			// return_to is deliberately ignored on this path: onboarding
+			// always comes first regardless of where sign-in started.
+			redirectTo = frontendURL + "/welcome"
+		case returnToErr == nil && isSafeReturnPath(returnToCookie.Value):
+			redirectTo = frontendURL + returnToCookie.Value
+		}
+		return c.Redirect(http.StatusFound, redirectTo)
 	})
 
 	e.POST("/auth/logout", func(c echo.Context) error {

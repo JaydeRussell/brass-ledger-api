@@ -248,8 +248,9 @@ func TestGoogleLogin(t *testing.T) {
 // TestGoogleCallback_Success drives the full flow: login (to get a real
 // state cookie), then callback with a matching state — checking the
 // session cookie that results actually authenticates a later /api/me
-// call, and that a second sign-in for the same Google account reuses
-// the same user id rather than creating a duplicate.
+// call. This account has never linked a BCP profile (the fake store's
+// zero value), so the redirect goes through onboarding — see
+// TestGoogleCallback_AlreadyLinked for the returning-user path.
 func TestGoogleCallback_Success(t *testing.T) {
 	google := stubGoogleServer(t,
 		`{"access_token": "tok-abc"}`,
@@ -270,8 +271,9 @@ func TestGoogleCallback_Success(t *testing.T) {
 	if callbackRec.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want %d (body: %s)", callbackRec.Code, http.StatusFound, callbackRec.Body.String())
 	}
-	if got := callbackRec.Header().Get("Location"); got != frontendURL {
-		t.Errorf("callback redirected to %q, want %q", got, frontendURL)
+	wantLocation := strings.TrimSuffix(frontendURL, "/") + "/welcome"
+	if got := callbackRec.Header().Get("Location"); got != wantLocation {
+		t.Errorf("callback redirected to %q, want %q (unlinked account -> onboarding)", got, wantLocation)
 	}
 
 	sessionCookie := findCookie(callbackRec.Result().Cookies(), sessionCookieName)
@@ -294,6 +296,153 @@ func TestGoogleCallback_Success(t *testing.T) {
 	if len(store.byGoogle) != 1 {
 		t.Errorf("store has %d users, want exactly 1", len(store.byGoogle))
 	}
+}
+
+// signInAndGetLocation runs one full login+callback round trip and
+// returns the callback's redirect target — the bit every test below
+// actually cares about.
+func signInAndGetLocation(t *testing.T, e *echo.Echo, loginPath string) string {
+	t.Helper()
+	loginRec := doRequest(e, http.MethodGet, loginPath, nil)
+	stateCookie := findCookie(loginRec.Result().Cookies(), stateCookieName)
+	if stateCookie == nil {
+		t.Fatal("no state cookie from /auth/google/login")
+	}
+	cookies := []*http.Cookie{stateCookie}
+	if rt := findCookie(loginRec.Result().Cookies(), returnToCookieName); rt != nil {
+		cookies = append(cookies, rt)
+	}
+	callbackPath := "/auth/google/callback?state=" + stateCookie.Value + "&code=any-code"
+	callbackRec := doRequest(e, http.MethodGet, callbackPath, cookies)
+	if callbackRec.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want %d (body: %s)", callbackRec.Code, http.StatusFound, callbackRec.Body.String())
+	}
+	return callbackRec.Header().Get("Location")
+}
+
+// TestGoogleCallback_AlreadyLinked covers the returning-user path: an
+// account that's already linked a BCP profile skips onboarding
+// entirely, going to return_to (if a safe one was set) or the plain
+// homepage otherwise.
+func TestGoogleCallback_AlreadyLinked(t *testing.T) {
+	cases := []struct {
+		name       string
+		loginPath  string
+		wantSuffix string // appended to the trimmed frontendURL
+	}{
+		{"no return_to falls back to the homepage", "/auth/google/login", ""},
+		{"a safe return_to is honored", "/auth/google/login?return_to=%2Fstats", "/stats"},
+		{
+			"an unsafe (absolute URL) return_to is ignored",
+			"/auth/google/login?return_to=" + url.QueryEscape("https://evil.example.com"),
+			"",
+		},
+		{
+			"an unsafe (protocol-relative) return_to is ignored",
+			"/auth/google/login?return_to=" + url.QueryEscape("//evil.example.com"),
+			"",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			google := stubGoogleServer(t,
+				`{"access_token": "tok-abc"}`,
+				`{"sub": "google-sub-linked", "email": "bo@example.com", "name": "Bo Baker"}`,
+			)
+			store := newFakeUserStore()
+			// Establish the account and mark it linked before the
+			// "real" sign-in this test is actually about.
+			u, err := store.UpsertUserFromGoogle(context.Background(), "google-sub-linked", "bo@example.com", "Bo Baker", "")
+			if err != nil {
+				t.Fatalf("seeding user: %v", err)
+			}
+			if err := store.SetBcpUserID(context.Background(), u.ID, "bcp-user-1"); err != nil {
+				t.Fatalf("SetBcpUserID: %v", err)
+			}
+			e := newTestEcho(google, store)
+
+			got := signInAndGetLocation(t, e, tc.loginPath)
+			want := strings.TrimSuffix(frontendURL, "/") + tc.wantSuffix
+			if got != want {
+				t.Errorf("redirected to %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestGoogleCallback_UnlinkedIgnoresReturnTo confirms onboarding always
+// wins for a not-yet-linked account, even if a valid return_to was set —
+// see the callback's own comment on why.
+func TestGoogleCallback_UnlinkedIgnoresReturnTo(t *testing.T) {
+	google := stubGoogleServer(t,
+		`{"access_token": "tok-abc"}`,
+		`{"sub": "google-sub-2", "email": "cara@example.com", "name": "Cara Chen"}`,
+	)
+	e := newTestEcho(google, newFakeUserStore())
+
+	got := signInAndGetLocation(t, e, "/auth/google/login?return_to=%2Fstats")
+	want := strings.TrimSuffix(frontendURL, "/") + "/welcome"
+	if got != want {
+		t.Errorf("redirected to %q, want %q (unlinked account -> onboarding, ignoring return_to)", got, want)
+	}
+}
+
+func TestIsSafeReturnPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/stats", true},
+		{"/my-events?tab=past", true},
+		{"/", true},
+		{"", false},
+		{"stats", false},                    // not even a rooted path
+		{"//evil.example.com", false},       // protocol-relative
+		{"https://evil.example.com", false}, // absolute URL
+		// Rejected too, even though the "://" is only inside the query
+		// string rather than making this path itself redirect anywhere —
+		// erring toward the safe failure mode (blocking a legitimate
+		// path) rather than trying to parse and validate the query
+		// string's own contents.
+		{"/redirect?to=https://evil.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			if got := isSafeReturnPath(tc.path); got != tc.want {
+				t.Errorf("isSafeReturnPath(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGoogleLogin_ReturnToCookie(t *testing.T) {
+	google := stubGoogleServer(t, `{"access_token": "tok"}`, `{"sub": "1"}`)
+
+	t.Run("a safe return_to is stored as a cookie", func(t *testing.T) {
+		e := newTestEcho(google, newFakeUserStore())
+		rec := doRequest(e, http.MethodGet, "/auth/google/login?return_to=%2Fstats", nil)
+		cookie := findCookie(rec.Result().Cookies(), returnToCookieName)
+		if cookie == nil || cookie.Value != "/stats" {
+			t.Errorf("oauth_return_to cookie = %+v, want value %q", cookie, "/stats")
+		}
+	})
+
+	t.Run("an unsafe return_to is not stored", func(t *testing.T) {
+		e := newTestEcho(google, newFakeUserStore())
+		rec := doRequest(e, http.MethodGet, "/auth/google/login?return_to=https://evil.example.com", nil)
+		if cookie := findCookie(rec.Result().Cookies(), returnToCookieName); cookie != nil {
+			t.Errorf("oauth_return_to cookie = %+v, want none for an unsafe return_to", cookie)
+		}
+	})
+
+	t.Run("no return_to means no cookie", func(t *testing.T) {
+		e := newTestEcho(google, newFakeUserStore())
+		rec := doRequest(e, http.MethodGet, "/auth/google/login", nil)
+		if cookie := findCookie(rec.Result().Cookies(), returnToCookieName); cookie != nil {
+			t.Errorf("oauth_return_to cookie = %+v, want none", cookie)
+		}
+	})
 }
 
 func TestGoogleCallback_Rejections(t *testing.T) {
