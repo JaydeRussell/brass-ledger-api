@@ -27,6 +27,7 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/applog"
 	"github.com/JaydeRussell/brass-ledger-api/internal/auth"
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcpcache"
 	"github.com/JaydeRussell/brass-ledger-api/internal/config"
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
@@ -71,7 +72,14 @@ func main() {
 		log.Fatalf("running database migrations: %v", err)
 	}
 
-	e := newServer(cfg, pool, bcp.NewClient(), logWriter)
+	bcpClient := bcp.NewClient()
+	// Persists the subset of BCP responses that are genuinely immutable
+	// (an already-concluded event's info/roster/pairings/placings, and
+	// league metadata) so they're fetched from BCP once, ever, rather
+	// than every 60 seconds by every visitor forever — see
+	// internal/bcp/durable.go and internal/bcpcache.
+	bcpClient.SetDurableCache(bcpcache.New(pool))
+	e := newServer(cfg, pool, bcpClient, logWriter)
 
 	go func() {
 		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {

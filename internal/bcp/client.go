@@ -47,6 +47,9 @@ type Client struct {
 	playerEventHistory *Cache[[]PlayerEventRecord]
 	placingHistory     *Cache[[]PlacingHistoryEntry]
 	leagueInfo         *Cache[*LeagueInfo]
+
+	// See durable.go — nil unless SetDurableCache is called.
+	durable DurableCache
 }
 
 // NewClient builds a ready-to-use Client pointed at the real BCP API.
@@ -249,7 +252,16 @@ func nonEmpty(vals ...string) []string {
 	return out
 }
 
+func eventInfoDurableKey(eventID string) string { return "event:" + eventID }
+
 func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (EventInfo, error) {
+	if c.durable != nil {
+		var cached EventInfo
+		if found, err := c.durable.Get(ctx, eventInfoDurableKey(eventID), &cached); err == nil && found {
+			return cached, nil
+		}
+	}
+
 	var body bcpEventInfoResponse
 	rawURL := fmt.Sprintf("%s/events/%s?role=true", c.apiBaseV2, url.PathEscape(eventID))
 	if err := c.get(ctx, rawURL, &body); err != nil {
@@ -288,7 +300,7 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 		}
 	}
 
-	return EventInfo{
+	info := EventInfo{
 		ID:                id,
 		Name:              name,
 		TeamEvent:         body.Format.TeamEvent,
@@ -307,7 +319,18 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 		RegistrationCount: body.CountString,
 		PlayerCount:       playerCount,
 		Circuits:          circuits,
-	}, nil
+	}
+
+	// Only an already-concluded event's info is safe to persist forever —
+	// Started/Ended/CurrentRound and everything else here can still
+	// change for one that hasn't ended yet. A failed write just means
+	// this gets asked of BCP again next time; not worth failing the
+	// request over.
+	if c.durable != nil && info.Ended {
+		_ = c.durable.Set(ctx, eventInfoDurableKey(eventID), info)
+	}
+
+	return info, nil
 }
 
 // FetchEventInfo returns cached, rate-limited event metadata.
@@ -358,7 +381,16 @@ type bcpTeamPlayersResponse struct {
 // real rosters submitted days earlier), and each player's actual
 // per-event tournament team name is resolved via teamPlayerId against
 // the separate /teamplayers collection.
+func playersDurableKey(eventID string) string { return "players:" + eventID }
+
 func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Player, error) {
+	if c.durable != nil {
+		var cached []Player
+		if found, err := c.durable.Get(ctx, playersDurableKey(eventID), &cached); err == nil && found {
+			return cached, nil
+		}
+	}
+
 	encodedID := url.PathEscape(eventID)
 
 	var playersBody bcpPlayersResponse
@@ -418,6 +450,17 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 		})
 	}
 
+	// A roster only stops changing once the event itself has concluded —
+	// FetchEventInfo is itself cached (in-memory, and durably once
+	// ended), so this costs nothing extra once an event's info has been
+	// fetched at all, which every real caller does before ever reaching
+	// the Roster tab.
+	if c.durable != nil {
+		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
+			_ = c.durable.Set(ctx, playersDurableKey(eventID), players)
+		}
+	}
+
 	return players, nil
 }
 
@@ -456,6 +499,14 @@ func splitPairingsKey(key string) (eventID, pairingType string, round int, err e
 // client-side (still true — just that "client" is now this service's
 // caller, the frontend, rather than BCP).
 func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairingType string, round int) ([]PairingRecord, error) {
+	durableKey := "pairings:" + pairingsKey(eventID, pairingType, round)
+	if c.durable != nil {
+		var cached []PairingRecord
+		if found, err := c.durable.Get(ctx, durableKey, &cached); err == nil && found {
+			return cached, nil
+		}
+	}
+
 	q := url.Values{}
 	q.Set("pairingType", pairingType)
 	q.Set("round", strconv.Itoa(round))
@@ -465,6 +516,16 @@ func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairin
 	if err := c.get(ctx, rawURL, &body); err != nil {
 		return nil, err
 	}
+
+	// A round's pairings only stop changing once the whole event has
+	// concluded — same reasoning (and same already-warm cache) as
+	// fetchPlayersUncached above.
+	if c.durable != nil {
+		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
+			_ = c.durable.Set(ctx, durableKey, body.Active)
+		}
+	}
+
 	return body.Active, nil
 }
 
@@ -515,6 +576,14 @@ func splitPlacingsKey(key string) (eventID string, teamEvent bool, err error) {
 }
 
 func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, teamEvent bool) ([]PlacingEntry, error) {
+	durableKey := "placings:" + placingsKey(eventID, teamEvent)
+	if c.durable != nil {
+		var cached []PlacingEntry
+		if found, err := c.durable.Get(ctx, durableKey, &cached); err == nil && found {
+			return cached, nil
+		}
+	}
+
 	endpoint := "players"
 	if teamEvent {
 		endpoint = "teamplayers"
@@ -566,6 +635,15 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 			return *pi < *pj
 		}
 	})
+
+	// Standings only stop changing once the event itself has concluded —
+	// same reasoning as fetchPlayersUncached/fetchRoundPairingsUncached
+	// above.
+	if c.durable != nil {
+		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
+			_ = c.durable.Set(ctx, durableKey, entries)
+		}
+	}
 
 	return entries, nil
 }
@@ -635,13 +713,31 @@ type bcpLeagueInfoResponse struct {
 	Hobby bool   `json:"hobby"`
 }
 
+func leagueInfoDurableKey(leagueID string) string { return "league:" + leagueID }
+
 func (c *Client) fetchLeagueInfoUncached(ctx context.Context, leagueID string) (*LeagueInfo, error) {
+	if c.durable != nil {
+		var cached LeagueInfo
+		if found, err := c.durable.Get(ctx, leagueInfoDurableKey(leagueID), &cached); err == nil && found {
+			return &cached, nil
+		}
+	}
+
 	rawURL := fmt.Sprintf("%s/leagues/%s", c.apiBaseV1, url.PathEscape(leagueID))
 	var body bcpLeagueInfoResponse
 	if err := c.get(ctx, rawURL, &body); err != nil {
 		return nil, err
 	}
-	return &LeagueInfo{Name: body.Name, GwItc: body.GwItc, Hobby: body.Hobby}, nil
+	info := &LeagueInfo{Name: body.Name, GwItc: body.GwItc, Hobby: body.Hobby}
+
+	// Unlike an event, a league's own classification (gw_itc/hobby) is
+	// effectively permanent reference data the moment it exists — no
+	// "ended" gate needed.
+	if c.durable != nil {
+		_ = c.durable.Set(ctx, leagueInfoDurableKey(leagueID), *info)
+	}
+
+	return info, nil
 }
 
 // FetchLeagueInfo returns one league's name and gw_itc/hobby flags —
