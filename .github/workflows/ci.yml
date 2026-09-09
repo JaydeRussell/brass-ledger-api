@@ -36,3 +36,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # Catches a bad deploy immediately rather than silently — the same
+      # checks `make smoke` runs locally, pointed at the real production
+      # URLs instead of localhost. A short sleep first: a Container that
+      # was asleep (see wrangler.jsonc's sleepAfter) takes a moment to
+      # spin back up on its first request after a redeploy.
+      - run: sleep 5 && ./scripts/smoke-test.sh
+        env:
+          BACKEND_URL: https://api.brass-ledger.app
+          FRONTEND_URL: https://brass-ledger.app
