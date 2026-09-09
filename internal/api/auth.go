@@ -222,6 +222,37 @@ func (h *AuthHandler) Me(c echo.Context) error {
 	})
 }
 
+// RequireSession is Echo middleware that gates a route behind a valid
+// session cookie — the same check requireUser does inline for a single
+// handler (see sync.go), but applied at the routing layer so it can
+// cover routes, like BCPHandler's, whose handlers were never written to
+// know about sessions at all. Now that the whole app is meant to be
+// behind sign-in rather than just the account-specific features, this
+// is what BCPHandler's routes are wrapped in (see cmd/server/main.go).
+//
+// On success, the authenticated user is stashed in the request context
+// under contextKeyUser for any handler that wants it (none of
+// BCPHandler's currently do — they only need to know *that* someone is
+// signed in, not *who*).
+func RequireSession(store userStore) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			cookie, err := c.Cookie(sessionCookieName)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+			}
+			u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+			}
+			c.Set(contextKeyUser, u)
+			return next(c)
+		}
+	}
+}
+
+const contextKeyUser = "user"
+
 func setCookie(c echo.Context, name, value string, maxAge time.Duration, secure bool) {
 	c.SetCookie(&http.Cookie{
 		Name:     name,
