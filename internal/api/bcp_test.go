@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,10 @@ func alwaysFailServer(t *testing.T) *httptest.Server {
 // in this package already use for their own per-feature Echo helpers.
 func newBCPTestEcho(client *bcp.Client) *echo.Echo {
 	e := echo.New()
-	NewBCPHandler(client).Register(e)
+	// A pass-through middleware — these tests are about the BCP proxy
+	// behavior itself, not the session gate in front of it (that's
+	// TestBCPHandler_RequiresSession below).
+	NewBCPHandler(client).Register(e, func(next echo.HandlerFunc) echo.HandlerFunc { return next })
 	return e
 }
 
@@ -75,6 +79,41 @@ func doBCPRequest(e *echo.Echo, method, path string) *httptest.ResponseRecorder 
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 	return rec
+}
+
+// TestBCPHandler_RequiresSession checks that these routes are actually
+// gated behind sign-in now (unlike newBCPTestEcho's other callers,
+// which deliberately bypass the gate to test proxy behavior on its
+// own) — the whole point of wiring RequireSession into
+// cmd/server/main.go in the first place.
+func TestBCPHandler_RequiresSession(t *testing.T) {
+	server := stubBCPServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	store := newFakeUserStore()
+	e := echo.New()
+	NewBCPHandler(client).Register(e, RequireSession(store))
+
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no cookie: status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	badCookie := []*http.Cookie{{Name: sessionCookieName, Value: "not-a-real-token"}}
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", badCookie); rec.Code != http.StatusUnauthorized {
+		t.Errorf("invalid cookie: status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	u, err := store.UpsertUserFromGoogle(context.Background(), "google-sub-1", "a@example.com", "A", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	token, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	goodCookie := []*http.Cookie{{Name: sessionCookieName, Value: token}}
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", goodCookie); rec.Code != http.StatusOK {
+		t.Errorf("valid session: status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
 }
 
 // TestBCPHandler_Success checks every route's happy path: status

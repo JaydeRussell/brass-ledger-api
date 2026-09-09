@@ -152,15 +152,21 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	api.NewBCPHandler(bcpClient).Register(e)
+	// Built unconditionally (not just when Google sign-in is configured)
+	// since api.RequireSession — gating BCPHandler's routes below — needs
+	// it regardless. It's a thin wrapper around pool, so constructing it
+	// has no cost or side effect on its own.
+	userStore := user.NewStore(pool)
+	api.NewBCPHandler(bcpClient).Register(e, api.RequireSession(userStore))
 
 	// Google sign-in is opt-in: only registered once real credentials
-	// are configured, so the rest of this service (BCP proxy, health
-	// checks) still runs before you've set up an OAuth client in Google
-	// Cloud Console. See the README's "Google sign-in setup" section.
+	// are configured. Note that means this whole app — not just the
+	// account-specific features below — is unreachable without it now:
+	// BCPHandler's routes above require a valid session, and without
+	// Google sign-in registered there's no way to ever get one. See the
+	// README's "Google sign-in setup" section.
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
-		userStore := user.NewStore(pool)
 		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure).Register(e)
 		// The BCP-profile-link + "my events" routes are session-gated (see
 		// internal/api/me.go), so there's no point registering them
@@ -175,7 +181,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		api.NewStatsHandler(userStore, bcpClient).Register(e)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 	} else {
-		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example)")
+		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example) — every route except /healthz and /readyz will 401, since there's no way to get a session")
 	}
 
 	return e

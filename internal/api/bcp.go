@@ -21,14 +21,18 @@ func NewBCPHandler(client bcpClient) *BCPHandler {
 	return &BCPHandler{client: client}
 }
 
-// Register wires this handler's routes onto e.
-func (h *BCPHandler) Register(e *echo.Echo) {
-	e.GET("/api/events/:id", h.EventInfo)
-	e.GET("/api/events/:id/players", h.Players)
-	e.GET("/api/events/:id/pairings", h.Pairings)
-	e.GET("/api/events/:id/placings", h.Placings)
-	e.GET("/api/itc/leagues/:gameSystemId", h.ItcLeagueID)
-	e.GET("/api/itc/rankings", h.ItcRanking)
+// Register wires this handler's routes onto e, behind requireSession —
+// the whole app is meant to be behind sign-in, not just the
+// account-specific features elsewhere in this package, so every route
+// here takes the same session-gating middleware (see
+// api.RequireSession, applied in cmd/server/main.go).
+func (h *BCPHandler) Register(e *echo.Echo, requireSession echo.MiddlewareFunc) {
+	e.GET("/api/events/:id", h.EventInfo, requireSession)
+	e.GET("/api/events/:id/players", h.Players, requireSession)
+	e.GET("/api/events/:id/pairings", h.Pairings, requireSession)
+	e.GET("/api/events/:id/placings", h.Placings, requireSession)
+	e.GET("/api/itc/leagues/:gameSystemId", h.ItcLeagueID, requireSession)
+	e.GET("/api/itc/rankings", h.ItcRanking, requireSession)
 }
 
 // EventInfo is GET /api/events/:id.
