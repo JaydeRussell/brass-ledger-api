@@ -130,15 +130,15 @@ func (h *MeHandler) Register(e *echo.Echo) {
 }
 
 // SetBcpProfile is POST /api/me/bcp-profile: links (or unlinks) a BCP
-// profile to the signed-in account.
+// profile to the signed-in account. Deliberately requireUser, not
+// requireApprovedUser — this is exactly what /welcome's onboarding flow
+// calls (see the frontend's BcpProfileLinker), and a pending account
+// should still be able to finish that step while waiting on approval
+// rather than getting stuck before an admin's even seen them.
 func (h *MeHandler) SetBcpProfile(c echo.Context) error {
-	cookie, err := c.Cookie(sessionCookieName)
+	u, err := requireUser(c, h.store)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-	}
-	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+		return err
 	}
 
 	var req bcpProfileRequest
@@ -155,15 +155,14 @@ func (h *MeHandler) SetBcpProfile(c echo.Context) error {
 }
 
 // Events is GET /api/me/events: the signed-in account's BCP events,
-// classified into past/present/future.
+// classified into past/present/future. requireApprovedUser, not
+// requireUser — unlike SetBcpProfile above, this is real BCP data, the
+// same "the whole app needs approval, not just sign-in" bar as
+// BCPHandler's routes.
 func (h *MeHandler) Events(c echo.Context) error {
-	cookie, err := c.Cookie(sessionCookieName)
+	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-	}
-	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+		return err
 	}
 
 	if u.BcpUserID == "" {

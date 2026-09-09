@@ -59,6 +59,17 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 	if !existed {
 		f.nextID++
 		u.ID = f.nextID
+		// Unlike the real Store (migration 0007 defaults a brand-new
+		// row to RoleUser/StatusPending), the fake defaults straight to
+		// RoleUser/StatusApproved — most of this package's existing
+		// tests are about follows/recent-events/stats logic that has
+		// nothing to do with approval gating, and forcing every one of
+		// them to also simulate an admin approving the fake user first
+		// would be unrelated churn. The approval-gating behavior itself
+		// (RequireApproved, requireApprovedUser) gets its own dedicated
+		// tests using an explicitly-pending fake user instead — see
+		// admin_test.go and bcp_test.go's TestBCPHandler_RequiresSession.
+		u.Role, u.Status = user.RoleUser, user.StatusApproved
 	}
 	u.Email, u.Name, u.AvatarURL = email, name, avatarURL
 	f.byGoogle[googleSub] = u
@@ -191,8 +202,16 @@ func stubGoogleServer(t *testing.T, tokenBody, userInfoBody string) *auth.Google
 const frontendURL = "http://frontend.example.com/"
 
 func newTestEcho(google *auth.GoogleOAuth, store userStore) *echo.Echo {
+	return newTestEchoWithAdmins(google, store, nil)
+}
+
+// newTestEchoWithAdmins is newTestEcho with ADMIN_EMAILS-equivalent
+// bootstrap emails set — split out rather than adding a parameter to
+// newTestEcho itself, since only the admin-bootstrap test
+// (TestCallback_AdminEmailBootstrap) cares about this.
+func newTestEchoWithAdmins(google *auth.GoogleOAuth, store userStore, adminEmails []string) *echo.Echo {
 	e := echo.New()
-	NewAuthHandler(google, store, frontendURL, false).Register(e)
+	NewAuthHandler(google, store, frontendURL, false, adminEmails).Register(e)
 	return e
 }
 
@@ -295,6 +314,54 @@ func TestGoogleCallback_Success(t *testing.T) {
 
 	if len(store.byGoogle) != 1 {
 		t.Errorf("store has %d users, want exactly 1", len(store.byGoogle))
+	}
+}
+
+// TestGoogleCallback_AdminEmailBootstrap covers Config.AdminEmails'
+// whole reason for existing: a sign-in whose email matches gets
+// auto-promoted to admin+approved, every time (not just their first
+// sign-in) — see auth.go's Callback and isAdminEmail. Case-
+// insensitivity matters here since real email comparison is
+// case-insensitive in practice.
+func TestGoogleCallback_AdminEmailBootstrap(t *testing.T) {
+	google := stubGoogleServer(t,
+		`{"access_token": "tok-abc"}`,
+		`{"sub": "google-sub-1", "email": "Admin@Example.com", "name": "Admin Person", "picture": ""}`,
+	)
+	store := newFakeUserStore()
+	e := newTestEchoWithAdmins(google, store, []string{"admin@example.com"})
+
+	location := signInAndGetLocation(t, e, "/auth/google/login")
+	// Even an admin's very first sign-in is unlinked, so it still goes
+	// through onboarding — ADMIN_EMAILS affects role/status, not this
+	// redirect.
+	if want := strings.TrimSuffix(frontendURL, "/") + "/welcome"; location != want {
+		t.Fatalf("redirected to %q, want %q", location, want)
+	}
+
+	for sub, u := range store.byGoogle {
+		if sub != "google-sub-1" {
+			continue
+		}
+		if u.Role != user.RoleAdmin {
+			t.Errorf("role = %q, want %q", u.Role, user.RoleAdmin)
+		}
+		if u.Status != user.StatusApproved {
+			t.Errorf("status = %q, want %q", u.Status, user.StatusApproved)
+		}
+	}
+
+	// A non-matching email is unaffected — the fake's own default
+	// (RoleUser/StatusApproved, see UpsertUserFromGoogle's comment) is
+	// what it gets, not admin.
+	google2 := stubGoogleServer(t,
+		`{"access_token": "tok-def"}`,
+		`{"sub": "google-sub-2", "email": "nobody@example.com", "name": "Nobody", "picture": ""}`,
+	)
+	e2 := newTestEchoWithAdmins(google2, store, []string{"admin@example.com"})
+	signInAndGetLocation(t, e2, "/auth/google/login")
+	if u := store.byGoogle["google-sub-2"]; u.Role != user.RoleUser {
+		t.Errorf("non-admin email role = %q, want %q", u.Role, user.RoleUser)
 	}
 }
 

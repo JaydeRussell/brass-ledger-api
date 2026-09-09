@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 // stubBCPServer serves just enough of BCP's real response shapes for
@@ -67,10 +67,12 @@ func alwaysFailServer(t *testing.T) *httptest.Server {
 // in this package already use for their own per-feature Echo helpers.
 func newBCPTestEcho(client *bcp.Client) *echo.Echo {
 	e := echo.New()
-	// A pass-through middleware — these tests are about the BCP proxy
-	// behavior itself, not the session gate in front of it (that's
-	// TestBCPHandler_RequiresSession below).
-	NewBCPHandler(client).Register(e, func(next echo.HandlerFunc) echo.HandlerFunc { return next })
+	// A pass-through middleware for both params — these tests are about
+	// the BCP proxy behavior itself, not the gates in front of it
+	// (that's TestBCPHandler_RequiresApproved and
+	// TestBCPHandler_Players_OnlyRequiresSession below).
+	passThrough := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	NewBCPHandler(client).Register(e, passThrough, passThrough)
 	return e
 }
 
@@ -81,17 +83,17 @@ func doBCPRequest(e *echo.Echo, method, path string) *httptest.ResponseRecorder 
 	return rec
 }
 
-// TestBCPHandler_RequiresSession checks that these routes are actually
-// gated behind sign-in now (unlike newBCPTestEcho's other callers,
-// which deliberately bypass the gate to test proxy behavior on its
-// own) — the whole point of wiring RequireSession into
+// TestBCPHandler_RequiresApproved checks that these routes are actually
+// gated behind sign-in *and* approval now (unlike newBCPTestEcho's
+// other callers, which deliberately bypass the gate to test proxy
+// behavior on its own) — the whole point of wiring RequireApproved into
 // cmd/server/main.go in the first place.
-func TestBCPHandler_RequiresSession(t *testing.T) {
+func TestBCPHandler_RequiresApproved(t *testing.T) {
 	server := stubBCPServer(t)
 	client := bcp.NewClientWithBaseURL(server.URL)
 	store := newFakeUserStore()
 	e := echo.New()
-	NewBCPHandler(client).Register(e, RequireSession(store))
+	NewBCPHandler(client).Register(e, RequireApproved(store), RequireSession(store))
 
 	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no cookie: status = %d, want %d", rec.Code, http.StatusUnauthorized)
@@ -102,17 +104,47 @@ func TestBCPHandler_RequiresSession(t *testing.T) {
 		t.Errorf("invalid cookie: status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 
-	u, err := store.UpsertUserFromGoogle(context.Background(), "google-sub-1", "a@example.com", "A", "")
-	if err != nil {
-		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	pendingCookie, _ := newSignedInUser(t, store, "pending", user.RoleUser, user.StatusPending)
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", []*http.Cookie{pendingCookie}); rec.Code != http.StatusForbidden {
+		t.Errorf("pending session: status = %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	token, err := store.CreateSession(context.Background(), u.ID)
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+
+	rejectedCookie, _ := newSignedInUser(t, store, "rejected", user.RoleUser, user.StatusRejected)
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", []*http.Cookie{rejectedCookie}); rec.Code != http.StatusForbidden {
+		t.Errorf("rejected session: status = %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	goodCookie := []*http.Cookie{{Name: sessionCookieName, Value: token}}
-	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", goodCookie); rec.Code != http.StatusOK {
-		t.Errorf("valid session: status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+
+	approvedCookie, _ := newSignedInUser(t, store, "approved", user.RoleUser, user.StatusApproved)
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", []*http.Cookie{approvedCookie}); rec.Code != http.StatusOK {
+		t.Errorf("approved session: status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+// TestBCPHandler_Players_OnlyRequiresSession checks the one deliberate
+// exception to TestBCPHandler_RequiresApproved above: Players is
+// reachable by a merely-signed-in (not yet approved) account, since
+// that's what the frontend's BCP-profile-linking roster picker needs
+// during onboarding — see Register's doc comment for the full
+// rationale. Every other route stays behind full approval regardless.
+func TestBCPHandler_Players_OnlyRequiresSession(t *testing.T) {
+	server := stubBCPServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	store := newFakeUserStore()
+	e := echo.New()
+	NewBCPHandler(client).Register(e, RequireApproved(store), RequireSession(store))
+
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1/players", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no cookie: status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	pendingCookie, _ := newSignedInUser(t, store, "players-pending", user.RoleUser, user.StatusPending)
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1/players", []*http.Cookie{pendingCookie}); rec.Code != http.StatusOK {
+		t.Errorf("pending session on Players: status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	// The exception is scoped to Players specifically — the same
+	// pending session still can't reach a route that requires approval.
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", []*http.Cookie{pendingCookie}); rec.Code != http.StatusForbidden {
+		t.Errorf("pending session on EventInfo: status = %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
 

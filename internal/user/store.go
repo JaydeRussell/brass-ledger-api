@@ -30,7 +30,35 @@ type User struct {
 	// comment) — so this is set once by the user pasting their own BCP
 	// profile URL/id.
 	BcpUserID string
+
+	// Role is "user" or "admin" — see migration 0007. An admin can
+	// approve/reject other accounts and promote/demote roles (see
+	// internal/api/admin.go); a plain "user" can't, regardless of
+	// Status below.
+	Role string
+
+	// Status is "pending", "approved", or "rejected" (migration 0007).
+	// A valid session alone (RoleUser or RoleAdmin, any status) is
+	// enough to authenticate — e.g. to see your own /api/me — but
+	// api.RequireApproved additionally requires Status == "approved"
+	// before a route does anything real. New accounts default to
+	// "pending"; see ADMIN_EMAILS (internal/config) for the one way a
+	// sign-in bypasses that default (auto-approved, every sign-in, not
+	// just its first).
+	Status string
 }
+
+// RoleAdmin and RoleUser are Role's two valid values (also enforced by
+// migration 0007's CHECK constraint). StatusPending/StatusApproved/
+// StatusRejected are Status's three.
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+
+	StatusPending  = "pending"
+	StatusApproved = "approved"
+	StatusRejected = "rejected"
+)
 
 // ErrSessionNotFound is returned by GetUserBySession both when the
 // token matches no row and when it matches an expired one — callers
@@ -59,6 +87,12 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // auth.UserInfo so this package doesn't need to know anything about
 // Google specifically — internal/api's routes are what translate one
 // into the other.
+// Deliberately never touches role/status on conflict — those default
+// to RoleUser/StatusPending on the *first* insert (migration 0007) and
+// stay whatever they were set to (by an admin, or by ADMIN_EMAILS
+// auto-approval — see internal/api/auth.go's Callback) on every
+// subsequent sign-in. A profile refresh should never silently reset
+// someone's access.
 func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name, avatarURL string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
@@ -69,8 +103,8 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, '')
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status)
 	if err != nil {
 		return User{}, fmt.Errorf("upserting user: %w", err)
 	}
@@ -98,11 +132,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, '')
+		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID)
+	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -133,6 +167,63 @@ func (s *Store) SetBcpUserID(ctx context.Context, userID int64, bcpUserID string
 		return fmt.Errorf("setting bcp_user_id: %w", err)
 	}
 	return nil
+}
+
+// SetStatus approves/rejects/re-pends an account — see internal/api/
+// admin.go, the only caller. The value itself is validated there (an
+// admin-only route with a fixed set of accepted actions), not here —
+// migration 0007's CHECK constraint is the actual backstop against a
+// bad value ever reaching the database.
+func (s *Store) SetStatus(ctx context.Context, userID int64, status string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET status = $1 WHERE id = $2`,
+		status, userID,
+	); err != nil {
+		return fmt.Errorf("setting status: %w", err)
+	}
+	return nil
+}
+
+// SetRole promotes/demotes an account between RoleUser and RoleAdmin —
+// see internal/api/admin.go, the only caller.
+func (s *Store) SetRole(ctx context.Context, userID int64, role string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET role = $1 WHERE id = $2`,
+		role, userID,
+	); err != nil {
+		return fmt.Errorf("setting role: %w", err)
+	}
+	return nil
+}
+
+// ListUsers returns every account for the admin panel (internal/api/
+// admin.go) — pending accounts first (what an admin actually needs to
+// act on), then everyone else, newest first within each group. No
+// pagination: fine at this project's expected scale, and adding it
+// later if that stops being true doesn't change this method's shape.
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status
+		FROM users
+		ORDER BY (status = 'pending') DESC, created_at DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing users: %w", err)
+	}
+	defer rows.Close()
+
+	users := []User{}
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status); err != nil {
+			return nil, fmt.Errorf("scanning user: %w", err)
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing users: %w", err)
+	}
+	return users, nil
 }
 
 // MaxRecentEvents mirrors the frontend's own trim limit (see

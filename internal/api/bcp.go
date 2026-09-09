@@ -21,18 +21,24 @@ func NewBCPHandler(client bcpClient) *BCPHandler {
 	return &BCPHandler{client: client}
 }
 
-// Register wires this handler's routes onto e, behind requireSession —
-// the whole app is meant to be behind sign-in, not just the
-// account-specific features elsewhere in this package, so every route
-// here takes the same session-gating middleware (see
-// api.RequireSession, applied in cmd/server/main.go).
-func (h *BCPHandler) Register(e *echo.Echo, requireSession echo.MiddlewareFunc) {
-	e.GET("/api/events/:id", h.EventInfo, requireSession)
+// Register wires this handler's routes onto e — most behind
+// requireApproved (the whole app is meant to be behind sign-in *and*
+// approval, not just the account-specific features elsewhere in this
+// package), except Players, which only takes requireSession. That one
+// exception is deliberate: the frontend's BCP-profile-linking flow
+// (`/welcome`'s roster picker — see brass-ledger-web's
+// BcpProfileLinker) calls this route to let a brand-new, still-pending
+// account find and pick itself off a roster it already knows it's on
+// — onboarding shouldn't be stuck waiting on approval just to reach the
+// step where an admin would actually decide whether to approve it.
+// Every other route stays behind full approval.
+func (h *BCPHandler) Register(e *echo.Echo, requireApproved, requireSession echo.MiddlewareFunc) {
+	e.GET("/api/events/:id", h.EventInfo, requireApproved)
 	e.GET("/api/events/:id/players", h.Players, requireSession)
-	e.GET("/api/events/:id/pairings", h.Pairings, requireSession)
-	e.GET("/api/events/:id/placings", h.Placings, requireSession)
-	e.GET("/api/itc/leagues/:gameSystemId", h.ItcLeagueID, requireSession)
-	e.GET("/api/itc/rankings", h.ItcRanking, requireSession)
+	e.GET("/api/events/:id/pairings", h.Pairings, requireApproved)
+	e.GET("/api/events/:id/placings", h.Placings, requireApproved)
+	e.GET("/api/itc/leagues/:gameSystemId", h.ItcLeagueID, requireApproved)
+	e.GET("/api/itc/rankings", h.ItcRanking, requireApproved)
 }
 
 // EventInfo is GET /api/events/:id.

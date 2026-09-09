@@ -81,6 +81,17 @@ func TestStore_UpsertUserFromGoogle(t *testing.T) {
 	if u.Email != "a@example.com" || u.Name != "Alice" || u.BcpUserID != "" {
 		t.Fatalf("unexpected user on create: %+v", u)
 	}
+	// Migration 0007's actual DEFAULT clauses, not a Go-level default —
+	// this is exactly the kind of thing only a real database can verify
+	// meaningfully (see internal/api's fakeUserStore, which deliberately
+	// defaults its own fake users to already-approved instead, for
+	// unrelated reasons — see its comment).
+	if u.Role != RoleUser {
+		t.Errorf("new user role = %q, want %q", u.Role, RoleUser)
+	}
+	if u.Status != StatusPending {
+		t.Errorf("new user status = %q, want %q", u.Status, StatusPending)
+	}
 
 	// Signing in again with the same googleSub but a changed profile
 	// (Google's own name/avatar can change) should update the existing
@@ -94,6 +105,20 @@ func TestStore_UpsertUserFromGoogle(t *testing.T) {
 	}
 	if u2.Email != "a-new@example.com" || u2.Name != "Alice Renamed" {
 		t.Fatalf("re-upsert did not update profile fields: %+v", u2)
+	}
+
+	// Approving an account, then that account signing in again (a
+	// routine profile refresh), must never silently reset it back to
+	// pending — see UpsertUserFromGoogle's doc comment.
+	if err := store.SetStatus(ctx, u.ID, StatusApproved); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	u3, err := store.UpsertUserFromGoogle(ctx, googleSub, "a-new@example.com", "Alice Renamed Again", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle (re-upsert after approval): %v", err)
+	}
+	if u3.Status != StatusApproved {
+		t.Fatalf("status after a routine re-upsert = %q, want %q (approval must survive a profile refresh)", u3.Status, StatusApproved)
 	}
 }
 
@@ -305,5 +330,66 @@ func TestStore_RecentEvents_TrimsToMax(t *testing.T) {
 		t.Fatalf("ListRecentEvents after bump returned %d events, want %d", len(events), MaxRecentEvents)
 	} else if events[0].EventID != bumpEventID {
 		t.Fatalf("most recent after bump = %q, want %q", events[0].EventID, bumpEventID)
+	}
+}
+
+func TestStore_AccessControl(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "g@example.com", "Grace", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	if u.Role != RoleUser || u.Status != StatusPending {
+		t.Fatalf("new user = role %q status %q, want %q/%q", u.Role, u.Status, RoleUser, StatusPending)
+	}
+
+	if err := store.SetStatus(ctx, u.ID, StatusApproved); err != nil {
+		t.Fatalf("SetStatus (approve): %v", err)
+	}
+	if err := store.SetRole(ctx, u.ID, RoleAdmin); err != nil {
+		t.Fatalf("SetRole (promote): %v", err)
+	}
+
+	// GetUserBySession is what every gated route actually reads — the
+	// real proof SetStatus/SetRole took effect where it matters, not
+	// just a raw column read.
+	token, err := store.CreateSession(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	got, err := store.GetUserBySession(ctx, token)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if got.Role != RoleAdmin || got.Status != StatusApproved {
+		t.Fatalf("after promote+approve, GetUserBySession = role %q status %q, want %q/%q", got.Role, got.Status, RoleAdmin, StatusApproved)
+	}
+
+	if err := store.SetStatus(ctx, u.ID, StatusRejected); err != nil {
+		t.Fatalf("SetStatus (reject): %v", err)
+	}
+	if got, err = store.GetUserBySession(ctx, token); err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	} else if got.Status != StatusRejected {
+		t.Fatalf("status after reject = %q, want %q", got.Status, StatusRejected)
+	}
+
+	users, err := store.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	var found bool
+	for _, listed := range users {
+		if listed.ID == u.ID {
+			found = true
+			if listed.Role != RoleAdmin || listed.Status != StatusRejected {
+				t.Errorf("ListUsers entry for this user = role %q status %q, want %q/%q", listed.Role, listed.Status, RoleAdmin, StatusRejected)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("ListUsers didn't include user %d", u.ID)
 	}
 }

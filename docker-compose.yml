@@ -52,6 +52,11 @@ services:
       GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8080/auth/google/callback}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Access control (migration 0007) — every sign-in whose email
+      # matches (comma-separated, case-insensitive) is auto-approved as
+      # an admin. Leave unset and every sign-in just starts pending,
+      # same as production unless ADMIN_EMAILS is set there too.
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       # Written inside the container at /logs, bind-mounted below to
       # ./logs on the host — so `make logs`/`make logs-tail` (which read
       # the same LOG_FILE-relative path from the host) see exactly what

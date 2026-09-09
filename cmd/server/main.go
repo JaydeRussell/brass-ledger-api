@@ -153,21 +153,21 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	})
 
 	// Built unconditionally (not just when Google sign-in is configured)
-	// since api.RequireSession — gating BCPHandler's routes below — needs
-	// it regardless. It's a thin wrapper around pool, so constructing it
-	// has no cost or side effect on its own.
+	// since api.RequireApproved — gating BCPHandler's routes below —
+	// needs it regardless. It's a thin wrapper around pool, so
+	// constructing it has no cost or side effect on its own.
 	userStore := user.NewStore(pool)
-	api.NewBCPHandler(bcpClient).Register(e, api.RequireSession(userStore))
+	api.NewBCPHandler(bcpClient).Register(e, api.RequireApproved(userStore), api.RequireSession(userStore))
 
 	// Google sign-in is opt-in: only registered once real credentials
 	// are configured. Note that means this whole app — not just the
 	// account-specific features below — is unreachable without it now:
-	// BCPHandler's routes above require a valid session, and without
+	// BCPHandler's routes above require an approved session, and without
 	// Google sign-in registered there's no way to ever get one. See the
 	// README's "Google sign-in setup" section.
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
-		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure).Register(e)
+		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails).Register(e)
 		// The BCP-profile-link + "my events" routes are session-gated (see
 		// internal/api/me.go), so there's no point registering them
 		// without sign-in itself also being enabled.
@@ -179,7 +179,13 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
 		api.NewStatsHandler(userStore, bcpClient).Register(e)
+		// Access-control management (migration 0007) — admin-only, same
+		// reason it only makes sense once sign-in itself is enabled.
+		api.NewAdminHandler(userStore).Register(e)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
+		if len(cfg.AdminEmails) == 0 {
+			log.Printf("ADMIN_EMAILS is not set — nobody can approve a pending account (see .env.example)")
+		}
 	} else {
 		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example) — every route except /healthz and /readyz will 401, since there's no way to get a session")
 	}

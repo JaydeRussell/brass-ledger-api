@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -207,6 +208,40 @@ func TestLoad_LogFile(t *testing.T) {
 			}
 			if cfg.LogFile != tc.wantLogFile {
 				t.Errorf("cfg.LogFile = %q, want %q", cfg.LogFile, tc.wantLogFile)
+			}
+		})
+	}
+}
+
+// TestParseAdminEmails covers the trimming/lowercasing/empty-entry
+// cases parseAdminEmails needs to handle for a real ADMIN_EMAILS value
+// (see AdminEmails' doc comment) — malformed input here doesn't fail
+// Load(), it just silently produces a shorter (or nil) list.
+func TestParseAdminEmails(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "unset/empty", raw: "", want: nil},
+		{name: "single address", raw: "you@example.com", want: []string{"you@example.com"}},
+		{
+			name: "multiple, trimmed and lowercased",
+			raw:  " You@Example.com , Other@Example.com ",
+			want: []string{"you@example.com", "other@example.com"},
+		},
+		{
+			name: "leading/trailing/double commas drop empty entries",
+			raw:  ",you@example.com,,other@example.com,",
+			want: []string{"you@example.com", "other@example.com"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAdminEmails(tc.raw)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("parseAdminEmails(%q) = %#v, want %#v", tc.raw, got, tc.want)
 			}
 		})
 	}
