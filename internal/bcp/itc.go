@@ -9,53 +9,56 @@ import (
 
 // --- ITC ranking (score + rank) --------------------------------------
 //
-// See the frontend's original section note (still accurate): BCP tracks
-// a season-long, cross-event "ITC Points" ranking per player, scoped to
-// a "league" — BCP's current flagship ranking league for the game
-// system, found by fetching the most recent leagues for that game
-// system and picking the one flagged gw_itc (BCP's own marker for its
-// flagship ranking league) that isn't the hobby-track variant. Once the
-// league id is known, `/v1/placings?...&userId[]={id}` is the one query
-// param on this whole API that does filter correctly server-side, making
-// a single, cheap, per-player lookup possible without ever pulling the
-// full (multi-thousand-row) leaderboard.
+// BCP tracks a season-long, cross-event "ITC Points" ranking per player,
+// scoped to a "league" — BCP's current flagship ranking league for the
+// game system. Once the league id is known,
+// `/v1/placings?...&userId[]={id}` is the one query param on this whole
+// API that does filter correctly server-side, making a single, cheap,
+// per-player lookup possible without ever pulling the full
+// (multi-thousand-row) leaderboard.
+//
+// Finding *which* league id is the current flagship one used to mean
+// searching BCP's game-system-wide `/v1/leagues` list for the newest
+// entry flagged `gw_itc` (BCP's marker for its flagship ranking league)
+// that isn't the hobby-track variant. That stopped working — confirmed
+// live against BCP's real API: the list endpoint no longer returns a
+// `gw_itc` field on any record at all (every league comes back with an
+// unrelated `itc` boolean instead, always false for the real flagship
+// league), and even correcting the field name wouldn't be enough on its
+// own — the real current flagship league doesn't sort into the newest
+// 99 by startDate either (BCP hard-caps `limit` at 99), buried under a
+// large and constantly-growing pool of local/store leagues with newer
+// dates. A search-and-sort-and-take-first strategy over that whole pool
+// can no longer reliably find it, regardless of field name.
+//
+// The reliable signal instead: an *event's own* info response already
+// lists which league(s) it's scored under (see EventInfo.LeagueIDs,
+// populated from BCP's `leagues` array on the event). Fetching each of
+// those by id via FetchLeagueInfo (below) still correctly returns
+// `gw_itc` — confirmed live: the single-league-by-id endpoint kept the
+// field even though the list endpoint dropped it. So resolution is now
+// anchored on one specific event's own known leagues (a handful of
+// already-cached per-league lookups) rather than a blind search over an
+// entire game system's leagues.
 
-type bcpLeagueRecord struct {
-	ID    string `json:"id"`
-	GwItc bool   `json:"gw_itc"`
-	Hobby bool   `json:"hobby"`
-}
-
-type bcpLeaguesResponse struct {
-	Data []bcpLeagueRecord `json:"data"`
-}
-
-func (c *Client) fetchCurrentItcLeagueIDUncached(ctx context.Context, gameSystemID string) (string, error) {
-	q := url.Values{}
-	q.Set("limit", "99")
-	q.Set("gameSystemId", gameSystemID)
-	q.Set("sortAscending", "false")
-	q.Set("sortBy", "startDate")
-	rawURL := fmt.Sprintf("%s/leagues?%s", c.apiBaseV1, q.Encode())
-
-	var body bcpLeaguesResponse
-	if err := c.get(ctx, rawURL, &body); err != nil {
-		return "", err
-	}
-
-	for _, l := range body.Data {
-		if l.GwItc && !l.Hobby {
-			return l.ID, nil
+// FetchCurrentItcLeagueIDForEvent returns the current flagship ITC
+// league id among the given league ids (an event's own EventInfo.
+// LeagueIDs), or "" if none of them are the flagship one (gw_itc &&
+// !hobby) — e.g. a local RTT scored under only a store/hobby league.
+// Each lookup is a small, already-cached FetchLeagueInfo call; one
+// failed lookup doesn't abort the search, since a transient error on
+// one of an event's leagues shouldn't hide a working one.
+func (c *Client) FetchCurrentItcLeagueIDForEvent(ctx context.Context, leagueIDs []string) (string, error) {
+	for _, id := range leagueIDs {
+		info, err := c.FetchLeagueInfo(ctx, id)
+		if err != nil || info == nil {
+			continue
+		}
+		if info.GwItc && !info.Hobby {
+			return id, nil
 		}
 	}
 	return "", nil
-}
-
-// FetchCurrentItcLeagueID returns BCP's current flagship ITC ranking
-// league id for a game system, or "" if it couldn't be resolved (e.g.
-// this game system has no such league).
-func (c *Client) FetchCurrentItcLeagueID(ctx context.Context, gameSystemID string) (string, error) {
-	return c.itcLeagueID.Get(ctx, gameSystemID)
 }
 
 type bcpLeagueInfoResponse struct {

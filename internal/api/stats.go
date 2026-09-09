@@ -36,29 +36,29 @@ type placingWithField struct {
 // a BCP profile yet — same "not linked" vs "linked but nothing yet"
 // distinction myEventsResponse makes.
 //
-// MostRecentGameSystemID is the game system of the player's single most
-// recent placing-history entry, from one extra FetchEventInfo call — the
-// only way to learn a game system id at all, since neither
-// PlacingHistoryEntry nor this endpoint's own aggregation carries one.
-// It's the frontend's cue for which game system to look up an ITC
-// ranking for (via the already-existing /api/itc/leagues/:gameSystemId
-// and /api/itc/rankings endpoints) — omitted if that one lookup fails,
-// in which case the frontend just doesn't show an ITC score rather than
-// failing the whole stats card.
+// MostRecentEventID is the event id of the player's single most recent
+// placing-history entry — the frontend's cue for which event's own
+// known leagues to resolve a current ITC league from (via
+// /api/itc/leagues/event/:eventId and /api/itc/rankings), anchored on
+// one specific event rather than a bare game system id (see
+// FetchCurrentItcLeagueIDForEvent's doc comment in internal/bcp/itc.go
+// for why a game-system-wide search stopped being reliable). Omitted if
+// there's no placing history at all, in which case the frontend just
+// doesn't show an ITC score rather than failing the whole stats card.
 //
 // CompetingSince is the earliest EventDate across the player's whole
 // (deduped) history — BCP already publishes it per event; this just
 // takes the min.
 type playerStatsResponse struct {
-	Linked                 bool              `json:"linked"`
-	TotalEvents            int               `json:"totalEvents"`
-	BestPlacing            *placingWithField `json:"bestPlacing,omitempty"`
-	BestPlacingRTT         *placingWithField `json:"bestPlacingRtt,omitempty"`
-	BestPlacingGT          *placingWithField `json:"bestPlacingGt,omitempty"`
-	BestPlacingTeams       *placingWithField `json:"bestPlacingTeams,omitempty"`
-	Factions               []factionStat     `json:"factions"`
-	MostRecentGameSystemID string            `json:"mostRecentGameSystemId,omitempty"`
-	CompetingSince         string            `json:"competingSince,omitempty"`
+	Linked            bool              `json:"linked"`
+	TotalEvents       int               `json:"totalEvents"`
+	BestPlacing       *placingWithField `json:"bestPlacing,omitempty"`
+	BestPlacingRTT    *placingWithField `json:"bestPlacingRtt,omitempty"`
+	BestPlacingGT     *placingWithField `json:"bestPlacingGt,omitempty"`
+	BestPlacingTeams  *placingWithField `json:"bestPlacingTeams,omitempty"`
+	Factions          []factionStat     `json:"factions"`
+	MostRecentEventID string            `json:"mostRecentEventId,omitempty"`
+	CompetingSince    string            `json:"competingSince,omitempty"`
 }
 
 func emptyPlayerStatsResponse(linked bool) playerStatsResponse {
@@ -122,7 +122,7 @@ func classifyEventCategory(h bcp.PlacingHistoryEntry, teamEvent bool) (category 
 //
 // Prefers whichever entry's league is BCP's flagship, non-hobby ITC
 // league (gw_itc && !hobby) — the same definition already used for this
-// app's ITC ranking feature (FetchCurrentItcLeagueID) — falling back to
+// app's ITC ranking feature (FetchCurrentItcLeagueIDForEvent) — falling back to
 // the first entry seen for an event with no flagship-league row at all
 // (e.g. a small local RTT with no circuit affiliation, which still
 // deserves a placing shown even though it can't be confirmed flagship).
@@ -320,10 +320,8 @@ func (h *StatsHandler) Stats(c echo.Context) error {
 
 	if len(history) > 0 {
 		// history is sorted most-recent-first (FetchPlacingHistory's own
-		// contract, preserved by canonicalPlacingPerEvent) — a missing
-		// entry here just means no ITC section on the frontend, not a
-		// failed request.
-		resp.MostRecentGameSystemID = infos[history[0].EventID].GameSystemID
+		// contract, preserved by canonicalPlacingPerEvent).
+		resp.MostRecentEventID = history[0].EventID
 	}
 
 	return c.JSON(http.StatusOK, resp)

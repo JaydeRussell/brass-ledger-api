@@ -68,6 +68,7 @@ type bcpEventInfoResponse struct {
 		Name string `json:"name"`
 	} `json:"gameSystem"`
 	Leagues []struct {
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"leagues"`
 }
@@ -146,9 +147,13 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 	}
 
 	circuits := make([]string, 0, len(body.Leagues))
+	leagueIDs := make([]string, 0, len(body.Leagues))
 	for _, l := range body.Leagues {
 		if l.Name != "" {
 			circuits = append(circuits, l.Name)
+		}
+		if l.ID != "" {
+			leagueIDs = append(leagueIDs, l.ID)
 		}
 	}
 
@@ -171,6 +176,7 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 		RegistrationCount: body.CountString,
 		PlayerCount:       playerCount,
 		Circuits:          circuits,
+		LeagueIDs:         leagueIDs,
 	}
 
 	// Only an already-concluded event's info is safe to persist forever —

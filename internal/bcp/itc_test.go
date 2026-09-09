@@ -38,40 +38,65 @@ func TestSplitItcRankingKey_Errors(t *testing.T) {
 	}
 }
 
-func TestFetchCurrentItcLeagueID(t *testing.T) {
+// TestFetchCurrentItcLeagueIDForEvent covers the event-anchored
+// resolution that replaced a game-system-wide leagues search (see
+// itc.go's doc comment for why that search stopped being reliable
+// against BCP's real API) — this looks up each of an event's own known
+// league ids individually via FetchLeagueInfo (/v1/leagues/:id), which
+// still correctly returns gw_itc even though BCP's list endpoint
+// (/v1/leagues) no longer does.
+func TestFetchCurrentItcLeagueIDForEvent(t *testing.T) {
 	cases := []struct {
-		name string
-		body string
-		want string
+		name      string
+		leagueIDs []string
+		infoByID  map[string]string // leagueID -> /v1/leagues/:id response body
+		want      string
 	}{
 		{
-			name: "picks the flagship (gw_itc, non-hobby) league",
-			body: `{"data": [
-				{"id": "hobby-league", "gw_itc": true, "hobby": true},
-				{"id": "not-itc-league", "gw_itc": false, "hobby": false},
-				{"id": "flagship-league", "gw_itc": true, "hobby": false}
-			]}`,
+			name:      "picks the flagship (gw_itc, non-hobby) league among the event's own leagues",
+			leagueIDs: []string{"hobby-league", "flagship-league"},
+			infoByID: map[string]string{
+				"hobby-league":    `{"name": "Hobby Track", "gw_itc": true, "hobby": true}`,
+				"flagship-league": `{"name": "Warhammer Global Rankings 2026", "gw_itc": true, "hobby": false}`,
+			},
 			want: "flagship-league",
 		},
 		{
-			name: "no matching league resolves to empty, not an error",
-			body: `{"data": [{"id": "other", "gw_itc": false, "hobby": false}]}`,
+			name:      "no matching league resolves to empty, not an error",
+			leagueIDs: []string{"local-rtt-league"},
+			infoByID: map[string]string{
+				"local-rtt-league": `{"name": "Some Local RTT", "gw_itc": false, "hobby": false}`,
+			},
 			want: "",
+		},
+		{
+			name:      "a failed lookup on one league doesn't hide a working one",
+			leagueIDs: []string{"broken-league", "flagship-league"},
+			infoByID: map[string]string{
+				"flagship-league": `{"name": "Warhammer Global Rankings 2026", "gw_itc": true, "hobby": false}`,
+				// "broken-league" deliberately has no handler entry, so
+				// the mux 404s it.
+			},
+			want: "flagship-league",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(jsonHandler(http.StatusOK, tc.body))
+			mux := http.NewServeMux()
+			for id, body := range tc.infoByID {
+				mux.HandleFunc("/leagues/"+id, jsonHandler(http.StatusOK, body))
+			}
+			server := httptest.NewServer(mux)
 			defer server.Close()
 			client := newTestClient(server)
 
-			got, err := client.FetchCurrentItcLeagueID(context.Background(), "gs-1")
+			got, err := client.FetchCurrentItcLeagueIDForEvent(context.Background(), tc.leagueIDs)
 			if err != nil {
-				t.Fatalf("FetchCurrentItcLeagueID returned error: %v", err)
+				t.Fatalf("FetchCurrentItcLeagueIDForEvent returned error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("FetchCurrentItcLeagueID = %q, want %q", got, tc.want)
+				t.Errorf("FetchCurrentItcLeagueIDForEvent = %q, want %q", got, tc.want)
 			}
 		})
 	}
