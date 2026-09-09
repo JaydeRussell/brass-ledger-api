@@ -203,7 +203,17 @@ npx wrangler login                # authenticate the CLI once
 npx wrangler secret put DATABASE_URL          # Neon's connection string (sslmode=require)
 npx wrangler secret put GOOGLE_CLIENT_ID
 npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put ADMIN_EMAILS          # comma-separated, see "Access control" above —
+                                               # without this, nobody ever gets bootstrapped
+                                               # into the admin role, and there's no in-app way
+                                               # to promote the first admin
 ```
+
+If `ADMIN_EMAILS` is ever added or changed, redeploy (`npx wrangler deploy`) afterward — a
+running Container instance keeps the env it started with, so the new value only takes effect
+on a fresh instance, not immediately. The affected account also needs to sign in again (or
+sign out and back in) afterward, since the promotion happens in the OAuth callback, not
+retroactively.
 
 Then, and on every subsequent deploy:
 

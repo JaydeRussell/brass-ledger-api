@@ -70,10 +70,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       # Catches a bad deploy immediately rather than silently — the same
       # checks `make smoke` runs locally, pointed at the real production
-      # URLs instead of localhost. A short sleep first: a Container that
-      # was asleep (see wrangler.jsonc's sleepAfter) takes a moment to
-      # spin back up on its first request after a redeploy.
-      - run: sleep 5 && ./scripts/smoke-test.sh
+      # URLs instead of localhost. No fixed sleep here (a Container that
+      # was asleep — see wrangler.jsonc's sleepAfter — could take longer
+      # than any single guessed delay to spin back up): smoke-test.sh's
+      # own check() now retries each URL with a backoff instead, so a
+      # slow-to-wake container still passes once it actually answers,
+      # rather than a one-shot request racing the cold start.
+      - run: ./scripts/smoke-test.sh
         env:
           BACKEND_URL: https://api.brass-ledger.app
           FRONTEND_URL: https://brass-ledger.app
