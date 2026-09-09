@@ -106,11 +106,17 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 			teamName = teamNameByID[r.TeamPlayerID]
 		}
 
+		var disposition string
+		if forceDispositions[r.SubFaction.Name] {
+			disposition = r.SubFaction.Name
+		}
+
 		players = append(players, Player{
 			ID:           r.ID,
 			Name:         name,
 			Faction:      faction,
 			SubFaction:   r.SubFaction.Name,
+			Disposition:  disposition,
 			Team:         teamName,
 			TeamPlayerID: r.TeamPlayerID,
 			HomeClub:     r.Team.Name,

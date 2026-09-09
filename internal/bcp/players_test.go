@@ -65,3 +65,66 @@ func TestFetchPlayers(t *testing.T) {
 		})
 	}
 }
+
+// TestFetchPlayers_Disposition covers Player.Disposition, populated only
+// when BCP's subFaction value is an exact match for one of 40k 11th
+// edition's five Force Dispositions (see forceDispositions in types.go) —
+// confirmed live against a real event where BCP overloads the same
+// subFaction slot for this. An event not using Force Disposition
+// missions has a real sub-faction name there instead, which must pass
+// through to SubFaction unaffected and leave Disposition empty.
+func TestFetchPlayers_Disposition(t *testing.T) {
+	cases := []struct {
+		name            string
+		subFaction      string
+		wantSubFaction  string
+		wantDisposition string
+	}{
+		{
+			name:            "subFaction holding a Force Disposition value is also surfaced as Disposition",
+			subFaction:      "Purge the Foe",
+			wantSubFaction:  "Purge the Foe",
+			wantDisposition: "Purge the Foe",
+		},
+		{
+			name:            "a genuine sub-faction name is left alone and Disposition stays empty",
+			subFaction:      "Ultramarines",
+			wantSubFaction:  "Ultramarines",
+			wantDisposition: "",
+		},
+		{
+			name:            "no subFaction at all",
+			subFaction:      "",
+			wantSubFaction:  "",
+			wantDisposition: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			playersBody := `{"active": [
+				{"id": "p1", "user": {"id": "u1", "firstName": "Anna", "lastName": "Adams"}, "faction": {"name": "Space Marines"}, "subFaction": {"name": "` + tc.subFaction + `"}, "listId": "l1"}
+			]}`
+			mux.HandleFunc("/events/evt-1/players", jsonHandler(http.StatusOK, playersBody))
+			mux.HandleFunc("/events/evt-1/teamplayers", jsonHandler(http.StatusNotFound, "not found"))
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			client := newTestClient(server)
+
+			got, err := client.FetchPlayers(context.Background(), "evt-1")
+			if err != nil {
+				t.Fatalf("FetchPlayers returned error: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("FetchPlayers returned %d players, want 1 (%+v)", len(got), got)
+			}
+			if got[0].SubFaction != tc.wantSubFaction {
+				t.Errorf("SubFaction = %q, want %q", got[0].SubFaction, tc.wantSubFaction)
+			}
+			if got[0].Disposition != tc.wantDisposition {
+				t.Errorf("Disposition = %q, want %q", got[0].Disposition, tc.wantDisposition)
+			}
+		})
+	}
+}
