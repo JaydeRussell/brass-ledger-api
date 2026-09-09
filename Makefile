@@ -1,4 +1,4 @@
-.PHONY: help build run test lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
+.PHONY: help build run test test-integration lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -11,6 +11,10 @@ run: ## Run the server locally (reads .env via godotenv — see .env.example)
 
 test: ## Run the test suite
 	go test ./...
+
+test-integration: ## Run internal/user's integration tests against the local docker-compose Postgres (must be up — see docker-up)
+	DATABASE_URL="postgres://$${POSTGRES_USER:-brassledger}:$${POSTGRES_PASSWORD:-brassledger}@localhost:5432/$${POSTGRES_DB:-brass_ledger}?sslmode=disable" \
+		go test -tags=integration ./internal/user/...
 
 lint: ## Vet the code and fail if anything isn't gofmt-formatted
 	go vet ./...

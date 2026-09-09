@@ -251,11 +251,28 @@ go test ./... -race    # cache.go's concurrency guarantees are worth
                         # checking under the race detector specifically
 ```
 
-`internal/db` (a thin wrapper over `pgxpool`, plus the migration runner)
-and `internal/user` (the Postgres-backed session store) aren't unit
-tested here — both need a real Postgres to say anything a mock wouldn't
-just assert back at itself. If that coverage matters later, it's a
-testcontainers-style integration test, not a table-driven unit test.
+`internal/user` (the Postgres-backed user/session store) needs a real
+Postgres to say anything a mock wouldn't just assert back at itself —
+it has its own integration test suite
+(`internal/user/store_integration_test.go`), gated behind the
+`integration` build tag so it never runs as part of plain
+`go test ./...` and never requires a database just to work on anything
+else:
+
+```bash
+make test-integration   # against the local docker-compose Postgres (must be up — `make docker-up`)
+
+# equivalent, if you'd rather run it directly:
+DATABASE_URL=postgres://brassledger:brassledger@localhost:5432/brass_ledger?sslmode=disable \
+  go test -tags=integration ./internal/user/...
+```
+
+CI runs this too (see `.github/workflows/ci.yml`'s `integration` job,
+against a Postgres service container) and it gates every deploy, same
+as the regular `test` job. `internal/db` (a thin wrapper over
+`pgxpool`, plus the migration runner) is exercised implicitly by this
+same suite's `db.Migrate` call in its test setup, rather than having
+tests of its own.
 
 ## Project layout
 
