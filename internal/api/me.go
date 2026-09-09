@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 	"github.com/labstack/echo/v4"
 )
 
@@ -127,6 +128,7 @@ func NewMeHandler(store userStore, client bcpClient) *MeHandler {
 func (h *MeHandler) Register(e *echo.Echo) {
 	e.POST("/api/me/bcp-profile", h.SetBcpProfile)
 	e.GET("/api/me/events", h.Events)
+	e.POST("/api/me/theme", h.SetTheme)
 }
 
 // SetBcpProfile is POST /api/me/bcp-profile: links (or unlinks) a BCP
@@ -152,6 +154,37 @@ func (h *MeHandler) SetBcpProfile(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{"bcpUserId": bcpUserID})
+}
+
+// themeRequest is the body for POST /api/me/theme.
+type themeRequest struct {
+	Theme string `json:"theme"`
+}
+
+// SetTheme is POST /api/me/theme: saves the signed-in account's
+// light/dark/system preference so the redesign's theme toggle follows
+// them across devices instead of staying stuck in one browser's
+// localStorage. Deliberately requireUser, not requireApprovedUser — same
+// reasoning as SetBcpProfile above: this is a personal UI preference, not
+// BCP data access, so there's no reason to make a pending account wait on
+// approval before they can pick a theme.
+func (h *MeHandler) SetTheme(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+
+	var req themeRequest
+	if bindErr := c.Bind(&req); bindErr != nil ||
+		(req.Theme != user.ThemeLight && req.Theme != user.ThemeDark && req.Theme != user.ThemeSystem) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": `"theme" must be "light", "dark", or "system"`})
+	}
+
+	if err := h.store.SetThemePreference(c.Request().Context(), u.ID, req.Theme); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 // Events is GET /api/me/events: the signed-in account's BCP events,

@@ -64,6 +64,9 @@ type userStore interface {
 	SetStatus(ctx context.Context, userID int64, status string) error
 	SetRole(ctx context.Context, userID int64, role string) error
 	ListUsers(ctx context.Context) ([]user.User, error)
+	// SetThemePreference is used by MeHandler (internal/api/me.go), same
+	// reason as SetBcpUserID above.
+	SetThemePreference(ctx context.Context, userID int64, theme string) error
 }
 
 // AuthHandler wires up Google sign-in, sign-out, and the signed-in-user
@@ -258,13 +261,14 @@ func (h *AuthHandler) Me(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"id":        u.ID,
-		"email":     u.Email,
-		"name":      u.Name,
-		"avatarUrl": u.AvatarURL,
-		"bcpUserId": u.BcpUserID,
-		"role":      u.Role,
-		"status":    u.Status,
+		"id":              u.ID,
+		"email":           u.Email,
+		"name":            u.Name,
+		"avatarUrl":       u.AvatarURL,
+		"bcpUserId":       u.BcpUserID,
+		"role":            u.Role,
+		"status":          u.Status,
+		"themePreference": u.ThemePreference,
 	})
 }
 
