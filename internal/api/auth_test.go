@@ -70,6 +70,10 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 		// tests using an explicitly-pending fake user instead — see
 		// admin_test.go and bcp_test.go's TestBCPHandler_RequiresSession.
 		u.Role, u.Status = user.RoleUser, user.StatusApproved
+		// Matches the real Store's migration-0008 default — a brand
+		// new row starts at "system", same as a guest who's never
+		// touched the toggle.
+		u.ThemePreference = user.ThemeSystem
 	}
 	u.Email, u.Name, u.AvatarURL = email, name, avatarURL
 	f.byGoogle[googleSub] = u

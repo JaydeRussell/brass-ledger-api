@@ -46,6 +46,14 @@ type User struct {
 	// sign-in bypasses that default (auto-approved, every sign-in, not
 	// just its first).
 	Status string
+
+	// ThemePreference is "light", "dark", or "system" (migration 0008)
+	// — the redesign's light/dark/system toggle, synced to the account
+	// so it follows a signed-in visitor across devices instead of
+	// staying stuck in one browser's localStorage. Defaults to "system"
+	// for every account, same as a guest who's never touched the
+	// toggle.
+	ThemePreference string
 }
 
 // RoleAdmin and RoleUser are Role's two valid values (also enforced by
@@ -58,6 +66,12 @@ const (
 	StatusPending  = "pending"
 	StatusApproved = "approved"
 	StatusRejected = "rejected"
+
+	// ThemeLight, ThemeDark, and ThemeSystem are ThemePreference's three
+	// valid values (also enforced by migration 0008's CHECK constraint).
+	ThemeLight  = "light"
+	ThemeDark   = "dark"
+	ThemeSystem = "system"
 )
 
 // ErrSessionNotFound is returned by GetUserBySession both when the
@@ -103,8 +117,8 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, theme_preference
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference)
 	if err != nil {
 		return User{}, fmt.Errorf("upserting user: %w", err)
 	}
@@ -132,11 +146,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status
+		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.theme_preference
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status)
+	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -192,6 +206,21 @@ func (s *Store) SetRole(ctx context.Context, userID int64, role string) error {
 		role, userID,
 	); err != nil {
 		return fmt.Errorf("setting role: %w", err)
+	}
+	return nil
+}
+
+// SetThemePreference updates a signed-in account's saved light/dark/
+// system choice — see internal/api/me.go, the only caller. Like
+// SetStatus/SetRole, the value itself is validated by the caller (a
+// fixed set of accepted strings); migration 0008's CHECK constraint is
+// the actual backstop against a bad value ever reaching the database.
+func (s *Store) SetThemePreference(ctx context.Context, userID int64, theme string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET theme_preference = $1 WHERE id = $2`,
+		theme, userID,
+	); err != nil {
+		return fmt.Errorf("setting theme_preference: %w", err)
 	}
 	return nil
 }

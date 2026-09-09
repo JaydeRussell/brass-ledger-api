@@ -33,6 +33,21 @@ func (f *fakeUserStore) SetBcpUserID(_ context.Context, userID int64, bcpUserID 
 	return user.ErrSessionNotFound
 }
 
+// SetThemePreference extends fakeUserStore the same way SetBcpUserID
+// above does, for MeHandler.SetTheme's tests.
+func (f *fakeUserStore) SetThemePreference(_ context.Context, userID int64, theme string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for sub, u := range f.byGoogle {
+		if u.ID == userID {
+			u.ThemePreference = theme
+			f.byGoogle[sub] = u
+			return nil
+		}
+	}
+	return user.ErrSessionNotFound
+}
+
 // signedInSession signs a fake user in (bypassing the Google flow
 // entirely, since these tests are only about the /api/me/* routes'
 // own logic) and returns a session cookie for them plus their id.
@@ -113,6 +128,82 @@ func TestBcpProfile_LinksAndUnlinks(t *testing.T) {
 	}
 	if u.BcpUserID != "" {
 		t.Errorf("BcpUserID after unlinking = %q, want empty", u.BcpUserID)
+	}
+}
+
+func TestSetTheme_RequiresSignIn(t *testing.T) {
+	e := newMeTestEcho(newFakeUserStore(), bcp.NewClient())
+	req := httptest.NewRequest(http.MethodPost, "/api/me/theme", strings.NewReader(`{"theme": "dark"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestSetTheme_DoesNotRequireApproval confirms this route uses
+// requireUser, not requireApprovedUser — same as SetBcpProfile, a
+// pending account should still be able to set a personal UI preference.
+func TestSetTheme_DoesNotRequireApproval(t *testing.T) {
+	store := newFakeUserStore()
+	u, err := store.UpsertUserFromGoogle(context.Background(), "sub-pending", "p@example.com", "Pat Pending", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	if err := store.SetStatus(context.Background(), u.ID, user.StatusPending); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	token, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cookie := &http.Cookie{Name: sessionCookieName, Value: token}
+
+	e := newMeTestEcho(store, bcp.NewClient())
+	req := httptest.NewRequest(http.MethodPost, "/api/me/theme", strings.NewReader(`{"theme": "dark"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+}
+
+func TestSetTheme_SavesAndRejectsInvalidValues(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	e := newMeTestEcho(store, bcp.NewClient())
+
+	setTheme := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/me/theme", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := setTheme(`{"theme": "dark"}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	u, err := store.GetUserBySession(context.Background(), cookie.Value)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if u.ThemePreference != user.ThemeDark || u.ID != userID {
+		t.Errorf("store user = %+v, want ThemePreference dark for user %d", u, userID)
+	}
+
+	for _, bad := range []string{`{"theme": "purple"}`, `{}`, `not json`} {
+		rec := setTheme(bad)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("setTheme(%s) status = %d, want %d (body: %s)", bad, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
 	}
 }
 
