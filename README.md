@@ -1,5 +1,7 @@
 # Brass Ledger
 
+[![CI/CD](https://github.com/JaydeRussell/brass-ledger-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JaydeRussell/brass-ledger-api/actions/workflows/ci.yml)
+
 **Tournament Companion** for Warhammer 40k — this is the backend for
 [brass-ledger-web](../brass-ledger-web). Written in Go, using
 [Echo](https://echo.labstack.com/) and Postgres.
