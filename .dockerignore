@@ -6,3 +6,13 @@
 *.md
 bin/
 tmp/
+
+# Wrangler/Cloudflare Container deploy tooling — not part of the Go
+# build this Dockerfile produces.
+node_modules/
+.wrangler/
+wrangler.jsonc
+src/
+package.json
+package-lock.json
+tsconfig.json

@@ -1,0 +1,15 @@
+{
+  "name": "brass-ledger-api-worker",
+  "private": true,
+  "description": "Wrangler/Worker glue to run the Go backend as a Cloudflare Container — see wrangler.jsonc and src/worker.ts. The actual application is the Go module in this repo; this is deploy tooling only.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "cf:dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@cloudflare/workers-types": "^5.20260908.1",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.130.0"
+  }
+}

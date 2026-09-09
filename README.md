@@ -156,6 +156,44 @@ One prerequisite: the backend's Docker build copies `go.sum`, so run `go
 mod tidy` locally at least once (see "Running locally" above) before the
 first `./run.sh` — after that, Docker handles everything itself.
 
+## Deploying to Cloudflare
+
+This backend deploys as a [Cloudflare Container](https://developers.cloudflare.com/containers/)
+(runs the existing `Dockerfile` unchanged) fronted by a small Worker
+(`src/worker.ts`) — see `wrangler.jsonc`. The sibling frontend deploys
+separately to Cloudflare Workers via `vinext` (see its own README/CLAUDE.md).
+Requires the $5/mo Workers Paid plan (Containers aren't available on the
+free plan) and a managed Postgres (e.g. [Neon](https://neon.tech), which
+has a free tier — this repo was never meant to run its own Postgres
+server in production, see `internal/config`'s `DatabaseURL` comment).
+
+One-time setup:
+
+```sh
+npm install                      # installs wrangler + the Worker's deps
+npx wrangler login                # authenticate the CLI once
+
+# Secrets — never committed, set directly on the Worker:
+npx wrangler secret put DATABASE_URL          # Neon's connection string (sslmode=require)
+npx wrangler secret put GOOGLE_CLIENT_ID
+npx wrangler secret put GOOGLE_CLIENT_SECRET
+```
+
+Then, and on every subsequent deploy:
+
+```sh
+npx wrangler deploy
+```
+
+`wrangler.jsonc`'s `vars` already set `FRONTEND_BASE_URL`,
+`GOOGLE_REDIRECT_URL`, `COOKIE_SECURE`, and `PORT` for the production
+domain — update those there (not as secrets) if the domain ever changes.
+The Google Cloud Console OAuth client's authorized redirect URI must
+include `GOOGLE_REDIRECT_URL`'s value exactly (see "Google sign-in
+setup" above). The `routes` entry provisions DNS + TLS for
+`api.brass-ledger.app` automatically on first deploy, since the zone is
+already on Cloudflare — no manual DNS record needed.
+
 ## Logging
 
 Every request (method, path, status, latency, user agent) and every

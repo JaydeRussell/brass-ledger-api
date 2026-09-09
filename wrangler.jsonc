@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "brass-ledger-api",
+  "compatibility_date": "2026-09-08",
+  "main": "src/worker.ts",
+
+  // Non-secret config — same env vars internal/config reads locally
+  // (see .env.example). DATABASE_URL, GOOGLE_CLIENT_ID and
+  // GOOGLE_CLIENT_SECRET are set as Worker secrets instead
+  // (`wrangler secret put <NAME>`), never here, since this file is
+  // git-tracked.
+  "vars": {
+    "PORT": "8080",
+    "GOOGLE_REDIRECT_URL": "https://api.brass-ledger.app/auth/google/callback",
+    "FRONTEND_BASE_URL": "https://brass-ledger.app",
+    "COOKIE_SECURE": "true",
+    // Container instances aren't durable storage — logging to stdout
+    // only, not a local file, so Cloudflare's own log tooling captures
+    // it. See LOG_FILE's "explicit empty string" behavior in
+    // internal/config.
+    "LOG_FILE": ""
+  },
+
+  "containers": [
+    {
+      "class_name": "BackendContainer",
+      // Reuses the existing multi-stage Dockerfile as-is — Wrangler
+      // builds and pushes this image itself on `wrangler deploy`.
+      "image": "./Dockerfile",
+      // One instance is plenty for this app's scale, and keeps it from
+      // opening more concurrent connections against Neon's connection
+      // limit than intended.
+      "max_instances": 1
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "BACKEND", "class_name": "BackendContainer" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BackendContainer"] }
+  ],
+
+  // Provisions DNS + TLS for this hostname automatically on first
+  // deploy, since the zone is already on Cloudflare — no manual DNS
+  // record needed.
+  "routes": [
+    { "pattern": "api.brass-ledger.app", "custom_domain": true }
+  ]
+}

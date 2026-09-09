@@ -21,6 +21,13 @@ brass-ledger-api
 .idea/
 .vscode/
 
+# Wrangler/Cloudflare Container deploy tooling (see wrangler.jsonc,
+# src/worker.ts) — Node deps and local Wrangler state, not the app.
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+
 # Leftover from before this project settled on Go — safe to delete
 # locally (see README); kept out of git either way.
 .venv/
