@@ -58,6 +58,12 @@ type userStore interface {
 	RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error
 	ListRecentEvents(ctx context.Context, userID int64) ([]user.RecentEvent, error)
 	RecordRecentEvent(ctx context.Context, userID int64, eventID, eventName string, teamEvent bool) error
+	// The following are used by AdminHandler (internal/api/admin.go) and
+	// this file's own ADMIN_EMAILS bootstrap in Callback below — same
+	// reason as the rest of this interface's later additions.
+	SetStatus(ctx context.Context, userID int64, status string) error
+	SetRole(ctx context.Context, userID int64, role string) error
+	ListUsers(ctx context.Context) ([]user.User, error)
 }
 
 // AuthHandler wires up Google sign-in, sign-out, and the signed-in-user
@@ -67,6 +73,11 @@ type AuthHandler struct {
 	store        userStore
 	frontendURL  string
 	cookieSecure bool
+	// adminEmails bootstraps access control — see Config.AdminEmails'
+	// doc comment and this file's Callback, the only place it's read.
+	// Already lowercased by config.parseAdminEmails; Callback lowercases
+	// the signed-in email the same way before comparing.
+	adminEmails []string
 }
 
 // NewAuthHandler builds an AuthHandler.
@@ -75,7 +86,7 @@ type AuthHandler struct {
 // for local http://localhost development — browsers refuse to store a
 // Secure cookie at all over plain HTTP, which would otherwise silently
 // break sign-in locally.
-func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool) *AuthHandler {
+func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool, adminEmails []string) *AuthHandler {
 	return &AuthHandler{
 		google: google,
 		store:  store,
@@ -84,6 +95,7 @@ func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL strin
 		// frontendURL+"/welcome" into a double slash.
 		frontendURL:  strings.TrimSuffix(frontendURL, "/"),
 		cookieSecure: cookieSecure,
+		adminEmails:  adminEmails,
 	}
 }
 
@@ -163,6 +175,22 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 		log.Printf("google callback: upserting user %s failed: %v", info.Email, err)
 		return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
 	}
+
+	// ADMIN_EMAILS bootstrap — applied on every sign-in, not just the
+	// first, so it also covers promoting an account that already existed
+	// before being added to the list. See Config.AdminEmails' doc
+	// comment for why this always wins rather than only applying once.
+	if isAdminEmail(u.Email, h.adminEmails) && (u.Role != user.RoleAdmin || u.Status != user.StatusApproved) {
+		if err := h.store.SetRole(c.Request().Context(), u.ID, user.RoleAdmin); err != nil {
+			log.Printf("google callback: promoting admin %s failed: %v", u.Email, err)
+		} else if err := h.store.SetStatus(c.Request().Context(), u.ID, user.StatusApproved); err != nil {
+			log.Printf("google callback: approving admin %s failed: %v", u.Email, err)
+		} else {
+			log.Printf("google callback: %s matched ADMIN_EMAILS, promoted to admin+approved", u.Email)
+			u.Role, u.Status = user.RoleAdmin, user.StatusApproved
+		}
+	}
+
 	sessionToken, err := h.store.CreateSession(c.Request().Context(), u.ID)
 	if err != nil {
 		log.Printf("google callback: creating session for user %d failed: %v", u.ID, err)
@@ -190,6 +218,19 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	return c.Redirect(http.StatusFound, redirectTo)
 }
 
+// isAdminEmail reports whether email matches one of adminEmails,
+// case-insensitively — adminEmails is already lowercased by
+// config.parseAdminEmails, so only email needs normalizing here.
+func isAdminEmail(email string, adminEmails []string) bool {
+	email = strings.ToLower(email)
+	for _, admin := range adminEmails {
+		if email == admin {
+			return true
+		}
+	}
+	return false
+}
+
 // Logout is POST /auth/logout: ends the caller's session.
 func (h *AuthHandler) Logout(c echo.Context) error {
 	if cookie, err := c.Cookie(sessionCookieName); err == nil {
@@ -203,7 +244,10 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// Me is GET /api/me: returns the signed-in user's own profile.
+// Me is GET /api/me: returns the signed-in user's own profile —
+// deliberately just a valid session, no approval requirement (unlike
+// RequireApproved below), since this is exactly how the frontend learns
+// whether a signed-in visitor is pending/rejected in the first place.
 func (h *AuthHandler) Me(c echo.Context) error {
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {
@@ -219,21 +263,23 @@ func (h *AuthHandler) Me(c echo.Context) error {
 		"name":      u.Name,
 		"avatarUrl": u.AvatarURL,
 		"bcpUserId": u.BcpUserID,
+		"role":      u.Role,
+		"status":    u.Status,
 	})
 }
 
-// RequireSession is Echo middleware that gates a route behind a valid
-// session cookie — the same check requireUser does inline for a single
-// handler (see sync.go), but applied at the routing layer so it can
-// cover routes, like BCPHandler's, whose handlers were never written to
-// know about sessions at all. Now that the whole app is meant to be
-// behind sign-in rather than just the account-specific features, this
-// is what BCPHandler's routes are wrapped in (see cmd/server/main.go).
+// RequireSession is Echo middleware gating a route behind a valid
+// session cookie alone — authentication, not authorization (see
+// RequireApproved below for the stricter, "and approved" version most
+// routes actually want). Applied at the routing layer so it can cover
+// routes whose handlers were never written to know about sessions at
+// all. The one current use: BCPHandler's Players route, which
+// deliberately stays at this weaker bar — see its Register call in
+// cmd/server/main.go for why.
 //
 // On success, the authenticated user is stashed in the request context
-// under contextKeyUser for any handler that wants it (none of
-// BCPHandler's currently do — they only need to know *that* someone is
-// signed in, not *who*).
+// under contextKeyUser for any handler (or wrapping middleware, see
+// RequireApproved) that wants it.
 func RequireSession(store userStore) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -248,6 +294,29 @@ func RequireSession(store userStore) echo.MiddlewareFunc {
 			c.Set(contextKeyUser, u)
 			return next(c)
 		}
+	}
+}
+
+// RequireApproved is RequireSession plus Status == StatusApproved — the
+// authorization layer on top of authentication (see migration 0007's
+// comment for why the two are deliberately not the same check), and
+// what every BCPHandler route except Players is wrapped in (see
+// cmd/server/main.go). requireApprovedUser (sync.go) is the equivalent
+// for a handler that needs the user value directly rather than through
+// middleware.
+func RequireApproved(store userStore) echo.MiddlewareFunc {
+	requireSession := RequireSession(store)
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return requireSession(func(c echo.Context) error {
+			u, _ := c.Get(contextKeyUser).(user.User)
+			if u.Status != user.StatusApproved {
+				return c.JSON(http.StatusForbidden, map[string]string{
+					"error":  "account not approved",
+					"status": u.Status,
+				})
+			}
+			return next(c)
+		})
 	}
 }
 

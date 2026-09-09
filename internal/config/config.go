@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Config holds everything the server needs to start.
@@ -63,6 +64,18 @@ type Config struct {
 	// setting LOG_FILE="" (as opposed to leaving it unset) logs to
 	// stdout only.
 	LogFile string
+
+	// AdminEmails bootstraps access control (see migration 0007 and
+	// internal/api/admin.go): every sign-in whose email matches one of
+	// these (case-insensitively) is auto-approved as an admin, every
+	// time they sign in — not just their first. Without this, a
+	// pending-by-default new deployment would have no way to ever
+	// approve its very first user, including its own operator. Comma-
+	// separated, e.g. ADMIN_EMAILS=you@example.com,other@example.com.
+	// Leaving it unset is valid (every sign-in just starts pending, and
+	// stays that way until promoted some other way — e.g. directly in
+	// the database), but means nobody can approve anybody.
+	AdminEmails []string
 }
 
 // Load reads configuration from the environment. Returns an error if a
@@ -78,6 +91,7 @@ func Load() (Config, error) {
 		FrontendBaseURL:    getEnvOrDefault("FRONTEND_BASE_URL", "http://localhost:3000"),
 		CookieSecure:       os.Getenv("COOKIE_SECURE") == "true",
 		LogFile:            getEnvOrDefaultAllowingEmpty("LOG_FILE", "logs/backend.log"),
+		AdminEmails:        parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -85,6 +99,26 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parseAdminEmails splits a comma-separated ADMIN_EMAILS value into
+// trimmed, lowercased addresses (matching is case-insensitive, since
+// that's how email addresses behave in practice), silently dropping any
+// empty entries an accidental trailing/leading/double comma would
+// otherwise produce. Returns nil (not an error) for an unset/empty
+// value — see AdminEmails' doc comment for what that means.
+func parseAdminEmails(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var emails []string
+	for _, part := range strings.Split(raw, ",") {
+		email := strings.ToLower(strings.TrimSpace(part))
+		if email != "" {
+			emails = append(emails, email)
+		}
+	}
+	return emails
 }
 
 func getEnvOrDefault(key, fallback string) string {

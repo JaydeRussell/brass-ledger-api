@@ -18,12 +18,44 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+  # internal/user (the Postgres-backed user/session store) has no
+  # coverage in the `test` job above — there's no meaningful way to fake
+  # a real upsert/constraint/transaction the way internal/api's routes
+  # are tested against an in-memory fake — so it needs an actual
+  # Postgres. Kept as its own job (rather than folded into `test`) so a
+  # contributor without Docker/Postgres locally still gets fast,
+  # dependency-free feedback from `go test ./...` on everything else.
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: brassledger
+          POSTGRES_PASSWORD: brassledger
+          POSTGRES_DB: brass_ledger
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -tags=integration ./internal/user/...
+        env:
+          DATABASE_URL: postgres://brassledger:brassledger@localhost:5432/brass_ledger?sslmode=disable
+
   # Deploys the Go backend as a Cloudflare Container (see wrangler.jsonc,
   # src/worker.ts). Only on a real push to main, not PRs — a PR from a
   # fork wouldn't have access to the deploy secrets anyway, and we don't
   # want every PR touching production.
   deploy:
-    needs: test
+    needs: [test, integration]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -36,3 +68,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # Catches a bad deploy immediately rather than silently — the same
+      # checks `make smoke` runs locally, pointed at the real production
+      # URLs instead of localhost. A short sleep first: a Container that
+      # was asleep (see wrangler.jsonc's sleepAfter) takes a moment to
+      # spin back up on its first request after a redeploy.
+      - run: sleep 5 && ./scripts/smoke-test.sh
+        env:
+          BACKEND_URL: https://api.brass-ledger.app
+          FRONTEND_URL: https://brass-ledger.app

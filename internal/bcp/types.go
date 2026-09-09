@@ -48,11 +48,31 @@ type Player struct {
 	Name         string `json:"name"`
 	Faction      string `json:"faction"`
 	SubFaction   string `json:"subFaction,omitempty"`
+	Disposition  string `json:"disposition,omitempty"`
 	Team         string `json:"team,omitempty"`
 	TeamPlayerID string `json:"teamPlayerId,omitempty"`
 	HomeClub     string `json:"homeClub,omitempty"`
 	List         string `json:"list,omitempty"`
 	BcpUserID    string `json:"bcpUserId,omitempty"`
+}
+
+// forceDispositions are 40k 11th edition's five Force Dispositions — the
+// mission-pack-assigned role a submitted army list's detachment(s)
+// represent (Take and Hold, Purge the Foe, Disruption, Reconnaissance,
+// Priority Assets). BCP has no dedicated field for this: for events
+// using this mission system, it reuses the same `subFaction` slot a
+// real army sub-faction (chapter, craftworld, etc.) would otherwise
+// occupy — confirmed live against a real event where every one of 368
+// players' subFaction values was exactly one of these five strings.
+// Player.Disposition is populated only when SubFaction is an exact
+// match, so an event that isn't using Force Disposition (where
+// SubFaction holds a genuine sub-faction name) is unaffected.
+var forceDispositions = map[string]bool{
+	"Take and Hold":   true,
+	"Purge the Foe":   true,
+	"Disruption":      true,
+	"Reconnaissance":  true,
+	"Priority Assets": true,
 }
 
 // PairingUserRef is BCP's global (cross-event) account reference nested

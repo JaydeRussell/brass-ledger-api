@@ -11,7 +11,9 @@
 #
 # Usage: ./scripts/smoke-test.sh (or `make smoke`)
 # Override BACKEND_URL/FRONTEND_URL if the stack isn't on the usual
-# localhost ports.
+# localhost ports — also used as-is in .github/workflows/ci.yml, pointed
+# at the real production URLs right after a deploy, so a bad deploy
+# gets caught immediately instead of silently.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -34,6 +36,7 @@ check() {
 check "backend healthz"              "$BACKEND/healthz"  200
 check "backend readyz (db reachable)" "$BACKEND/readyz"  200
 check "backend auth wired (signed out -> 401)" "$BACKEND/api/me" 401
+check "backend BCP routes gated (signed out -> 401)" "$BACKEND/api/events/smoke-test" 401
 check "frontend root"                "$FRONTEND/"        200
 
 echo

@@ -117,6 +117,30 @@ may require a verification review for a published app requesting more
 than basic profile/email scopes, though the profile+email scopes this
 app requests are unlikely to trigger that.
 
+### Access control (who's actually allowed to use the app)
+
+Signing in with Google is authentication, not authorization — a valid
+session alone doesn't get you past `api.RequireApproved` on every real
+route (the BCP proxy, My Events, Stats, follows/recent-events sync).
+Every new sign-in starts `role=user, status=pending` (migration
+`0007_user_access_control.sql`) and can't use anything beyond signing
+in itself until an admin approves them via the admin API
+(`GET/POST /api/admin/users...`, `internal/api/admin.go`) — see
+`app/lib/auth.ts`'s `CurrentUser.status` in the frontend for how a
+pending/rejected account's own experience is gated.
+
+Set **`ADMIN_EMAILS`** (comma-separated, case-insensitive — see
+`.env.example`) to your own email before relying on this anywhere real:
+every sign-in matching it is auto-promoted to `role=admin,
+status=approved`, every time it signs in, not just the first — this is
+the only way to get an initial admin without a manual database
+update, and without it nobody (including you) can ever approve anyone.
+
+One deliberate exception: `GET /api/events/:id/players` only requires a
+valid session, not approval, since the frontend's BCP-profile-linking
+roster picker (`/welcome`) needs it to work for a still-pending account
+— see `BCPHandler.Register`'s doc comment in `internal/api/bcp.go`.
+
 ## Running the whole stack with Docker
 
 This repo also has a `docker-compose.yml` that brings up Postgres, this
@@ -251,11 +275,28 @@ go test ./... -race    # cache.go's concurrency guarantees are worth
                         # checking under the race detector specifically
 ```
 
-`internal/db` (a thin wrapper over `pgxpool`, plus the migration runner)
-and `internal/user` (the Postgres-backed session store) aren't unit
-tested here — both need a real Postgres to say anything a mock wouldn't
-just assert back at itself. If that coverage matters later, it's a
-testcontainers-style integration test, not a table-driven unit test.
+`internal/user` (the Postgres-backed user/session store) needs a real
+Postgres to say anything a mock wouldn't just assert back at itself —
+it has its own integration test suite
+(`internal/user/store_integration_test.go`), gated behind the
+`integration` build tag so it never runs as part of plain
+`go test ./...` and never requires a database just to work on anything
+else:
+
+```bash
+make test-integration   # against the local docker-compose Postgres (must be up — `make docker-up`)
+
+# equivalent, if you'd rather run it directly:
+DATABASE_URL=postgres://brassledger:brassledger@localhost:5432/brass_ledger?sslmode=disable \
+  go test -tags=integration ./internal/user/...
+```
+
+CI runs this too (see `.github/workflows/ci.yml`'s `integration` job,
+against a Postgres service container) and it gates every deploy, same
+as the regular `test` job. `internal/db` (a thin wrapper over
+`pgxpool`, plus the migration runner) is exercised implicitly by this
+same suite's `db.Migrate` call in its test setup, rather than having
+tests of its own.
 
 ## Project layout
 

@@ -75,7 +75,7 @@ func (h *SyncHandler) Register(e *echo.Echo) {
 
 // ListFollows is GET /api/me/events/:eventId/follows.
 func (h *SyncHandler) ListFollows(c echo.Context) error {
-	u, err := requireUser(c, h.store)
+	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func (h *SyncHandler) ListFollows(c echo.Context) error {
 
 // AddFollow is POST /api/me/events/:eventId/follows.
 func (h *SyncHandler) AddFollow(c echo.Context) error {
-	u, err := requireUser(c, h.store)
+	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func (h *SyncHandler) AddFollow(c echo.Context) error {
 
 // RemoveFollow is DELETE /api/me/events/:eventId/follows/:kind/:refId.
 func (h *SyncHandler) RemoveFollow(c echo.Context) error {
-	u, err := requireUser(c, h.store)
+	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func (h *SyncHandler) RemoveFollow(c echo.Context) error {
 
 // ListRecentEvents is GET /api/me/recent-events.
 func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
-	u, err := requireUser(c, h.store)
+	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
 
 // RecordRecentEvent is POST /api/me/recent-events.
 func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
-	u, err := requireUser(c, h.store)
+	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err
 	}
@@ -174,9 +174,13 @@ func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 }
 
 // requireUser is the same session-cookie-then-store-lookup check
-// MeHandler's methods each repeat inline; factored out here since this
-// file adds five more routes needing it (me.go's two are left as-is
-// rather than churning an already-tested file for a style-only change).
+// AuthHandler.Me does inline (auth.go) — factored out here for every
+// handler that needs the user value directly rather than through
+// RequireApproved's middleware form. Deliberately doesn't check
+// Status: nothing currently calls this directly except
+// requireApprovedUser below (every other handler in this package wants
+// the approval check too) — kept separate anyway so that distinction
+// stays explicit rather than buried in one do-everything function.
 func requireUser(c echo.Context, store userStore) (user.User, error) {
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {
@@ -185,6 +189,24 @@ func requireUser(c echo.Context, store userStore) (user.User, error) {
 	u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
 	if err != nil {
 		return user.User{}, c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+	}
+	return u, nil
+}
+
+// requireApprovedUser is requireUser plus Status == StatusApproved —
+// what every handler in this file, StatsHandler, and MeHandler actually
+// want (see RequireApproved in auth.go for the middleware equivalent,
+// used where a handler doesn't need the user value itself).
+func requireApprovedUser(c echo.Context, store userStore) (user.User, error) {
+	u, err := requireUser(c, store)
+	if err != nil {
+		return user.User{}, err
+	}
+	if u.Status != user.StatusApproved {
+		return user.User{}, c.JSON(http.StatusForbidden, map[string]string{
+			"error":  "account not approved",
+			"status": u.Status,
+		})
 	}
 	return u, nil
 }
