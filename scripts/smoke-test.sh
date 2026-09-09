@@ -21,16 +21,31 @@ BACKEND="${BACKEND_URL:-http://localhost:8080}"
 FRONTEND="${FRONTEND_URL:-http://localhost:3000}"
 fail=0
 
+# A Cloudflare Container that was asleep (see wrangler.jsonc's sleepAfter,
+# and a fresh deploy is effectively the same as "asleep") can take longer
+# than a single request's timeout to spin up and start responding — its
+# very first request after cold-starting is the slow one, not steady
+# state. A flat one-shot check was seeing real "000, connection not made
+# yet" failures here that resolved on their own moments later, so each
+# check now retries with a short backoff instead of failing immediately
+# on the first miss. Local runs against an already-running dev stack
+# still pass on the first attempt, same as before — this only changes
+# behavior when the target genuinely isn't answering yet.
 check() {
 	local name="$1" url="$2" want="$3"
-	local got
-	got="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url")"
-	if [ "$got" = "$want" ]; then
-		echo "ok    $name ($url -> $got)"
-	else
-		echo "FAIL  $name ($url -> $got, want $want)"
-		fail=1
-	fi
+	local got attempt
+	for attempt in 1 2 3 4 5 6; do
+		got="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url")"
+		if [ "$got" = "$want" ]; then
+			echo "ok    $name ($url -> $got)"
+			return
+		fi
+		if [ "$attempt" -lt 6 ]; then
+			sleep 5
+		fi
+	done
+	echo "FAIL  $name ($url -> $got, want $want)"
+	fail=1
 }
 
 check "backend healthz"              "$BACKEND/healthz"  200
