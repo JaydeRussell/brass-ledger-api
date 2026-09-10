@@ -199,6 +199,60 @@ func TestFetchEventInfo(t *testing.T) {
 	}
 }
 
+// TestFetchEventInfo_LeagueIDs covers EventInfo.LeagueIDs specifically —
+// eventInfoEqual (used by TestFetchEventInfo above) compares via JSON
+// marshaling, which is blind to this field since it's deliberately
+// json:"-" (backend-internal only, see its doc comment), so it needs
+// its own direct check. This is the field FetchCurrentItcLeagueIDForEvent
+// is anchored on, so it's worth covering on its own.
+func TestFetchEventInfo_LeagueIDs(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "captures each league's id alongside its name",
+			body: `{"id": "evt-1", "name": "Test Cup", "leagues": [
+				{"id": "league-a", "name": "Warhammer Global Rankings 2026"},
+				{"id": "league-b", "name": "Some Store League"}
+			]}`,
+			want: []string{"league-a", "league-b"},
+		},
+		{
+			name: "a league entry with no id is skipped",
+			body: `{"id": "evt-1", "name": "Test Cup", "leagues": [{"name": "No Id Here"}]}`,
+			want: []string{},
+		},
+		{
+			name: "no leagues at all resolves to an empty slice, not nil",
+			body: `{"id": "evt-1", "name": "Test Cup"}`,
+			want: []string{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(jsonHandler(http.StatusOK, tc.body))
+			defer server.Close()
+			client := newTestClient(server)
+
+			got, err := client.FetchEventInfo(context.Background(), "evt-1")
+			if err != nil {
+				t.Fatalf("FetchEventInfo returned error: %v", err)
+			}
+			if len(got.LeagueIDs) != len(tc.want) {
+				t.Fatalf("LeagueIDs = %v, want %v", got.LeagueIDs, tc.want)
+			}
+			for i := range got.LeagueIDs {
+				if got.LeagueIDs[i] != tc.want[i] {
+					t.Errorf("LeagueIDs[%d] = %q, want %q", i, got.LeagueIDs[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestInvalidateEventInfo(t *testing.T) {
 	var calls int32
 	mux := http.NewServeMux()

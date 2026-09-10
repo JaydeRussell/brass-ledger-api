@@ -41,7 +41,6 @@ type Client struct {
 	players            *Cache[[]Player]
 	pairings           *Cache[[]PairingRecord]
 	placings           *Cache[[]PlacingEntry]
-	itcLeagueID        *Cache[string]
 	itcRanking         *Cache[*ItcRanking]
 	playerEventHistory *Cache[[]PlayerEventRecord]
 	placingHistory     *Cache[[]PlacingHistoryEntry]
@@ -97,9 +96,6 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 			return nil, err
 		}
 		return c.fetchPlacingsUncached(ctx, eventID, teamEvent)
-	})
-	c.itcLeagueID = NewCache(func(ctx context.Context, gameSystemID string) (string, error) {
-		return c.fetchCurrentItcLeagueIDUncached(ctx, gameSystemID)
 	})
 	// Keyed by "leagueId:bcpUserId" — see FetchItcRanking.
 	c.itcRanking = NewCache(func(ctx context.Context, key string) (*ItcRanking, error) {

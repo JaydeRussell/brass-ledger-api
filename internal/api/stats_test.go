@@ -196,8 +196,8 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 		t.Errorf("factions[1] = %+v, want Black Legion with count 1", resp.Factions[1])
 	}
 
-	if resp.MostRecentGameSystemID != "gs-40k" {
-		t.Errorf("mostRecentGameSystemId = %q, want %q (from evt-gt, the most recent entry)", resp.MostRecentGameSystemID, "gs-40k")
+	if resp.MostRecentEventID != "evt-gt" {
+		t.Errorf("mostRecentEventId = %q, want %q (the most recent entry)", resp.MostRecentEventID, "evt-gt")
 	}
 }
 

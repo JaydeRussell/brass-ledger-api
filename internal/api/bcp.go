@@ -37,7 +37,7 @@ func (h *BCPHandler) Register(e *echo.Echo, requireApproved, requireSession echo
 	e.GET("/api/events/:id/players", h.Players, requireSession)
 	e.GET("/api/events/:id/pairings", h.Pairings, requireApproved)
 	e.GET("/api/events/:id/placings", h.Placings, requireApproved)
-	e.GET("/api/itc/leagues/:gameSystemId", h.ItcLeagueID, requireApproved)
+	e.GET("/api/itc/leagues/event/:eventId", h.ItcLeagueID, requireApproved)
 	e.GET("/api/itc/rankings", h.ItcRanking, requireApproved)
 }
 
@@ -91,9 +91,18 @@ func (h *BCPHandler) Placings(c echo.Context) error {
 	return c.JSON(http.StatusOK, entries)
 }
 
-// ItcLeagueID is GET /api/itc/leagues/:gameSystemId.
+// ItcLeagueID is GET /api/itc/leagues/event/:eventId — resolves the
+// current flagship ITC league among this specific event's own known
+// leagues (EventInfo.LeagueIDs), not a game-system-wide search — see
+// FetchCurrentItcLeagueIDForEvent's doc comment for why that search
+// stopped being reliable. Costs no extra BCP request beyond the
+// already-cached FetchEventInfo lookup every event page already makes.
 func (h *BCPHandler) ItcLeagueID(c echo.Context) error {
-	leagueID, err := h.client.FetchCurrentItcLeagueID(c.Request().Context(), c.Param("gameSystemId"))
+	info, err := h.client.FetchEventInfo(c.Request().Context(), c.Param("eventId"))
+	if err != nil {
+		return bcpError(c, err)
+	}
+	leagueID, err := h.client.FetchCurrentItcLeagueIDForEvent(c.Request().Context(), info.LeagueIDs)
 	if err != nil {
 		return bcpError(c, err)
 	}

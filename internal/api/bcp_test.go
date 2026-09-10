@@ -22,7 +22,7 @@ func stubBCPServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Test Cup"}`))
+		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Test Cup", "leagues": [{"id": "league-1", "name": "Test League"}]}`))
 	})
 	mux.HandleFunc("/events/evt-1/players", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("placings") == "true" {
@@ -37,8 +37,8 @@ func stubBCPServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/events/evt-1/pairings", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"active": [{"id": "pair-1", "pairingType": "Pairing", "round": 1}]}`))
 	})
-	mux.HandleFunc("/leagues", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data": [{"id": "league-1", "gw_itc": true, "hobby": false}]}`))
+	mux.HandleFunc("/leagues/league-1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name": "Test League", "gw_itc": true, "hobby": false}`))
 	})
 	mux.HandleFunc("/placings", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data": [{"userId": "u1", "ITCPoints": 100}]}`))
@@ -166,7 +166,7 @@ func TestBCPHandler_Success(t *testing.T) {
 		{"players", "/api/events/evt-1/players", http.StatusOK, `"name":"A B"`},
 		{"pairings", "/api/events/evt-1/pairings?type=Pairing&round=1", http.StatusOK, `"id":"pair-1"`},
 		{"placings (individual)", "/api/events/evt-1/placings?team=false", http.StatusOK, `"name":"A B"`},
-		{"itc league lookup, found", "/api/itc/leagues/gs-1", http.StatusOK, `"leagueId":"league-1"`},
+		{"itc league lookup, found", "/api/itc/leagues/event/evt-1", http.StatusOK, `"leagueId":"league-1"`},
 		{"itc ranking, found", "/api/itc/rankings?leagueId=league-1&userId=u1", http.StatusOK, `"points":100`},
 	}
 
@@ -241,7 +241,7 @@ func TestBCPHandler_UpstreamFailure(t *testing.T) {
 		{"players", "/api/events/evt-1/players"},
 		{"pairings", "/api/events/evt-1/pairings?type=Pairing&round=1"},
 		{"placings", "/api/events/evt-1/placings"},
-		{"itc league lookup", "/api/itc/leagues/gs-1"},
+		{"itc league lookup", "/api/itc/leagues/event/evt-1"},
 		{"itc ranking", "/api/itc/rankings?leagueId=league-1&userId=u1"},
 	}
 
@@ -261,15 +261,18 @@ func TestBCPHandler_UpstreamFailure(t *testing.T) {
 // normal, expected outcome here (e.g. a game system with no ITC league).
 func TestBCPHandler_ItcLeagueNotFound(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/leagues", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data": []}`))
+	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Local RTT", "leagues": [{"id": "local-league", "name": "Local Store League"}]}`))
+	})
+	mux.HandleFunc("/leagues/local-league", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name": "Local Store League", "gw_itc": false, "hobby": false}`))
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := bcp.NewClientWithBaseURL(server.URL)
 	e := newBCPTestEcho(client)
 
-	rec := doBCPRequest(e, http.MethodGet, "/api/itc/leagues/gs-1")
+	rec := doBCPRequest(e, http.MethodGet, "/api/itc/leagues/event/evt-1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 	}

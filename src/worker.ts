@@ -17,6 +17,7 @@ interface Env {
   DATABASE_URL: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
+  ADMIN_EMAILS: string;
 }
 
 export class BackendContainer extends Container<Env> {
@@ -37,6 +38,7 @@ export class BackendContainer extends Container<Env> {
     FRONTEND_BASE_URL: this.env.FRONTEND_BASE_URL,
     COOKIE_SECURE: this.env.COOKIE_SECURE,
     LOG_FILE: this.env.LOG_FILE,
+    ADMIN_EMAILS: this.env.ADMIN_EMAILS,
   };
 }
 
