@@ -201,6 +201,55 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 	}
 }
 
+// TestPlayerStatsByID_RequiresSignIn and TestPlayerStatsByID_Aggregates
+// cover the other route this handler registers, GET
+// /api/players/:bcpUserId/stats — same aggregation as GET /api/me/stats
+// above (TestPlayerStats_AggregatesPlacingHistory), just addressed by an
+// arbitrary already-known bcpUserId path param instead of the caller's
+// own linked profile.
+func TestPlayerStatsByID_RequiresSignIn(t *testing.T) {
+	e := newStatsTestEcho(newFakeUserStore(), bcp.NewClient())
+	req := httptest.NewRequest(http.MethodGet, "/api/players/bcp-user-1/stats", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestPlayerStatsByID_Aggregates(t *testing.T) {
+	// The caller is signed in but has no BCP profile of their own linked
+	// — proving this route looks up the path param's account, not the
+	// caller's (which TestPlayerStats_NotLinked shows would otherwise
+	// come back empty/unlinked).
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+
+	server := stubBCPStatsServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newStatsTestEcho(store, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/players/some-other-player/stats", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp playerStatsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	if !resp.Linked || resp.TotalEvents != 5 {
+		t.Errorf("resp = %+v, want linked with 5 events (same aggregation as TestPlayerStats_AggregatesPlacingHistory)", resp)
+	}
+	if resp.MostRecentEventID != "evt-gt" {
+		t.Errorf("mostRecentEventId = %q, want %q", resp.MostRecentEventID, "evt-gt")
+	}
+}
+
 func TestCanonicalPlacingPerEvent(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/leagues/league-flagship", func(w http.ResponseWriter, r *http.Request) {

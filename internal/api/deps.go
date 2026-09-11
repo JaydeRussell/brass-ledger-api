@@ -26,5 +26,7 @@ type bcpClient interface {
 	FetchPlacingHistory(ctx context.Context, bcpUserID string) ([]bcp.PlacingHistoryEntry, error)
 	InvalidatePlayerEventHistory(bcpUserID string)
 	InvalidateEventInfo(eventID string)
+	InvalidateRoundPairings(eventID, pairingType string, round int)
+	InvalidatePlacings(eventID string, teamEvent bool)
 	PlayerEventHistoryFetchedAt(bcpUserID string) (time.Time, bool)
 }

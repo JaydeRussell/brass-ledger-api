@@ -292,9 +292,17 @@ func NewStatsHandler(store userStore, client bcpClient) *StatsHandler {
 	return &StatsHandler{store: store, client: client}
 }
 
-// Register wires this handler's routes onto e.
+// Register wires this handler's routes onto e. PlayerStats sits behind
+// the same requireApprovedUser gate as Stats (this whole service is
+// meant to be behind sign-in *and* approval — see BCPHandler.Register)
+// but, unlike Stats, isn't scoped to the caller's own linked profile: it
+// takes whatever BCP account id the frontend already has in hand for
+// some other player (roster, pairings, placings — anywhere a name
+// already carries a bcpUserId) and looks up that player's own summary
+// instead of the caller's.
 func (h *StatsHandler) Register(e *echo.Echo) {
 	e.GET("/api/me/stats", h.Stats)
+	e.GET("/api/players/:bcpUserId/stats", h.PlayerStats)
 }
 
 // Stats is GET /api/me/stats: the signed-in account's player-stats
@@ -308,10 +316,40 @@ func (h *StatsHandler) Stats(c echo.Context) error {
 		return c.JSON(http.StatusOK, emptyPlayerStatsResponse(false))
 	}
 
-	ctx := c.Request().Context()
-	rawHistory, err := h.client.FetchPlacingHistory(ctx, u.BcpUserID)
+	resp, err := h.statsForBcpUser(c.Request().Context(), u.BcpUserID)
 	if err != nil {
 		return bcpError(c, err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// PlayerStats is GET /api/players/:bcpUserId/stats: the same summary as
+// Stats, but for an arbitrary already-known BCP account id rather than
+// the caller's own linked profile.
+func (h *StatsHandler) PlayerStats(c echo.Context) error {
+	if _, err := requireApprovedUser(c, h.store); err != nil {
+		return err
+	}
+	bcpUserID := c.Param("bcpUserId")
+	if bcpUserID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bcpUserId is required"})
+	}
+
+	resp, err := h.statsForBcpUser(c.Request().Context(), bcpUserID)
+	if err != nil {
+		return bcpError(c, err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// statsForBcpUser fetches and aggregates one BCP account's placing
+// history into a playerStatsResponse — the shared body of both Stats
+// and PlayerStats above, which differ only in where bcpUserID comes
+// from (the caller's own linked profile vs. a path param).
+func (h *StatsHandler) statsForBcpUser(ctx context.Context, bcpUserID string) (playerStatsResponse, error) {
+	rawHistory, err := h.client.FetchPlacingHistory(ctx, bcpUserID)
+	if err != nil {
+		return playerStatsResponse{}, err
 	}
 	history := canonicalPlacingPerEvent(ctx, h.client, rawHistory)
 	infos := eventInfoByID(ctx, h.client, history)
@@ -324,5 +362,5 @@ func (h *StatsHandler) Stats(c echo.Context) error {
 		resp.MostRecentEventID = history[0].EventID
 	}
 
-	return c.JSON(http.StatusOK, resp)
+	return resp, nil
 }

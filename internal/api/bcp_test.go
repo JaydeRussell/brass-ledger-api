@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/labstack/echo/v4"
@@ -180,6 +181,47 @@ func TestBCPHandler_Success(t *testing.T) {
 				t.Errorf("GET %s: body = %s, want it to contain %q", tc.path, rec.Body.String(), tc.wantBody)
 			}
 		})
+	}
+}
+
+// TestBCPHandler_Refresh checks that ?refresh=true on Pairings and
+// Placings reaches Client.InvalidateRoundPairings/InvalidatePlacings —
+// same convention as GET /api/me/events?refresh=true (see me_test.go).
+// It only proves the wiring, not the manual-invalidate floor's own
+// timing (an immediate ?refresh=true right after the first fetch is
+// itself throttled, same as every other Invalidate* test in this
+// codebase — see internal/bcp/cache_test.go's TestCache_Invalidate for
+// where the floor's actual behavior is covered).
+func TestBCPHandler_Refresh(t *testing.T) {
+	var pairingsCalls, placingsCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1/pairings", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&pairingsCalls, 1)
+		_, _ = w.Write([]byte(`{"active": []}`))
+	})
+	mux.HandleFunc("/events/evt-1/players", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&placingsCalls, 1)
+		_, _ = w.Write([]byte(`{"active": []}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newBCPTestEcho(client)
+
+	// Pairings: first request populates the cache; ?refresh=true right
+	// after is throttled by the manual-invalidate floor, so it's still
+	// only one real upstream call.
+	doBCPRequest(e, http.MethodGet, "/api/events/evt-1/pairings?type=Pairing&round=1")
+	doBCPRequest(e, http.MethodGet, "/api/events/evt-1/pairings?type=Pairing&round=1&refresh=true")
+	if pairingsCalls != 1 {
+		t.Errorf("pairings upstream calls = %d, want 1 (immediate refresh should be throttled)", pairingsCalls)
+	}
+
+	// Same for placings.
+	doBCPRequest(e, http.MethodGet, "/api/events/evt-1/placings?team=false")
+	doBCPRequest(e, http.MethodGet, "/api/events/evt-1/placings?team=false&refresh=true")
+	if placingsCalls != 1 {
+		t.Errorf("placings upstream calls = %d, want 1 (immediate refresh should be throttled)", placingsCalls)
 	}
 }
 

@@ -14,6 +14,7 @@ type bcpPlacingRecord struct {
 	ID   string `json:"id"`
 	Name string `json:"name"` // team events
 	User struct {
+		ID        string `json:"id"`
 		FirstName string `json:"firstName"`
 		LastName  string `json:"lastName"`
 	} `json:"user"` // individual events
@@ -83,10 +84,11 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 		}
 
 		entries = append(entries, PlacingEntry{
-			ID:      r.ID,
-			Name:    name,
-			Placing: r.Placing,
-			Metrics: metrics,
+			ID:        r.ID,
+			Name:      name,
+			Placing:   r.Placing,
+			Metrics:   metrics,
+			BcpUserID: r.User.ID,
 		})
 	}
 
@@ -122,4 +124,14 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 // means at least one round has finished.
 func (c *Client) FetchPlacings(ctx context.Context, eventID string, teamEvent bool) ([]PlacingEntry, error) {
 	return c.placings.Get(ctx, placingsKey(eventID, teamEvent))
+}
+
+// InvalidatePlacings forces the next FetchPlacings call for this event
+// to hit BCP for real — the frontend's "check for updated placings"
+// button (see CLAUDE.md's no-polling rule). A no-op for an event whose
+// placings are already durably cached (an already-concluded event's
+// standings never change) since fetchPlacingsUncached checks that
+// before ever reaching this in-memory one.
+func (c *Client) InvalidatePlacings(eventID string, teamEvent bool) {
+	c.placings.Invalidate(placingsKey(eventID, teamEvent))
 }
