@@ -218,7 +218,7 @@ func TestCache_Invalidate(t *testing.T) {
 			t.Fatalf("first Get: %v", err)
 		}
 
-		// Called immediately after — well within the default 10s floor —
+		// Called immediately after — well within the default 2s floor —
 		// so this should be a no-op rather than clearing the entry.
 		c.Invalidate("k1")
 

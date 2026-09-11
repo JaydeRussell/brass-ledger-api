@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -67,5 +68,52 @@ func TestFetchRoundPairings(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != "pair-1" {
 		t.Errorf("FetchRoundPairings = %+v, want a single pairing with id %q", got, "pair-1")
+	}
+}
+
+// TestInvalidateRoundPairings mirrors events_test.go's
+// TestInvalidateEventInfo: this only confirms InvalidateRoundPairings
+// reaches the right (event, pairingType, round) cache key — the
+// manual-invalidate floor's own behavior (throttled vs. actually
+// bypassing the cache once it elapses) is covered centrally by
+// cache_test.go's TestCache_Invalidate.
+func TestInvalidateRoundPairings(t *testing.T) {
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1/pairings", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"active": []}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := newTestClient(server)
+
+	if _, err := client.FetchRoundPairings(context.Background(), "evt-1", "Pairing", 2); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if _, err := client.FetchRoundPairings(context.Background(), "evt-1", "Pairing", 2); err != nil {
+		t.Fatalf("second fetch (should be cached): %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d before invalidating, want 1", calls)
+	}
+
+	// A different (pairingType, round) is untouched by invalidating this
+	// one triple — confirms InvalidateRoundPairings is scoped to the
+	// exact key, not the whole event.
+	client.InvalidateRoundPairings("evt-1", "TeamPairing", 2)
+	if _, err := client.FetchRoundPairings(context.Background(), "evt-1", "Pairing", 2); err != nil {
+		t.Fatalf("third fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d after invalidating a different pairingType, want 1 (unrelated key)", calls)
+	}
+
+	client.InvalidateRoundPairings("evt-1", "Pairing", 2)
+	if _, err := client.FetchRoundPairings(context.Background(), "evt-1", "Pairing", 2); err != nil {
+		t.Fatalf("fourth fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d after an immediate Invalidate, want 1 (should have been throttled)", calls)
 	}
 }

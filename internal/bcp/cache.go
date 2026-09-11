@@ -18,11 +18,18 @@ const minRefetchInterval = 60 * time.Second
 // minRefetchInterval, applied only to Invalidate (an explicit "check
 // again now" request, e.g. a user-facing Refresh button) — not to blunt
 // legitimate use, just to stop a rapidly double-clicked button from
-// turning into back-to-back real BCP requests. A var rather than a
-// const purely so cache_test.go can shrink it to make the "the floor
-// actually elapses" case fast and deterministic instead of sleeping for
-// 10 real seconds — production behavior is unaffected.
-var minManualInvalidateInterval = 10 * time.Second
+// turning into back-to-back real BCP requests. Deliberately loose (2s,
+// not minRefetchInterval's full 60s) since a manual refresh is a
+// deliberate one-off action, not the kind of routine/automatic traffic
+// the no-polling rule is really guarding against — see CLAUDE.md.
+// Frontend's RefreshButton (app/components/shared/refreshButton.tsx in
+// brass-ledger-web) mirrors this exact value for its own cooldown
+// display; the two are kept in sync by hand since they're separate
+// repos. A var rather than a const purely so cache_test.go can shrink it
+// to make the "the floor actually elapses" case fast and deterministic
+// instead of sleeping for 2 real seconds — production behavior is
+// unaffected.
+var minManualInvalidateInterval = 2 * time.Second
 
 type cacheEntry[T any] struct {
 	data      T

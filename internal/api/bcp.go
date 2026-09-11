@@ -59,7 +59,12 @@ func (h *BCPHandler) Players(c echo.Context) error {
 	return c.JSON(http.StatusOK, players)
 }
 
-// Pairings is GET /api/events/:id/pairings.
+// Pairings is GET /api/events/:id/pairings. ?refresh=true forces a real
+// BCP check instead of serving the normal cache — the frontend's
+// RoundBoard "check for updated pairings" button (see
+// Client.InvalidateRoundPairings' doc comment, and CLAUDE.md's no-polling
+// rule for why this is opt-in per request rather than automatic). Same
+// ?refresh=true convention as GET /api/me/events.
 func (h *BCPHandler) Pairings(c echo.Context) error {
 	pairingType := c.QueryParam("type")
 	if pairingType != "Pairing" && pairingType != "TeamPairing" {
@@ -74,6 +79,10 @@ func (h *BCPHandler) Pairings(c echo.Context) error {
 		})
 	}
 
+	if c.QueryParam("refresh") == "true" {
+		h.client.InvalidateRoundPairings(c.Param("id"), pairingType, round)
+	}
+
 	records, err := h.client.FetchRoundPairings(c.Request().Context(), c.Param("id"), pairingType, round)
 	if err != nil {
 		return bcpError(c, err)
@@ -81,9 +90,15 @@ func (h *BCPHandler) Pairings(c echo.Context) error {
 	return c.JSON(http.StatusOK, records)
 }
 
-// Placings is GET /api/events/:id/placings.
+// Placings is GET /api/events/:id/placings. ?refresh=true forces a real
+// BCP check — see Pairings' doc comment above, same convention.
 func (h *BCPHandler) Placings(c echo.Context) error {
 	teamEvent := c.QueryParam("team") == "true"
+
+	if c.QueryParam("refresh") == "true" {
+		h.client.InvalidatePlacings(c.Param("id"), teamEvent)
+	}
+
 	entries, err := h.client.FetchPlacings(c.Request().Context(), c.Param("id"), teamEvent)
 	if err != nil {
 		return bcpError(c, err)

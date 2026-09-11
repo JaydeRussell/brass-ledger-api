@@ -77,3 +77,18 @@ func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairin
 func (c *Client) FetchRoundPairings(ctx context.Context, eventID, pairingType string, round int) ([]PairingRecord, error) {
 	return c.pairings.Get(ctx, pairingsKey(eventID, pairingType, round))
 }
+
+// InvalidateRoundPairings forces the next FetchRoundPairings call for
+// this exact (event, pairingType, round) triple to hit BCP for real —
+// the frontend's "check for updated pairings" button (see CLAUDE.md's
+// no-polling rule for why this is a manual action rather than a timer).
+// Scoped to the one triple actually being redisplayed: a team event's
+// expanded individual boards live under a different pairingType/key
+// (see fetchTeamPairingBoards) and aren't touched by refreshing the
+// top-level team-vs-team board. A no-op for an event whose pairings are
+// already durably cached (an already-concluded event's pairings never
+// change) since fetchRoundPairingsUncached checks that before ever
+// reaching this in-memory one.
+func (c *Client) InvalidateRoundPairings(eventID, pairingType string, round int) {
+	c.pairings.Invalidate(pairingsKey(eventID, pairingType, round))
+}
