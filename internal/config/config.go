@@ -112,7 +112,7 @@ func parseAdminEmails(raw string) []string {
 		return nil
 	}
 	var emails []string
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		email := strings.ToLower(strings.TrimSpace(part))
 		if email != "" {
 			emails = append(emails, email)

@@ -51,7 +51,7 @@ func TestCache_Get(t *testing.T) {
 					return 42, nil
 				})
 
-				for i := 0; i < 3; i++ {
+				for i := range 3 {
 					got, err := c.Get(context.Background(), "same-key")
 					if err != nil {
 						t.Fatalf("Get #%d returned error: %v", i, err)
@@ -84,7 +84,7 @@ func TestCache_Get(t *testing.T) {
 				errs := make([]error, n)
 				var wg sync.WaitGroup
 				wg.Add(n)
-				for i := 0; i < n; i++ {
+				for i := range n {
 					go func(i int) {
 						defer wg.Done()
 						results[i], errs[i] = c.Get(context.Background(), "concurrent-key")

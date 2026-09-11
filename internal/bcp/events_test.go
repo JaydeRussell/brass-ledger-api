@@ -136,7 +136,7 @@ func TestFetchEventInfo(t *testing.T) {
 				GameSystem: "Warhammer 40,000", GameSystemID: "gs-1",
 				StartDate: "2026-01-01", EndDate: "2026-01-02",
 				Location: "Somewhere, USA", Organizer: "Jane TO",
-				PlayerCount: intPtr(64), Circuits: []string{"ITC"},
+				PlayerCount: new(64), Circuits: []string{"ITC"},
 			},
 		},
 		{

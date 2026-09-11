@@ -124,11 +124,11 @@ func itcRankingKey(leagueID, bcpUserID string) string {
 }
 
 func splitItcRankingKey(key string) (leagueID, bcpUserID string, err error) {
-	idx := strings.Index(key, ":")
-	if idx < 0 {
+	leagueID, bcpUserID, ok := strings.Cut(key, ":")
+	if !ok {
 		return "", "", fmt.Errorf("invalid ITC ranking cache key %q", key)
 	}
-	return key[:idx], key[idx+1:], nil
+	return leagueID, bcpUserID, nil
 }
 
 func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserID string) (*ItcRanking, error) {
