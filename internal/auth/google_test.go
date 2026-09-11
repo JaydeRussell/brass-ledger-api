@@ -12,7 +12,7 @@ import (
 
 func TestNewState(t *testing.T) {
 	seen := make(map[string]bool)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		state, err := NewState()
 		if err != nil {
 			t.Fatalf("NewState() returned error: %v", err)

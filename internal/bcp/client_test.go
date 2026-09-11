@@ -32,8 +32,6 @@ func jsonHandler(status int, body string) http.HandlerFunc {
 	}
 }
 
-func intPtr(v int) *int { return &v }
-
 func eventInfoEqual(a, b EventInfo) bool {
 	ab, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)

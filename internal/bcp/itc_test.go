@@ -127,7 +127,7 @@ func TestFetchItcRanking(t *testing.T) {
 		{
 			name: "a matched user returns their ranking",
 			body: `{"data": [{"userId": "u1", "ITCPoints": 1234.5, "placing": 7, "wins": 5, "losses": 2, "ties": 1}]}`,
-			want: &ItcRanking{Points: 1234.5, Placing: intPtr(7), Wins: intPtr(5), Losses: intPtr(2), Ties: intPtr(1)},
+			want: &ItcRanking{Points: 1234.5, Placing: new(7), Wins: new(5), Losses: new(2), Ties: new(1)},
 		},
 		{
 			name: "an unmatched user comes back as one empty object, not an array/error — resolves to nil",

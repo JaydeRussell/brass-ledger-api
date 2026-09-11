@@ -81,7 +81,7 @@ type bcpPlayersByUserResponse struct {
 func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID string) ([]PlayerEventRecord, error) {
 	var records []PlayerEventRecord
 	nextKey := ""
-	for page := 0; page < maxHistoryPages; page++ {
+	for range maxHistoryPages {
 		q := url.Values{}
 		q.Set("limit", "100")
 		q.Set("userId", bcpUserID)
@@ -185,7 +185,7 @@ type bcpPlacingHistoryResponse struct {
 func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID string) ([]PlacingHistoryEntry, error) {
 	var entries []PlacingHistoryEntry
 	nextKey := ""
-	for page := 0; page < maxHistoryPages; page++ {
+	for range maxHistoryPages {
 		q := url.Values{}
 		q.Set("limit", "100")
 		q.Set("userId", bcpUserID)

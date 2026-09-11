@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -225,13 +226,7 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 // case-insensitively — adminEmails is already lowercased by
 // config.parseAdminEmails, so only email needs normalizing here.
 func isAdminEmail(email string, adminEmails []string) bool {
-	email = strings.ToLower(email)
-	for _, admin := range adminEmails {
-		if email == admin {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(adminEmails, strings.ToLower(email))
 }
 
 // Logout is POST /auth/logout: ends the caller's session.
