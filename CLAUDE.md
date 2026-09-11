@@ -23,6 +23,17 @@ aggressive retries, or fetch more than a feature actually needs — see the
 frontend's `CLAUDE.md` for the full list this inherited from (the
 frontend used to talk to BCP directly; that logic moved here).
 
+## Releases
+
+Brass Ledger is one product across this repo and its sibling frontend
+(`brass-ledger-web`), but only the frontend carries a version number
+(`package.json`, shown in its footer and changelog) — this repo has no
+version field of its own. See the frontend's `CLAUDE.md` "Releases"
+section for the full process; this repo's part of it is just: when a
+release covers a commit here, tag that commit `vX.Y.Z` (matching the
+version the frontend just bumped to) once asked to cut a release —
+never automatically, same as committing.
+
 ---
 
 # Current status (as of 2026-09-07) — read this first in a new session
