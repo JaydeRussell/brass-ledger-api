@@ -12,6 +12,31 @@ so this holds even for a plain deterministic heuristic with no AI
 involved. See the doc comment at the top of `internal/bcp/types.go`
 before touching anything in that area.
 
+This is deliberately broader than the event pack's literal wording, and
+that's on purpose, not an oversight. For team events specifically, BCP
+publishing a team-vs-team pairing isn't the end of "the pairings
+process" — captains then run a live "Defender/Attacker" process to
+assign *individual boards* within that already-decided team pairing
+(one team names a Defender, the other names two Attackers, the
+Defender's captain picks one), using expected-outcome considerations as
+real input (confirmed via live research 2026-09-12). A computed
+comparison between two sides — even scoped to the whole team rather
+than any one board, even a plain average-ITC comparison with no AI —
+could function as decision support for that still-active, human-driven
+step. That's the actual thing this rule guards against: not just
+literal pairing generation, but anything that could feed a pairing-
+adjacent decision someone is still in the middle of making.
+
+**What stays fine**: plainly displaying two already-published numbers
+next to each other, with no framing, ranking, "favored"/"underdog"
+label, or color-coding tied to which one is higher — e.g. both sides'
+already-published average ITC shown side by side on a team pairing.
+That's not a new computation, just data already visible elsewhere on
+the same roster shown in one more place. The line is *computing or
+presenting a comparative judgment* about the matchup, not *displaying
+two independent facts* that happen to sit next to each other. See
+`internal/bcp/types.go`'s doc comment for the fuller reasoning.
+
 ## Be respectful of BCP's API
 
 `internal/bcp` talks to BCP's undocumented, unofficial data API — no
