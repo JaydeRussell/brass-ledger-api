@@ -12,6 +12,35 @@
 // methodology... for the pairings process," which is broader than just
 // AI. Don't add scoring or suggestion logic here, even without any AI
 // involved.
+//
+// Why "matchup" is named separately from "pairing" here, and why this
+// rule is deliberately broader than the event pack's literal "pairings
+// process" wording (settled 2026-09-12, after a "favored team" indicator
+// was proposed, discussed, and declined — see brass-ledger-web's
+// ROADMAP.md "Declined" section for the full writeup): team events don't
+// actually finish "pairing" the moment BCP publishes a team-vs-team
+// matchup. Captains then run a live "Defender/Attacker" process to
+// assign *individual boards* within that already-decided team pairing —
+// one team names a Defender, the other names two Attackers, the
+// Defender's captain picks one — using "team goals, list roles, and
+// expected scoring outcomes" as real input (confirmed via live research,
+// not assumed). A computed comparison between two sides — even one
+// scoped to the whole team rather than any single board, even a plain
+// average-ITC comparison with no AI involved — could function as
+// decision support for that still-active, human-driven step. That's
+// what this rule actually protects against: not just literal pairing
+// generation, but anything that could feed a pairing-adjacent decision
+// someone is still in the middle of making.
+//
+// What stays fine: plainly displaying two already-published numbers
+// next to each other — e.g. both sides' already-published average ITC
+// shown side by side on a team pairing — with no framing, ranking,
+// "favored"/"underdog" label, or color-coding tied to which one is
+// higher. That's not a new computation, just data already available
+// elsewhere (a team's own roster) shown in one more place. The line is
+// *computing or presenting a comparative judgment* about the matchup,
+// not *displaying two independent facts* that happen to sit next to
+// each other.
 package bcp
 
 // EventInfo is metadata about a BCP event — its display name, whether
