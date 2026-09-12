@@ -17,6 +17,20 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+      # See .golangci.yml — errcheck's default strictness on a deferred
+      # Close/Rollback is excluded there rather than annotated at every
+      # call site; everything else runs at golangci-lint's defaults.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+      # Flags known-vulnerable dependencies actually reachable from this
+      # module's own code (not just present in go.sum) — see the
+      # 2026-09-12 dependency bump commit for what this caught the first
+      # time it ran here (a real, reachable SQL-injection CVE in pgx,
+      # among others). Not gated to a specific severity: govulncheck only
+      # reports symbol-reachable vulnerabilities in the first place, so
+      # there's no lower-severity noise to filter the way npm audit needs.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   # internal/user (the Postgres-backed user/session store) has no
   # coverage in the `test` job above — there's no meaningful way to fake

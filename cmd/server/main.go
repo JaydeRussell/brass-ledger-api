@@ -9,11 +9,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -114,12 +116,65 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	e := echo.New()
 	e.HideBanner = true
 	e.Logger.SetOutput(logWriter)
-	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
-		Output: logWriter,
-		Format: `{"time":"${time_rfc3339}","level":"access","remote_ip":"${remote_ip}",` +
-			`"method":"${method}","uri":"${uri}","status":${status},"error":"${error}",` +
-			`"latency_human":"${latency_human}","bytes_in":${bytes_in},"bytes_out":${bytes_out},` +
-			`"user_agent":"${user_agent}"}` + "\n",
+	// middleware.LoggerWithConfig's template-string API is deprecated as of
+	// Echo v4.15 in favor of this callback-based one — same JSON shape as
+	// before (built with encoding/json here instead of raw template
+	// substitution, so field values that happen to contain a `"` no
+	// longer produce invalid JSON, a bug the old template approach had).
+	// HandleError is deliberately left false: the old logger never called
+	// the global error handler itself either, just logged whatever error
+	// came back — Echo's own router already invokes it exactly once after
+	// the full middleware chain returns, same as before this migration.
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogRemoteIP:      true,
+		LogMethod:        true,
+		LogURI:           true,
+		LogStatus:        true,
+		LogError:         true,
+		LogLatency:       true,
+		LogContentLength: true,
+		LogResponseSize:  true,
+		LogUserAgent:     true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			errMsg := ""
+			if v.Error != nil {
+				errMsg = v.Error.Error()
+			}
+			// v.ContentLength is the raw Content-Length header value
+			// (empty if the request didn't send one) — parsed to a number
+			// to match the old template's `${bytes_in}` output shape.
+			bytesIn, _ := strconv.ParseInt(v.ContentLength, 10, 64)
+			line, err := json.Marshal(struct {
+				Time         string `json:"time"`
+				Level        string `json:"level"`
+				RemoteIP     string `json:"remote_ip"`
+				Method       string `json:"method"`
+				URI          string `json:"uri"`
+				Status       int    `json:"status"`
+				Error        string `json:"error"`
+				LatencyHuman string `json:"latency_human"`
+				BytesIn      int64  `json:"bytes_in"`
+				BytesOut     int64  `json:"bytes_out"`
+				UserAgent    string `json:"user_agent"`
+			}{
+				Time:         v.StartTime.Format(time.RFC3339),
+				Level:        "access",
+				RemoteIP:     v.RemoteIP,
+				Method:       v.Method,
+				URI:          v.URI,
+				Status:       v.Status,
+				Error:        errMsg,
+				LatencyHuman: v.Latency.String(),
+				BytesIn:      bytesIn,
+				BytesOut:     v.ResponseSize,
+				UserAgent:    v.UserAgent,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = logWriter.Write(append(line, '\n'))
+			return err
+		},
 	}))
 	e.Use(middleware.Recover())
 	// Scoped to the actual frontend origin, with credentials allowed —

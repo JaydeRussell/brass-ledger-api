@@ -352,12 +352,15 @@ As more real features land (follows, notes), they'll get their own
   (startup, migrations, Google sign-in flow) now goes to a log file
   (`LOG_FILE`, default `logs/backend.log`) in addition to stdout, with
   `make logs`/`make logs-tail` to read it back. See "Logging" above.
-- [ ] Deployment (Fly.io/Railway alongside wherever the frontend ends up
-  — see the frontend repo's own deployment TODO). The Dockerfiles above
-  are what a real deploy would build from either way. Remember to add
-  the real deployment's callback URL in Google Cloud Console and flip
-  `COOKIE_SECURE=true` when this happens (see "Google sign-in setup").
-- [ ] CI (build + `go vet`/`golangci-lint` on push)
+- [x] Deployment — live at `api.brass-ledger.app` as a Cloudflare
+  Container (not Fly.io/Railway as originally planned here — see
+  "Deploying to Cloudflare" below), deployed automatically by CI on
+  every push to `main`.
+- [x] CI — GitHub Actions (`.github/workflows/ci.yml`): build/vet/test/
+  golangci-lint/govulncheck on every push and PR, a separate
+  Postgres-backed `integration` job, then the Cloudflare deploy +
+  smoke test above, gated on both passing. Dependabot
+  (`.github/dependabot.yml`) keeps dependencies current.
 - [x] Tighten CORS — now scoped to `FRONTEND_BASE_URL` with
   `AllowCredentials: true` (required for the session cookie to reach
   this API cross-origin at all), instead of the previous wide-open

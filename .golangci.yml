@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # A deferred cleanup call's error is a bug worth catching everywhere
+      # else, but not on these — a defer'd Close/Rollback/Setenv/Unsetenv
+      # right after opening/starting something (or restoring test state)
+      # is the standard Go idiom, and failing CI over it would just push
+      # everyone toward `_ = x.Close()` noise instead. Real read/write
+      # errors from `req.Header.Set` above them are still fully checked.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net/http.ResponseWriter).Write
+        - (github.com/jackc/pgx/v5.Tx).Rollback
+        - (*github.com/JaydeRussell/brass-ledger-api/internal/applog.Writer).Close
+        - os.Setenv
+        - os.Unsetenv

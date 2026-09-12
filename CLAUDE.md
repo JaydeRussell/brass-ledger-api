@@ -236,7 +236,15 @@ stale, rather than appending to it forever.
   frontend side — nobody has run this against a real Postgres or clicked
   through a real follow/unfollow or event-revisit in the browser yet.
   Worth a real pass before trusting it the way "my events" now is.
-- No CI yet.
+- ~~No CI yet.~~ **Stale as of 2026-09-12** — GitHub Actions CI/CD has
+  existed since early this session (`.github/workflows/ci.yml`): build/
+  vet/test/golangci-lint/govulncheck on every push and PR, a separate
+  Postgres-backed `integration` job for `internal/user`, and an
+  auto-deploy-to-Cloudflare-with-smoke-test job gated on both passing,
+  on every push to `main`. Both `test` and `integration` are required
+  status checks on `main`'s branch protection. Dependabot
+  (`.github/dependabot.yml`) keeps Go modules and Actions versions
+  current on a weekly cadence.
 
 ## Environment quirks that will trip up a new session
 
