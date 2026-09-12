@@ -29,8 +29,8 @@ type Config struct {
 	DatabaseURL string
 
 	// GoogleClientID and GoogleClientSecret come from a Google Cloud
-	// Console OAuth client (see the backend README's "Google sign-in
-	// setup" section). Deliberately NOT required: leaving them unset
+	// Console OAuth client (see the README's "Running locally" section).
+	// Deliberately NOT required: leaving them unset
 	// lets the rest of the service run — the BCP proxy, health checks —
 	// before Google sign-in is set up, rather than refusing to start at
 	// all. main.go only registers the /auth/* and /api/me routes when
