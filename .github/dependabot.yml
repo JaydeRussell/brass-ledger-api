@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Go module dependencies — grouped into one weekly PR for anything
+  # patch/minor (the common case, low review burden) so this doesn't
+  # turn into a PR per package; a major bump lands as its own PR since
+  # those are the ones actually worth a closer look.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-dependencies:
+        update-types: ["minor", "patch"]
+
+  # Keeps the CI workflow's own actions (checkout, setup-go,
+  # golangci-lint-action, etc.) current too — these don't show up in
+  # govulncheck/gomod updates since they're not Go dependencies at all.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
