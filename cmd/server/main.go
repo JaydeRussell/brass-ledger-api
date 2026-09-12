@@ -219,7 +219,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	// account-specific features below — is unreachable without it now:
 	// BCPHandler's routes above require an approved session, and without
 	// Google sign-in registered there's no way to ever get one. See the
-	// README's "Google sign-in setup" section.
+	// README's "Running locally" section for how to set it up.
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
 		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails).Register(e)

@@ -59,8 +59,7 @@ stale, rather than appending to it forever.
     against an in-memory fake store (`internal/api/auth_test.go`).
   - `internal/db/migrate.go` — applies `internal/db/migrations/*.sql`
     (currently just `users` + `sessions`) automatically on startup.
-  - See the README's "Google sign-in setup" for the full Google Cloud
-    Console walkthrough — the user has already created an OAuth client
+  - The user has already created a Google Cloud Console OAuth client
     and its real Client ID/Secret are in `.env` (gitignored correctly;
     **do not** put real credentials in `.env.example` — that file is
     deliberately git-tracked as a template, see the `!.env.example` line
@@ -68,8 +67,9 @@ stale, rather than appending to it forever.
     caught and fixed before anything was committed.).
 - **Logging** — every request and every application-level log line
   (startup, migrations, each step of the Google sign-in flow) goes to
-  both stdout and `logs/backend.log` (`LOG_FILE` in `.env`). See the
-  README's "Logging" section. `internal/applog` has its own test suite.
+  both stdout and `logs/backend.log` (`LOG_FILE` in `.env`, see
+  `internal/applog`, which has its own test suite). `make logs`/`make
+  logs-tail` read it back.
 - **"My events" (past/present/future)** — a signed-in account can link a
   Best Coast Pairings profile and see its full BCP tournament history,
   classified into Past/Present/Future:
