@@ -31,6 +31,23 @@ type placingWithField struct {
 	FieldSize *int `json:"fieldSize,omitempty"`
 }
 
+// placingHistoryPoint is one already-concluded event's placing, in
+// chronological order — the "personal trend view" roadmap item's cheap
+// half (placing/points over time). Built from the exact same history
+// loop computePlayerStats already runs for the best-placing splits, so
+// this costs no extra BCP requests. Points rides along for a tooltip
+// detail, not a second chart axis — it isn't comparable across events
+// with different scoring formats the way placing is, so it was never
+// meant to be plotted on its own; see computePlayerStats' doc comment.
+type placingHistoryPoint struct {
+	EventID   string   `json:"eventId"`
+	EventName string   `json:"eventName"`
+	EventDate string   `json:"eventDate"`
+	Placing   int      `json:"placing"`
+	Points    *float64 `json:"points,omitempty"`
+	FieldSize *int     `json:"fieldSize,omitempty"`
+}
+
 // playerStatsResponse is GET /api/me/stats' body. Linked is false (with
 // every other field at its zero value) for an account that hasn't pasted
 // a BCP profile yet — same "not linked" vs "linked but nothing yet"
@@ -59,10 +76,12 @@ type playerStatsResponse struct {
 	Factions          []factionStat     `json:"factions"`
 	MostRecentEventID string            `json:"mostRecentEventId,omitempty"`
 	CompetingSince    string            `json:"competingSince,omitempty"`
+	// Chronological (oldest first) — see placingHistoryPoint.
+	History []placingHistoryPoint `json:"history"`
 }
 
 func emptyPlayerStatsResponse(linked bool) playerStatsResponse {
-	return playerStatsResponse{Linked: linked, Factions: []factionStat{}}
+	return playerStatsResponse{Linked: linked, Factions: []factionStat{}, History: []placingHistoryPoint{}}
 }
 
 // Event category buckets for the "best placing" split — a team event
@@ -222,9 +241,20 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 		return best
 	}
 
+	// Dated alongside each point so the slice can be sorted chronologically
+	// after the loop — placingHistoryPoint itself only carries the
+	// original EventDate string, not a parsed time.Time.
+	type datedPoint struct {
+		t time.Time
+		p placingHistoryPoint
+	}
+	datedHistory := make([]datedPoint, 0, len(history))
+
 	var earliest time.Time
 	for _, h := range history {
 		fieldSize := infos[h.EventID].PlayerCount
+
+		t, dateOK := parseBCPDate(h.EventDate)
 
 		if h.Placing != nil {
 			resp.BestPlacing = keepBestWithField(resp.BestPlacing, *h.Placing, fieldSize)
@@ -238,9 +268,23 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 					resp.BestPlacingRTT = keepBestWithField(resp.BestPlacingRTT, *h.Placing, fieldSize)
 				}
 			}
+			// Excluded (not just unordered) when the date can't be parsed
+			// — every other stat above still counts this event, but a
+			// chronological trend has nowhere to place a point with no
+			// date.
+			if dateOK {
+				datedHistory = append(datedHistory, datedPoint{t: t, p: placingHistoryPoint{
+					EventID:   h.EventID,
+					EventName: h.EventName,
+					EventDate: h.EventDate,
+					Placing:   *h.Placing,
+					Points:    h.Points,
+					FieldSize: fieldSize,
+				}})
+			}
 		}
 
-		if t, ok := parseBCPDate(h.EventDate); ok && (earliest.IsZero() || t.Before(earliest)) {
+		if dateOK && (earliest.IsZero() || t.Before(earliest)) {
 			earliest = t
 			resp.CompetingSince = h.EventDate
 		}
@@ -263,6 +307,14 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 	sort.SliceStable(resp.Factions, func(i, j int) bool {
 		return resp.Factions[i].EventCount > resp.Factions[j].EventCount
 	})
+
+	sort.SliceStable(datedHistory, func(i, j int) bool {
+		return datedHistory[i].t.Before(datedHistory[j].t)
+	})
+	resp.History = make([]placingHistoryPoint, len(datedHistory))
+	for i, d := range datedHistory {
+		resp.History[i] = d.p
+	}
 
 	return resp
 }

@@ -199,6 +199,35 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 	if resp.MostRecentEventID != "evt-gt" {
 		t.Errorf("mostRecentEventId = %q, want %q (the most recent entry)", resp.MostRecentEventID, "evt-gt")
 	}
+
+	// History is chronological (oldest first) — the reverse of
+	// FetchPlacingHistory's own most-recent-first contract — and carries
+	// the flagship-league placing for evt-team (5, not hobby track's 2),
+	// same canonical-per-event rule as every other stat above.
+	wantHistory := []struct {
+		eventID string
+		placing int
+	}{
+		{"evt-club-solo", 3},
+		{"evt-team", 5},
+		{"evt-nodate", 1},
+		{"evt-rtt", 10},
+		{"evt-gt", 2},
+	}
+	if len(resp.History) != len(wantHistory) {
+		t.Fatalf("history = %+v, want %d entries", resp.History, len(wantHistory))
+	}
+	for i, want := range wantHistory {
+		got := resp.History[i]
+		if got.EventID != want.eventID || got.Placing != want.placing {
+			t.Errorf("history[%d] = %+v, want eventId=%q placing=%d", i, got, want.eventID, want.placing)
+		}
+	}
+	// evt-team's fieldSize (12, from teamPlayerCounts) should ride along
+	// on its history point too, same as it does on BestPlacingTeams above.
+	if resp.History[1].FieldSize == nil || *resp.History[1].FieldSize != 12 {
+		t.Errorf("history[1] (evt-team) fieldSize = %v, want 12", resp.History[1].FieldSize)
+	}
 }
 
 // TestPlayerStatsByID_RequiresSignIn and TestPlayerStatsByID_Aggregates
@@ -303,6 +332,41 @@ func TestCanonicalPlacingPerEvent(t *testing.T) {
 	// FetchPlacingHistory's own most-recent-first sort relies on.
 	if got[0].EventID != "evt-a" || got[1].EventID != "evt-b" || got[2].EventID != "evt-c" {
 		t.Errorf("order = %v, want evt-a, evt-b, evt-c in that order", []string{got[0].EventID, got[1].EventID, got[2].EventID})
+	}
+}
+
+func TestComputePlayerStats_History(t *testing.T) {
+	placing := func(p int) *int { return &p }
+	points := func(f float64) *float64 { return &f }
+
+	history := []bcp.PlacingHistoryEntry{
+		{EventID: "evt-b", EventName: "Later Event", EventDate: "2026-02-01T00:00:00.000Z", Placing: placing(4), Points: points(70)},
+		{EventID: "evt-a", EventName: "Earlier Event", EventDate: "2026-01-01T00:00:00.000Z", Placing: placing(1), Points: points(95)},
+		// No parseable date — every other stat still counts this event
+		// (TotalEvents, CompetingSince search, faction breakdown), but it
+		// can't be placed on a chronological trend, so it's excluded from
+		// History specifically rather than sorted arbitrarily.
+		{EventID: "evt-nodate", EventName: "Undated Event", EventDate: "", Placing: placing(2)},
+		// No placing at all (shouldn't happen for FetchPlacingHistory's
+		// real output, which is already-concluded events only, but
+		// computePlayerStats guards it anyway) — also excluded.
+		{EventID: "evt-noplacing", EventName: "No Placing", EventDate: "2026-03-01T00:00:00.000Z"},
+	}
+
+	resp := computePlayerStats(history, map[string]bcp.EventInfo{})
+
+	if len(resp.History) != 2 {
+		t.Fatalf("history = %+v, want exactly 2 entries", resp.History)
+	}
+	if resp.History[0].EventID != "evt-a" || resp.History[1].EventID != "evt-b" {
+		t.Errorf("history order = [%s, %s], want [evt-a, evt-b] (chronological)", resp.History[0].EventID, resp.History[1].EventID)
+	}
+	if resp.History[0].Points == nil || *resp.History[0].Points != 95 {
+		t.Errorf("history[0].points = %v, want 95", resp.History[0].Points)
+	}
+	// TotalEvents still counts all 4, even though only 2 made it into History.
+	if resp.TotalEvents != 4 {
+		t.Errorf("totalEvents = %d, want 4", resp.TotalEvents)
 	}
 }
 
