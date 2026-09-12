@@ -93,6 +93,18 @@ func TestFormatLocation(t *testing.T) {
 			},
 			want: "Venue, Springfield",
 		},
+		{
+			name: "dedupes a zip BCP already embedded in State",
+			loc: &locFields{
+				StreetNum:  "25",
+				StreetName: "N Sports Pk Dr",
+				City:       "Farmington",
+				State:      "UT 84025",
+				Zip:        "84025",
+				Country:    "USA",
+			},
+			want: "25 N Sports Pk Dr, Farmington, UT 84025, USA",
+		},
 	}
 
 	for _, tc := range cases {
