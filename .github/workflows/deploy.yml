@@ -1,0 +1,54 @@
+# Split out from ci.yml (2026-09-12) so deploy never shows up (not even
+# as "skipped") on a PR's checks list — it used to live in the same
+# workflow file as test/integration, gated by an `if:`, which meant
+# every PR run still listed it as a skipped job.
+#
+# Triggered by the CI/CD workflow's own completion rather than sharing
+# its `on: push` trigger, so this can gate on that workflow's overall
+# conclusion (both `test` and `integration` succeeding) without
+# duplicating those jobs here. The `ref` on checkout matters: a
+# workflow_run-triggered run defaults to checking out whatever's on the
+# default branch *right now*, not the commit the upstream run actually
+# tested — github.event.workflow_run.head_sha pins it to the right one.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI/CD"]
+    types: [completed]
+
+jobs:
+  # Deploys the Go backend as a Cloudflare Container (see wrangler.jsonc,
+  # src/worker.ts). Only after a CI/CD run triggered by a real push to
+  # main succeeds — a PR from a fork wouldn't have access to the deploy
+  # secrets anyway, and we don't want every PR touching production.
+  deploy:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # Catches a bad deploy immediately rather than silently — the same
+      # checks `make smoke` runs locally, pointed at the real production
+      # URLs instead of localhost. No fixed sleep here (a Container that
+      # was asleep — see wrangler.jsonc's sleepAfter — could take longer
+      # than any single guessed delay to spin back up): smoke-test.sh's
+      # own check() now retries each URL with a backoff instead, so a
+      # slow-to-wake container still passes once it actually answers,
+      # rather than a one-shot request racing the cold start.
+      - run: ./scripts/smoke-test.sh
+        env:
+          BACKEND_URL: https://api.brass-ledger.app
+          FRONTEND_URL: https://brass-ledger.app
