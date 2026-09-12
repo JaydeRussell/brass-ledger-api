@@ -91,7 +91,15 @@ func formatLocation(loc *struct {
 	}
 	street := strings.TrimSpace(strings.Join(nonEmpty(loc.StreetNum, loc.StreetName), " "))
 	cityState := strings.Join(nonEmpty(loc.City, loc.State), ", ")
-	parts := nonEmpty(loc.Name, street, strings.TrimSpace(strings.Join(nonEmpty(cityState, loc.Zip), " ")), loc.Country)
+	// BCP sometimes already embeds the zip in State (e.g. "UT 84025"), in
+	// which case appending loc.Zip too would duplicate it — e.g.
+	// "Farmington, UT 84025 84025". Only append it when it isn't already
+	// there.
+	zip := loc.Zip
+	if zip != "" && strings.HasSuffix(strings.TrimSpace(cityState), zip) {
+		zip = ""
+	}
+	parts := nonEmpty(loc.Name, street, strings.TrimSpace(strings.Join(nonEmpty(cityState, zip), " ")), loc.Country)
 	return strings.Join(parts, ", ")
 }
 

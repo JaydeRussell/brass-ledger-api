@@ -342,6 +342,62 @@ func TestMyEvents_ClassifiesPastPresentFuture(t *testing.T) {
 	}
 }
 
+// TestMyEvents_DedupesSameEventScoredUnderTwoLeagues reproduces a
+// real-world case (e.g. "Cowboy Classic 2") where BCP scores one event
+// under both its flagship ITC league and a separate Hobby Track league,
+// which otherwise made that event show up twice in Past with two
+// different point totals — confirmed live. classifyMyEvents now runs
+// placingHistory through canonicalPlacingPerEvent (already proven out
+// by stats_test.go) before building Past, so only the flagship entry
+// should survive.
+func TestMyEvents_DedupesSameEventScoredUnderTwoLeagues(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	if err := store.SetBcpUserID(context.Background(), userID, "bcp-user-1"); err != nil {
+		t.Fatalf("SetBcpUserID: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": [{"event": {"id": "evt-dual", "name": "Cowboy Classic 2"}}]}`))
+	})
+	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": [
+			{"placing": 5, "points": 60, "leagueId": "league-flagship", "event": {"id": "evt-dual", "name": "Cowboy Classic 2", "eventDate": "2025-06-01T00:00:00.000Z"}},
+			{"placing": 2, "points": 90, "leagueId": "league-hobby", "event": {"id": "evt-dual", "name": "Cowboy Classic 2", "eventDate": "2025-06-01T00:00:00.000Z"}}
+		]}`))
+	})
+	mux.HandleFunc("/leagues/league-flagship", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name": "Flagship ITC", "gw_itc": true, "hobby": false}`))
+	})
+	mux.HandleFunc("/leagues/league-hobby", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"name": "Hobby Track", "gw_itc": true, "hobby": true}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	e := newMeTestEcho(store, client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp myEventsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	if len(resp.Past) != 1 {
+		t.Fatalf("past = %+v, want exactly 1 entry (deduped to the flagship placing)", resp.Past)
+	}
+	if got := resp.Past[0].Placing; got == nil || *got != 5 {
+		t.Errorf("past[0].Placing = %v, want 5 (the flagship entry, not the Hobby Track one)", got)
+	}
+}
+
 // TestMyEvents_UpcomingFetchedAt confirms the "last checked" timestamp
 // is present and recent after a normal fetch. The Invalidate-bypasses-
 // the-cache behavior ?refresh=true triggers is already thoroughly

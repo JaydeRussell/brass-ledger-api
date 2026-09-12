@@ -253,6 +253,12 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	// BCP can score one event under several leagues at once (flagship ITC
+	// plus a separate Hobby Track, say), which would otherwise show up as
+	// the same event listed twice in Past with two different point
+	// totals — see canonicalPlacingPerEvent's doc comment (stats.go),
+	// which this reuses rather than duplicating.
+	placingHistory = canonicalPlacingPerEvent(ctx, client, placingHistory)
 	registrations, err := client.FetchPlayerEventHistory(ctx, bcpUserID)
 	if err != nil {
 		return nil, nil, nil, err
