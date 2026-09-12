@@ -1,6 +1,9 @@
 # Brass Ledger
 
 [![CI/CD](https://github.com/JaydeRussell/brass-ledger-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JaydeRussell/brass-ledger-api/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JaydeRussell/brass-ledger-api/main/.github/badges/coverage.json)](https://github.com/JaydeRussell/brass-ledger-api/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/JaydeRussell/brass-ledger-api)](https://goreportcard.com/report/github.com/JaydeRussell/brass-ledger-api)
+[![License](https://img.shields.io/github/license/JaydeRussell/brass-ledger-api)](LICENSE)
 
 **Tournament Companion** for Warhammer 40k — this is the backend for
 [brass-ledger-web](../brass-ledger-web). Written in Go, using

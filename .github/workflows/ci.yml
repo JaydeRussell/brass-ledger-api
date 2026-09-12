@@ -9,6 +9,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # contents: write is only actually exercised by the "Commit coverage
+    # badge" step below, and only on a push to main — needed so that step
+    # can push using the default GITHUB_TOKEN. A push made with that
+    # token doesn't itself trigger another workflow run, so this can't
+    # loop.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -16,7 +23,7 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./...
+      - run: go test ./... -coverprofile=coverage.out
       # See .golangci.yml — errcheck's default strictness on a deferred
       # Close/Rollback is excluded there rather than annotated at every
       # call site; everything else runs at golangci-lint's defaults.
@@ -31,6 +38,47 @@ jobs:
       # reports symbol-reachable vulnerabilities in the first place, so
       # there's no lower-severity noise to filter the way npm audit needs.
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Self-hosted coverage badge — no external service/account (unlike
+      # Codecov) needed. Reads coverage.out from the plain `go test`
+      # above (internal/user's own coverage lives in the Postgres-gated
+      # `integration` job below and isn't included here — merging
+      # profiles across the two runs isn't worth the added complexity for
+      # a badge). Writes a shields.io "endpoint" JSON file, committed back
+      # to main only (never on a PR, both because a fork's PR can't push
+      # here and because only main's own number should be "the" badge).
+      # README badges point at this file via shields.io's endpoint format:
+      # https://img.shields.io/endpoint?url=<raw file URL>
+      - name: Compute coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # A hiccup in badge generation is a cosmetic problem, not a
+        # reason to fail this job (and block the deploy gated on it).
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          pct="$(go tool cover -func=coverage.out | tail -1 | grep -oE '[0-9]+\.[0-9]+')"
+          color="red"
+          awk_ge() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a>=b)}'; }
+          if awk_ge "$pct" 90; then color="brightgreen"
+          elif awk_ge "$pct" 80; then color="green"
+          elif awk_ge "$pct" 70; then color="yellowgreen"
+          elif awk_ge "$pct" 60; then color="yellow"
+          elif awk_ge "$pct" 50; then color="orange"
+          fi
+          mkdir -p .github/badges
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$pct" "$color" > .github/badges/coverage.json
+      - name: Commit coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- .github/badges/coverage.json; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/coverage.json
+          git commit -m "Update coverage badge [skip ci]"
+          git push
 
   # internal/user (the Postgres-backed user/session store) has no
   # coverage in the `test` job above — there's no meaningful way to fake
