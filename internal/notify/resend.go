@@ -105,7 +105,7 @@ func (n *ResendNotifier) NotifyNewSignup(ctx context.Context, u user.User) error
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("Resend request failed: HTTP %d", res.StatusCode)
+		return fmt.Errorf("resend request failed: HTTP %d", res.StatusCode)
 	}
 	return nil
 }
