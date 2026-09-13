@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcpcache"
 	"github.com/JaydeRussell/brass-ledger-api/internal/config"
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
+	"github.com/JaydeRussell/brass-ledger-api/internal/notify"
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
@@ -222,7 +224,12 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	// README's "Running locally" section for how to set it up.
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
-		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails).Register(e)
+		// A no-op notifier (see internal/notify.ResendNotifier.enabled)
+		// whenever RESEND_API_KEY/EMAIL_FROM_ADDRESS aren't both set —
+		// same "quietly disabled, not a startup failure" contract as
+		// Google sign-in itself.
+		notifier := notify.NewResendNotifier(cfg.ResendAPIKey, cfg.EmailFromAddress, cfg.AdminEmails, strings.TrimSuffix(cfg.FrontendBaseURL, "/")+"/admin")
+		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails, notifier).Register(e)
 		// The BCP-profile-link + "my events" routes are session-gated (see
 		// internal/api/me.go), so there's no point registering them
 		// without sign-in itself also being enabled.
@@ -240,6 +247,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 		if len(cfg.AdminEmails) == 0 {
 			log.Printf("ADMIN_EMAILS is not set — nobody can approve a pending account (see .env.example)")
+		}
+		if cfg.ResendAPIKey == "" || cfg.EmailFromAddress == "" {
+			log.Printf("RESEND_API_KEY/EMAIL_FROM_ADDRESS not set — new-signup admin alert email is disabled (see .env.example)")
 		}
 	} else {
 		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example) — every route except /healthz and /readyz will 401, since there's no way to get a session")

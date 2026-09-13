@@ -12,12 +12,14 @@ interface Env {
   FRONTEND_BASE_URL: string;
   COOKIE_SECURE: string;
   LOG_FILE: string;
+  EMAIL_FROM_ADDRESS: string;
   // Secrets, set via `wrangler secret put <NAME>` — never in
   // wrangler.jsonc.
   DATABASE_URL: string;
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   ADMIN_EMAILS: string;
+  RESEND_API_KEY: string;
 }
 
 export class BackendContainer extends Container<Env> {
@@ -39,6 +41,8 @@ export class BackendContainer extends Container<Env> {
     COOKIE_SECURE: this.env.COOKIE_SECURE,
     LOG_FILE: this.env.LOG_FILE,
     ADMIN_EMAILS: this.env.ADMIN_EMAILS,
+    EMAIL_FROM_ADDRESS: this.env.EMAIL_FROM_ADDRESS,
+    RESEND_API_KEY: this.env.RESEND_API_KEY,
   };
 }
 

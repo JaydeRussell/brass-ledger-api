@@ -107,8 +107,16 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // auto-approval — see internal/api/auth.go's Callback) on every
 // subsequent sign-in. A profile refresh should never silently reset
 // someone's access.
-func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name, avatarURL string) (User, error) {
+//
+// The returned bool is true iff this call inserted a brand-new row
+// (false for a conflict-triggered update) — Postgres's `xmax = 0`
+// system-column trick, checked in the same RETURNING round-trip rather
+// than a second query. True at most once ever per googleSub; used by
+// Callback to email admins about a new pending signup without
+// re-notifying on that account's later sign-ins.
+func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name, avatarURL string) (User, bool, error) {
 	var u User
+	var inserted bool
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO users (google_sub, email, name, avatar_url, last_login_at)
 		VALUES ($1, $2, $3, $4, now())
@@ -117,12 +125,12 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, theme_preference
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, theme_preference, (xmax = 0) AS inserted
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference, &inserted)
 	if err != nil {
-		return User{}, fmt.Errorf("upserting user: %w", err)
+		return User{}, false, fmt.Errorf("upserting user: %w", err)
 	}
-	return u, nil
+	return u, inserted, nil
 }
 
 // CreateSession issues a new session for a user and returns its opaque

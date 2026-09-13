@@ -72,7 +72,7 @@ func (f *fakeUserStore) ListUsers(_ context.Context) ([]user.User, error) {
 func newSignedInUser(t *testing.T, store *fakeUserStore, subSuffix, role, status string) (*http.Cookie, int64) {
 	t.Helper()
 	ctx := context.Background()
-	u, err := store.UpsertUserFromGoogle(ctx, "sub-"+subSuffix, subSuffix+"@example.com", "User "+subSuffix, "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "sub-"+subSuffix, subSuffix+"@example.com", "User "+subSuffix, "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}

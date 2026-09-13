@@ -53,7 +53,7 @@ func (f *fakeUserStore) SetThemePreference(_ context.Context, userID int64, them
 // own logic) and returns a session cookie for them plus their id.
 func signedInSession(t *testing.T, store *fakeUserStore) (*http.Cookie, int64) {
 	t.Helper()
-	u, err := store.UpsertUserFromGoogle(context.Background(), "sub-1", "a@example.com", "Anna Adams", "")
+	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-1", "a@example.com", "Anna Adams", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestSetTheme_RequiresSignIn(t *testing.T) {
 // pending account should still be able to set a personal UI preference.
 func TestSetTheme_DoesNotRequireApproval(t *testing.T) {
 	store := newFakeUserStore()
-	u, err := store.UpsertUserFromGoogle(context.Background(), "sub-pending", "p@example.com", "Pat Pending", "")
+	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-pending", "p@example.com", "Pat Pending", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}

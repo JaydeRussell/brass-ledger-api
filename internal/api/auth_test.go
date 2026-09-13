@@ -38,6 +38,14 @@ type fakeUserStore struct {
 	// label if already followed" semantics are easy to reproduce.
 	follows      map[int64]map[string]user.Follow
 	recentEvents map[int64][]user.RecentEvent
+
+	// newUserStatus overrides the default RoleUser/StatusApproved a
+	// brand-new fake user gets (see UpsertUserFromGoogle's comment below)
+	// — empty means "use that default". Only the new-signup-notification
+	// tests set this, so a brand-new fake user can be seeded pending
+	// without every other existing test needing to simulate an admin
+	// approving it first.
+	newUserStatus string
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -49,9 +57,9 @@ func newFakeUserStore() *fakeUserStore {
 	}
 }
 
-func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email, name, avatarURL string) (user.User, error) {
+func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email, name, avatarURL string) (user.User, bool, error) {
 	if f.upsertErr != nil {
-		return user.User{}, f.upsertErr
+		return user.User{}, false, f.upsertErr
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -69,7 +77,15 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 		// (RequireApproved, requireApprovedUser) gets its own dedicated
 		// tests using an explicitly-pending fake user instead — see
 		// admin_test.go and bcp_test.go's TestBCPHandler_RequiresSession.
-		u.Role, u.Status = user.RoleUser, user.StatusApproved
+		// newUserStatus overrides this default for the tests that
+		// specifically need to observe pending-signup behavior (see
+		// TestGoogleCallback_NewSignupNotifiesAdmins and friends).
+		u.Role = user.RoleUser
+		if f.newUserStatus != "" {
+			u.Status = f.newUserStatus
+		} else {
+			u.Status = user.StatusApproved
+		}
 		// Matches the real Store's migration-0008 default — a brand
 		// new row starts at "system", same as a guest who's never
 		// touched the toggle.
@@ -77,7 +93,7 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 	}
 	u.Email, u.Name, u.AvatarURL = email, name, avatarURL
 	f.byGoogle[googleSub] = u
-	return u, nil
+	return u, !existed, nil
 }
 
 func (f *fakeUserStore) CreateSession(_ context.Context, userID int64) (string, error) {
@@ -181,6 +197,22 @@ func (f *fakeUserStore) RecordRecentEvent(_ context.Context, userID int64, event
 	return nil
 }
 
+// fakeNotifier records every NotifyNewSignup call, so tests can assert
+// on how many times (and for whom) an admin alert would have fired
+// without a real Resend account.
+type fakeNotifier struct {
+	mu    sync.Mutex
+	calls []user.User
+	err   error
+}
+
+func (f *fakeNotifier) NotifyNewSignup(_ context.Context, u user.User) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, u)
+	return f.err
+}
+
 // stubGoogleServer stands up a fake Google (token + userinfo endpoints)
 // so tests never reach the real API — mirrors internal/auth/google_test.go's
 // own stub pattern.
@@ -214,8 +246,15 @@ func newTestEcho(google *auth.GoogleOAuth, store userStore) *echo.Echo {
 // newTestEcho itself, since only the admin-bootstrap test
 // (TestCallback_AdminEmailBootstrap) cares about this.
 func newTestEchoWithAdmins(google *auth.GoogleOAuth, store userStore, adminEmails []string) *echo.Echo {
+	return newTestEchoWithNotifier(google, store, adminEmails, &fakeNotifier{})
+}
+
+// newTestEchoWithNotifier is newTestEchoWithAdmins with an explicit
+// notifier — for the tests that need to inspect a *fakeNotifier's
+// recorded calls afterward.
+func newTestEchoWithNotifier(google *auth.GoogleOAuth, store userStore, adminEmails []string, notifier signupNotifier) *echo.Echo {
 	e := echo.New()
-	NewAuthHandler(google, store, frontendURL, false, adminEmails).Register(e)
+	NewAuthHandler(google, store, frontendURL, false, adminEmails, notifier).Register(e)
 	return e
 }
 
@@ -391,6 +430,74 @@ func signInAndGetLocation(t *testing.T, e *echo.Echo, loginPath string) string {
 	return callbackRec.Header().Get("Location")
 }
 
+// TestGoogleCallback_NewSignupNotifiesAdmins covers this feature's whole
+// reason for existing: a brand-new account landing pending fires exactly
+// one admin alert email. Seeds the fake store's newUserStatus to pending
+// since the fake otherwise defaults a brand-new user straight to
+// approved (see UpsertUserFromGoogle's comment).
+func TestGoogleCallback_NewSignupNotifiesAdmins(t *testing.T) {
+	google := stubGoogleServer(t,
+		`{"access_token": "tok-abc"}`,
+		`{"sub": "google-sub-new", "email": "newbie@example.com", "name": "Newbie Newman", "picture": ""}`,
+	)
+	store := newFakeUserStore()
+	store.newUserStatus = user.StatusPending
+	notifier := &fakeNotifier{}
+	e := newTestEchoWithNotifier(google, store, nil, notifier)
+
+	signInAndGetLocation(t, e, "/auth/google/login")
+
+	if len(notifier.calls) != 1 {
+		t.Fatalf("notifier called %d times, want 1", len(notifier.calls))
+	}
+	if notifier.calls[0].Email != "newbie@example.com" {
+		t.Errorf("notified about %q, want newbie@example.com", notifier.calls[0].Email)
+	}
+}
+
+// TestGoogleCallback_RepeatSignInDoesNotRenotify confirms a still-pending
+// account signing back in a second time doesn't send a second alert —
+// only the genuinely first-ever insert should (see auth.go's Callback
+// and UpsertUserFromGoogle's inserted return value).
+func TestGoogleCallback_RepeatSignInDoesNotRenotify(t *testing.T) {
+	google := stubGoogleServer(t,
+		`{"access_token": "tok-abc"}`,
+		`{"sub": "google-sub-repeat", "email": "repeat@example.com", "name": "Repeat Ron", "picture": ""}`,
+	)
+	store := newFakeUserStore()
+	store.newUserStatus = user.StatusPending
+	notifier := &fakeNotifier{}
+	e := newTestEchoWithNotifier(google, store, nil, notifier)
+
+	signInAndGetLocation(t, e, "/auth/google/login")
+	signInAndGetLocation(t, e, "/auth/google/login")
+
+	if len(notifier.calls) != 1 {
+		t.Fatalf("notifier called %d times across two sign-ins, want 1", len(notifier.calls))
+	}
+}
+
+// TestGoogleCallback_AdminSignupDoesNotNotify confirms an admin's own
+// first sign-in — immediately promoted to approved by the ADMIN_EMAILS
+// bootstrap, which runs before the notify check — never triggers an
+// alert about itself.
+func TestGoogleCallback_AdminSignupDoesNotNotify(t *testing.T) {
+	google := stubGoogleServer(t,
+		`{"access_token": "tok-abc"}`,
+		`{"sub": "google-sub-admin", "email": "admin@example.com", "name": "Admin Person", "picture": ""}`,
+	)
+	store := newFakeUserStore()
+	store.newUserStatus = user.StatusPending
+	notifier := &fakeNotifier{}
+	e := newTestEchoWithNotifier(google, store, []string{"admin@example.com"}, notifier)
+
+	signInAndGetLocation(t, e, "/auth/google/login")
+
+	if len(notifier.calls) != 0 {
+		t.Fatalf("notifier called %d times for an admin-bootstrap signup, want 0", len(notifier.calls))
+	}
+}
+
 // TestGoogleCallback_AlreadyLinked covers the returning-user path: an
 // account that's already linked a BCP profile skips onboarding
 // entirely, going to return_to (if a safe one was set) or the plain
@@ -424,7 +531,7 @@ func TestGoogleCallback_AlreadyLinked(t *testing.T) {
 			store := newFakeUserStore()
 			// Establish the account and mark it linked before the
 			// "real" sign-in this test is actually about.
-			u, err := store.UpsertUserFromGoogle(context.Background(), "google-sub-linked", "bo@example.com", "Bo Baker", "")
+			u, _, err := store.UpsertUserFromGoogle(context.Background(), "google-sub-linked", "bo@example.com", "Bo Baker", "")
 			if err != nil {
 				t.Fatalf("seeding user: %v", err)
 			}
