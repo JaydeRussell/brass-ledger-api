@@ -18,7 +18,12 @@
     // only, not a local file, so Cloudflare's own log tooling captures
     // it. See LOG_FILE's "explicit empty string" behavior in
     // internal/config.
-    "LOG_FILE": ""
+    "LOG_FILE": "",
+    // The new-signup admin alert's sender address (see internal/notify)
+    // — not secret, but only does anything paired with the
+    // RESEND_API_KEY Worker secret below, and only once this domain is
+    // added and verified in Resend's own dashboard.
+    "EMAIL_FROM_ADDRESS": "Brass Ledger <alerts@brass-ledger.app>"
   },
 
   "containers": [

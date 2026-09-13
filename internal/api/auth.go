@@ -41,7 +41,7 @@ func isSafeReturnPath(path string) bool {
 // database — the same interface-at-the-point-of-use pattern as deps.go's
 // bcpClient.
 type userStore interface {
-	UpsertUserFromGoogle(ctx context.Context, googleSub, email, name, avatarURL string) (user.User, error)
+	UpsertUserFromGoogle(ctx context.Context, googleSub, email, name, avatarURL string) (user.User, bool, error)
 	CreateSession(ctx context.Context, userID int64) (string, error)
 	GetUserBySession(ctx context.Context, token string) (user.User, error)
 	DeleteSession(ctx context.Context, token string) error
@@ -70,6 +70,15 @@ type userStore interface {
 	SetThemePreference(ctx context.Context, userID int64, theme string) error
 }
 
+// signupNotifier is the "alert admins about a new pending signup"
+// dependency Callback calls below — see internal/notify.ResendNotifier,
+// the production implementation. Its own small interface, same
+// interface-at-the-point-of-use pattern as userStore/bcpClient, so tests
+// can fake it without needing a real Resend account.
+type signupNotifier interface {
+	NotifyNewSignup(ctx context.Context, u user.User) error
+}
+
 // AuthHandler wires up Google sign-in, sign-out, and the signed-in-user
 // lookup the frontend calls on load.
 type AuthHandler struct {
@@ -82,6 +91,10 @@ type AuthHandler struct {
 	// Already lowercased by config.parseAdminEmails; Callback lowercases
 	// the signed-in email the same way before comparing.
 	adminEmails []string
+	// notifier emails adminEmails about a brand-new pending signup — see
+	// Callback. A no-op implementation if Resend isn't configured (see
+	// internal/notify.ResendNotifier.enabled), never nil.
+	notifier signupNotifier
 }
 
 // NewAuthHandler builds an AuthHandler.
@@ -90,7 +103,7 @@ type AuthHandler struct {
 // for local http://localhost development — browsers refuse to store a
 // Secure cookie at all over plain HTTP, which would otherwise silently
 // break sign-in locally.
-func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool, adminEmails []string) *AuthHandler {
+func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool, adminEmails []string, notifier signupNotifier) *AuthHandler {
 	return &AuthHandler{
 		google: google,
 		store:  store,
@@ -100,6 +113,7 @@ func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL strin
 		frontendURL:  strings.TrimSuffix(frontendURL, "/"),
 		cookieSecure: cookieSecure,
 		adminEmails:  adminEmails,
+		notifier:     notifier,
 	}
 }
 
@@ -174,7 +188,7 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 		return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
 	}
 
-	u, err := h.store.UpsertUserFromGoogle(c.Request().Context(), info.Sub, info.Email, info.Name, info.Picture)
+	u, inserted, err := h.store.UpsertUserFromGoogle(c.Request().Context(), info.Sub, info.Email, info.Name, info.Picture)
 	if err != nil {
 		log.Printf("google callback: upserting user %s failed: %v", info.Email, err)
 		return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
@@ -192,6 +206,20 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 		} else {
 			log.Printf("google callback: %s matched ADMIN_EMAILS, promoted to admin+approved", u.Email)
 			u.Role, u.Status = user.RoleAdmin, user.StatusApproved
+		}
+	}
+
+	// Email admins about a brand-new signup waiting on approval —
+	// checked after the ADMIN_EMAILS bootstrap above so an admin's own
+	// first sign-in (immediately promoted to approved) is naturally
+	// excluded. inserted is true at most once ever per Google account
+	// (see UpsertUserFromGoogle's doc comment), so this never re-fires
+	// on a still-pending account's later sign-ins. A failed alert email
+	// is logged, never fails sign-in — h.notifier is a no-op if Resend
+	// isn't configured (see internal/notify.ResendNotifier).
+	if inserted && u.Status == user.StatusPending {
+		if err := h.notifier.NotifyNewSignup(c.Request().Context(), u); err != nil {
+			log.Printf("google callback: notifying admins of new pending signup %s failed (continuing): %v", u.Email, err)
 		}
 	}
 

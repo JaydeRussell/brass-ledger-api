@@ -76,6 +76,17 @@ type Config struct {
 	// stays that way until promoted some other way — e.g. directly in
 	// the database), but means nobody can approve anybody.
 	AdminEmails []string
+
+	// ResendAPIKey and EmailFromAddress enable emailing every AdminEmails
+	// address when a brand-new account signs up pending approval (see
+	// internal/notify and internal/api/auth.go's Callback). Both
+	// optional, same "leaving it unset just disables the feature"
+	// contract as GoogleClientID/GoogleClientSecret above — main.go only
+	// builds a working notifier when both are set; a deployment without
+	// Resend configured still starts and runs fine, admins just have to
+	// keep checking /admin manually.
+	ResendAPIKey     string
+	EmailFromAddress string
 }
 
 // Load reads configuration from the environment. Returns an error if a
@@ -92,6 +103,8 @@ func Load() (Config, error) {
 		CookieSecure:       os.Getenv("COOKIE_SECURE") == "true",
 		LogFile:            getEnvOrDefaultAllowingEmpty("LOG_FILE", "logs/backend.log"),
 		AdminEmails:        parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
+		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
+		EmailFromAddress:   os.Getenv("EMAIL_FROM_ADDRESS"),
 	}
 
 	if cfg.DatabaseURL == "" {

@@ -74,9 +74,12 @@ func TestStore_UpsertUserFromGoogle(t *testing.T) {
 	ctx := context.Background()
 	googleSub := "google-sub-" + uniqueID(t)
 
-	u, err := store.UpsertUserFromGoogle(ctx, googleSub, "a@example.com", "Alice", "https://example.com/a.png")
+	u, inserted, err := store.UpsertUserFromGoogle(ctx, googleSub, "a@example.com", "Alice", "https://example.com/a.png")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle (create): %v", err)
+	}
+	if !inserted {
+		t.Errorf("inserted = false on first-ever upsert, want true")
 	}
 	if u.Email != "a@example.com" || u.Name != "Alice" || u.BcpUserID != "" {
 		t.Fatalf("unexpected user on create: %+v", u)
@@ -96,9 +99,12 @@ func TestStore_UpsertUserFromGoogle(t *testing.T) {
 	// Signing in again with the same googleSub but a changed profile
 	// (Google's own name/avatar can change) should update the existing
 	// row in place, not create a second one.
-	u2, err := store.UpsertUserFromGoogle(ctx, googleSub, "a-new@example.com", "Alice Renamed", "https://example.com/a2.png")
+	u2, inserted2, err := store.UpsertUserFromGoogle(ctx, googleSub, "a-new@example.com", "Alice Renamed", "https://example.com/a2.png")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle (update): %v", err)
+	}
+	if inserted2 {
+		t.Errorf("inserted = true on a conflict-triggered update, want false")
 	}
 	if u2.ID != u.ID {
 		t.Fatalf("expected the same user id on re-upsert, got %d then %d", u.ID, u2.ID)
@@ -113,9 +119,12 @@ func TestStore_UpsertUserFromGoogle(t *testing.T) {
 	if err := store.SetStatus(ctx, u.ID, StatusApproved); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
-	u3, err := store.UpsertUserFromGoogle(ctx, googleSub, "a-new@example.com", "Alice Renamed Again", "")
+	u3, inserted3, err := store.UpsertUserFromGoogle(ctx, googleSub, "a-new@example.com", "Alice Renamed Again", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle (re-upsert after approval): %v", err)
+	}
+	if inserted3 {
+		t.Errorf("inserted = true on a conflict-triggered update, want false")
 	}
 	if u3.Status != StatusApproved {
 		t.Fatalf("status after a routine re-upsert = %q, want %q (approval must survive a profile refresh)", u3.Status, StatusApproved)
@@ -126,7 +135,7 @@ func TestStore_SessionLifecycle(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "b@example.com", "Bob", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "b@example.com", "Bob", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -168,7 +177,7 @@ func TestStore_GetUserBySession_ExpiredSession(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "c@example.com", "Carol", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "c@example.com", "Carol", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -192,7 +201,7 @@ func TestStore_GetUserBySession_ExpiredSession(t *testing.T) {
 func TestStore_SetBcpUserID(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+uniqueID(t), "d@example.com", "Dave", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+uniqueID(t), "d@example.com", "Dave", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -233,7 +242,7 @@ func TestStore_Follows(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "e@example.com", "Erin", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "e@example.com", "Erin", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -289,7 +298,7 @@ func TestStore_RecentEvents_TrimsToMax(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "f@example.com", "Frank", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "f@example.com", "Frank", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -337,7 +346,7 @@ func TestStore_AccessControl(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "g@example.com", "Grace", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "g@example.com", "Grace", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -398,7 +407,7 @@ func TestStore_SetThemePreference(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "t@example.com", "Theo", "")
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "t@example.com", "Theo", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
@@ -429,7 +438,7 @@ func TestStore_SetThemePreference(t *testing.T) {
 
 	// Re-signing-in (UpsertUserFromGoogle's ON CONFLICT path) must never
 	// reset a saved preference — same reasoning as role/status.
-	u2, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "t@example.com", "Theo Updated", "")
+	u2, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "t@example.com", "Theo Updated", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle (re-sign-in): %v", err)
 	}
