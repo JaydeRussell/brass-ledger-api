@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
@@ -62,6 +63,81 @@ func TestResendNotifier_NotifyNewSignup_ErrorResponse(t *testing.T) {
 
 	if err := n.NotifyNewSignup(context.Background(), user.User{Name: "Alice", Email: "alice@example.com"}); err == nil {
 		t.Fatal("expected an error on a 500 response, got nil")
+	}
+}
+
+func TestResendNotifier_NotifyFeedback(t *testing.T) {
+	var gotBody resendEmailRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	n := NewResendNotifierWithBaseURL(server.URL, "test-key", "alerts@example.com", []string{"admin@example.com"}, "https://brass-ledger.app/admin")
+
+	err := n.NotifyFeedback(context.Background(), FeedbackReport{
+		Kind:         "bug",
+		Message:      "The Overview tab shows a blank page for team events.",
+		Page:         "/?event=abc123",
+		ContactEmail: "alice@example.com",
+		SubmittedBy:  "Alice <alice@example.com>",
+	})
+	if err != nil {
+		t.Fatalf("NotifyFeedback: %v", err)
+	}
+
+	if gotBody.Subject != "Brass Ledger bug report" {
+		t.Errorf("subject = %q, want %q", gotBody.Subject, "Brass Ledger bug report")
+	}
+	for _, want := range []string{"Alice <alice@example.com>", "alice@example.com", "/?event=abc123", "blank page for team events"} {
+		if !strings.Contains(gotBody.Text, want) {
+			t.Errorf("body %q missing %q", gotBody.Text, want)
+		}
+	}
+}
+
+func TestResendNotifier_NotifyFeedback_AnonymousNoContact(t *testing.T) {
+	var gotBody resendEmailRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	n := NewResendNotifierWithBaseURL(server.URL, "test-key", "alerts@example.com", []string{"admin@example.com"}, "https://brass-ledger.app/admin")
+
+	err := n.NotifyFeedback(context.Background(), FeedbackReport{
+		Kind:    "suggestion",
+		Message: "Add a dark mode toggle.",
+	})
+	if err != nil {
+		t.Fatalf("NotifyFeedback: %v", err)
+	}
+
+	for _, want := range []string{"anonymous", "(none given)", "(not captured)"} {
+		if !strings.Contains(gotBody.Text, want) {
+			t.Errorf("body %q missing %q", gotBody.Text, want)
+		}
+	}
+}
+
+func TestResendNotifier_NotifyFeedback_Disabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("no request should be made when the notifier is disabled")
+	}))
+	defer server.Close()
+
+	n := NewResendNotifierWithBaseURL(server.URL, "", "alerts@example.com", []string{"admin@example.com"}, "https://brass-ledger.app/admin")
+
+	if err := n.NotifyFeedback(context.Background(), FeedbackReport{Kind: "bug", Message: "test"}); err != nil {
+		t.Fatalf("NotifyFeedback (disabled): %v", err)
 	}
 }
 

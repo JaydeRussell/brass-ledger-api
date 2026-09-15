@@ -216,6 +216,28 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	userStore := user.NewStore(pool)
 	api.NewBCPHandler(bcpClient).Register(e, api.RequireApproved(userStore), api.RequireSession(userStore))
 
+	// A no-op notifier (see internal/notify.ResendNotifier.enabled)
+	// whenever RESEND_API_KEY/EMAIL_FROM_ADDRESS aren't both set — same
+	// "quietly disabled, not a startup failure" contract as Google
+	// sign-in itself. Built unconditionally, unlike Google sign-in below,
+	// since FeedbackHandler (also unconditional — anyone can submit
+	// feedback, signed in or not) needs it regardless.
+	notifier := notify.NewResendNotifier(cfg.ResendAPIKey, cfg.EmailFromAddress, cfg.AdminEmails, strings.TrimSuffix(cfg.FrontendBaseURL, "/")+"/admin")
+
+	// Public — no session/approval gate, since a visitor can hit a bug
+	// before ever signing in. The only thing standing between this route
+	// and being hammered by an anonymous caller is this per-IP rate
+	// limit (20 requests/minute, bursting to 5) — deliberately simple,
+	// in-memory, no external dependency; revisit only if real abuse
+	// shows up.
+	api.NewFeedbackHandler(userStore, notifier).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+			Rate:      20.0 / 60, // ~20 requests/minute, refilled continuously
+			Burst:     5,
+			ExpiresIn: 3 * time.Minute,
+		}),
+	}))
+
 	// Google sign-in is opt-in: only registered once real credentials
 	// are configured. Note that means this whole app — not just the
 	// account-specific features below — is unreachable without it now:
@@ -224,11 +246,6 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	// README's "Running locally" section for how to set it up.
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
-		// A no-op notifier (see internal/notify.ResendNotifier.enabled)
-		// whenever RESEND_API_KEY/EMAIL_FROM_ADDRESS aren't both set —
-		// same "quietly disabled, not a startup failure" contract as
-		// Google sign-in itself.
-		notifier := notify.NewResendNotifier(cfg.ResendAPIKey, cfg.EmailFromAddress, cfg.AdminEmails, strings.TrimSuffix(cfg.FrontendBaseURL, "/")+"/admin")
 		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails, notifier).Register(e)
 		// The BCP-profile-link + "my events" routes are session-gated (see
 		// internal/api/me.go), so there's no point registering them
@@ -249,10 +266,10 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 			log.Printf("ADMIN_EMAILS is not set — nobody can approve a pending account (see .env.example)")
 		}
 		if cfg.ResendAPIKey == "" || cfg.EmailFromAddress == "" {
-			log.Printf("RESEND_API_KEY/EMAIL_FROM_ADDRESS not set — new-signup admin alert email is disabled (see .env.example)")
+			log.Printf("RESEND_API_KEY/EMAIL_FROM_ADDRESS not set — new-signup and feedback admin alert emails are disabled (see .env.example)")
 		}
 	} else {
-		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example) — every route except /healthz and /readyz will 401, since there's no way to get a session")
+		log.Printf("Google sign-in disabled: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not set (see .env.example) — every route except /healthz, /readyz, and /api/feedback will 401, since there's no way to get a session")
 	}
 
 	return e
