@@ -1,7 +1,8 @@
 // Package notify sends admin-facing alert emails via Resend
-// (https://resend.com) — currently just "a brand-new account signed up
-// and needs approval" (see internal/api/auth.go's Callback, the one
-// caller). Deliberately narrow: one notifier, one email, no generic
+// (https://resend.com) — "a brand-new account signed up and needs
+// approval" (see internal/api/auth.go's Callback) and "a bug report or
+// suggestion came in" (see internal/api/feedback.go's Submit).
+// Deliberately narrow: a couple of admin alert emails, no generic
 // multi-channel abstraction.
 package notify
 
@@ -77,15 +78,74 @@ func (n *ResendNotifier) NotifyNewSignup(ctx context.Context, u user.User) error
 	if !n.enabled() {
 		return nil
 	}
-
-	body, err := json.Marshal(resendEmailRequest{
-		From:    n.from,
-		To:      n.to,
-		Subject: fmt.Sprintf("New Brass Ledger sign-up pending approval: %s", u.Name),
-		Text: fmt.Sprintf(
+	return n.send(ctx,
+		fmt.Sprintf("New Brass Ledger sign-up pending approval: %s", u.Name),
+		fmt.Sprintf(
 			"%s (%s) just signed up and is waiting on approval.\n\nReview it here: %s",
 			u.Name, u.Email, n.adminURL,
 		),
+	)
+}
+
+// FeedbackReport is one bug report or suggestion submitted through the
+// frontend's floating feedback widget — see internal/api/feedback.go,
+// the one caller.
+type FeedbackReport struct {
+	// "bug" or "suggestion".
+	Kind    string
+	Message string
+	// The frontend path the submitter was on when they opened the
+	// widget — "" if it wasn't captured for some reason.
+	Page string
+	// An email the submitter volunteered for follow-up — "" if they
+	// left it blank.
+	ContactEmail string
+	// "Name <email>" if a valid session cookie was present, "" for an
+	// anonymous/signed-out submitter — see feedback.go's
+	// submitterFromSession. Never required.
+	SubmittedBy string
+}
+
+// NotifyFeedback emails every admin address that a bug report or
+// suggestion came in. A no-op if this notifier isn't configured — same
+// contract as NotifyNewSignup, including "callers should log, not
+// fail, on error".
+func (n *ResendNotifier) NotifyFeedback(ctx context.Context, r FeedbackReport) error {
+	if !n.enabled() {
+		return nil
+	}
+
+	from := r.SubmittedBy
+	if from == "" {
+		from = "anonymous"
+	}
+	contact := r.ContactEmail
+	if contact == "" {
+		contact = "(none given)"
+	}
+	page := r.Page
+	if page == "" {
+		page = "(not captured)"
+	}
+
+	return n.send(ctx,
+		fmt.Sprintf("Brass Ledger %s report", r.Kind),
+		fmt.Sprintf(
+			"From: %s\nContact email: %s\nPage: %s\n\n%s",
+			from, contact, page, r.Message,
+		),
+	)
+}
+
+// send is the actual Resend API call both NotifyNewSignup and
+// NotifyFeedback share — everything above this point is just building
+// the subject/body text for a given alert.
+func (n *ResendNotifier) send(ctx context.Context, subject, text string) error {
+	body, err := json.Marshal(resendEmailRequest{
+		From:    n.from,
+		To:      n.to,
+		Subject: subject,
+		Text:    text,
 	})
 	if err != nil {
 		return fmt.Errorf("encoding Resend request: %w", err)
