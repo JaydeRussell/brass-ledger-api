@@ -59,6 +59,8 @@ type userStore interface {
 	RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error
 	ListRecentEvents(ctx context.Context, userID int64) ([]user.RecentEvent, error)
 	RecordRecentEvent(ctx context.Context, userID int64, eventID, eventName string, teamEvent bool) error
+	GetRoundNote(ctx context.Context, userID int64, eventID string, round int) (string, error)
+	SetRoundNote(ctx context.Context, userID int64, eventID string, round int, note string) error
 	// The following are used by AdminHandler (internal/api/admin.go) and
 	// this file's own ADMIN_EMAILS bootstrap in Callback below — same
 	// reason as the rest of this interface's later additions.
@@ -68,6 +70,9 @@ type userStore interface {
 	// SetThemePreference is used by MeHandler (internal/api/me.go), same
 	// reason as SetBcpUserID above.
 	SetThemePreference(ctx context.Context, userID int64, theme string) error
+	// SetAccentTheme is used by MeHandler (internal/api/me.go), same
+	// reason as SetThemePreference above.
+	SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error
 }
 
 // signupNotifier is the "alert admins about a new pending signup"
@@ -292,6 +297,7 @@ func (h *AuthHandler) Me(c echo.Context) error {
 		"role":            u.Role,
 		"status":          u.Status,
 		"themePreference": u.ThemePreference,
+		"accentTheme":     u.AccentTheme,
 	})
 }
 

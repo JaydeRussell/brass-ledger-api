@@ -23,6 +23,22 @@ type bcpPlacingRecord struct {
 		Name  string  `json:"name"`
 		Value float64 `json:"value"`
 	} `json:"metrics"`
+	// Individual-event rows only — this hits the same underlying BCP
+	// resource fetchPlayersUncached does (`.../players`, just with
+	// `?placings=true` added), which decodes these same two fields (see
+	// bcpPlayerRecord in players.go); verified present on this
+	// placings-flavored response too against a real event on 2026-09-14,
+	// not just assumed from the shared endpoint. Absent for team events
+	// (`.../teamplayers` has no per-player faction — a team isn't one
+	// faction), which is why PlacingEntry.Faction is empty there and a
+	// "best in faction" feature naturally has nothing to award on a
+	// team-event row.
+	Faction struct {
+		Name string `json:"name"`
+	} `json:"faction"`
+	SubFaction struct {
+		Name string `json:"name"`
+	} `json:"subFaction"`
 }
 
 type bcpPlacingsResponse struct {
@@ -84,11 +100,13 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 		}
 
 		entries = append(entries, PlacingEntry{
-			ID:        r.ID,
-			Name:      name,
-			Placing:   r.Placing,
-			Metrics:   metrics,
-			BcpUserID: r.User.ID,
+			ID:         r.ID,
+			Name:       name,
+			Placing:    r.Placing,
+			Metrics:    metrics,
+			BcpUserID:  r.User.ID,
+			Faction:    r.Faction.Name,
+			SubFaction: r.SubFaction.Name,
 		})
 	}
 

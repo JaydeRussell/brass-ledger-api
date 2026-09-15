@@ -48,6 +48,21 @@ func (f *fakeUserStore) SetThemePreference(_ context.Context, userID int64, them
 	return user.ErrSessionNotFound
 }
 
+// SetAccentTheme extends fakeUserStore the same way SetThemePreference
+// above does, for MeHandler.SetAccentTheme's tests.
+func (f *fakeUserStore) SetAccentTheme(_ context.Context, userID int64, accentTheme string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for sub, u := range f.byGoogle {
+		if u.ID == userID {
+			u.AccentTheme = accentTheme
+			f.byGoogle[sub] = u
+			return nil
+		}
+	}
+	return user.ErrSessionNotFound
+}
+
 // signedInSession signs a fake user in (bypassing the Google flow
 // entirely, since these tests are only about the /api/me/* routes'
 // own logic) and returns a session cookie for them plus their id.
@@ -203,6 +218,40 @@ func TestSetTheme_SavesAndRejectsInvalidValues(t *testing.T) {
 		rec := setTheme(bad)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("setTheme(%s) status = %d, want %d (body: %s)", bad, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	}
+}
+
+func TestSetAccentTheme_SavesAndRejectsInvalidValues(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, userID := signedInSession(t, store)
+	e := newMeTestEcho(store, bcp.NewClient())
+
+	setAccentTheme := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/me/accent-theme", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := setAccentTheme(`{"accentTheme": "necron-emerald"}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	u, err := store.GetUserBySession(context.Background(), cookie.Value)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if u.AccentTheme != "necron-emerald" || u.ID != userID {
+		t.Errorf("store user = %+v, want AccentTheme necron-emerald for user %d", u, userID)
+	}
+
+	for _, bad := range []string{`{"accentTheme": "purple"}`, `{}`, `not json`} {
+		rec := setAccentTheme(bad)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("setAccentTheme(%s) status = %d, want %d (body: %s)", bad, rec.Code, http.StatusBadRequest, rec.Body.String())
 		}
 	}
 }
