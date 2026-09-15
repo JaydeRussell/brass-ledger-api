@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,6 +55,13 @@ type User struct {
 	// for every account, same as a guest who's never touched the
 	// toggle.
 	ThemePreference string
+
+	// AccentTheme is one of ValidAccentThemes (migration 0009) — the
+	// frontend's second, independent theming axis alongside
+	// ThemePreference above (see brass-ledger-web's app/lib/theme.ts's
+	// AccentTheme type, which this mirrors exactly). Defaults to
+	// "brass" for every account.
+	AccentTheme string
 }
 
 // RoleAdmin and RoleUser are Role's two valid values (also enforced by
@@ -73,6 +81,30 @@ const (
 	ThemeDark   = "dark"
 	ThemeSystem = "system"
 )
+
+// ValidAccentThemes are AccentTheme's valid values (also enforced by
+// migration 0009's CHECK constraint) — a slice rather than 12 named
+// constants like ThemeLight/Dark/System above, since there are too many
+// of these for that to stay readable; IsValidAccentTheme below is the
+// actual validation entry point callers use.
+var ValidAccentThemes = []string{
+	"brass", "ultramarine", "sanguine", "verdant", "plague-bloom",
+	"necron-emerald", "waaagh", "amethyst", "hive-bloom", "tau-cyan",
+	"custodian-gold", "khorne-crimson",
+}
+
+// IsValidAccentTheme reports whether theme is one of ValidAccentThemes —
+// used by internal/api/me.go's SetAccentTheme to reject a bad value
+// before it reaches the database (migration 0009's CHECK constraint is
+// the actual backstop, same division of labor as SetTheme/ThemePreference).
+func IsValidAccentTheme(theme string) bool {
+	for _, v := range ValidAccentThemes {
+		if v == theme {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrSessionNotFound is returned by GetUserBySession both when the
 // token matches no row and when it matches an expired one — callers
@@ -125,8 +157,8 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, theme_preference, (xmax = 0) AS inserted
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference, &inserted)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, theme_preference, accent_theme, (xmax = 0) AS inserted
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference, &u.AccentTheme, &inserted)
 	if err != nil {
 		return User{}, false, fmt.Errorf("upserting user: %w", err)
 	}
@@ -154,11 +186,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.theme_preference
+		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.theme_preference, u.accent_theme
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference)
+	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference, &u.AccentTheme)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -229,6 +261,21 @@ func (s *Store) SetThemePreference(ctx context.Context, userID int64, theme stri
 		theme, userID,
 	); err != nil {
 		return fmt.Errorf("setting theme_preference: %w", err)
+	}
+	return nil
+}
+
+// SetAccentTheme updates a signed-in account's saved accent-color theme
+// — see internal/api/me.go, the only caller. Like SetThemePreference
+// above, the value itself is validated by the caller (IsValidAccentTheme);
+// migration 0009's CHECK constraint is the actual backstop against a bad
+// value ever reaching the database.
+func (s *Store) SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET accent_theme = $1 WHERE id = $2`,
+		accentTheme, userID,
+	); err != nil {
+		return fmt.Errorf("setting accent_theme: %w", err)
 	}
 	return nil
 }
@@ -395,6 +442,49 @@ func (s *Store) RecordRecentEvent(ctx context.Context, userID int64, eventID, ev
 		)
 	`, userID, MaxRecentEvents); err != nil {
 		return fmt.Errorf("trimming recent events: %w", err)
+	}
+	return nil
+}
+
+// GetRoundNote returns a user's private note for one round of one event,
+// or "" if they've never saved one (or saved one and then cleared it —
+// see SetRoundNote, which deletes rather than stores an empty note).
+func (s *Store) GetRoundNote(ctx context.Context, userID int64, eventID string, round int) (string, error) {
+	var note string
+	err := s.pool.QueryRow(ctx,
+		`SELECT note FROM user_round_notes WHERE user_id = $1 AND event_id = $2 AND round = $3`,
+		userID, eventID, round,
+	).Scan(&note)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting round note: %w", err)
+	}
+	return note, nil
+}
+
+// SetRoundNote saves (or, given an empty/whitespace-only note, deletes)
+// a user's private note for one round of one event — see
+// internal/api/sync.go, the only caller.
+func (s *Store) SetRoundNote(ctx context.Context, userID int64, eventID string, round int, note string) error {
+	if strings.TrimSpace(note) == "" {
+		if _, err := s.pool.Exec(ctx,
+			`DELETE FROM user_round_notes WHERE user_id = $1 AND event_id = $2 AND round = $3`,
+			userID, eventID, round,
+		); err != nil {
+			return fmt.Errorf("deleting round note: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO user_round_notes (user_id, event_id, round, note, updated_at)
+		VALUES ($1, $2, $3, $4, now())
+		ON CONFLICT (user_id, event_id, round) DO UPDATE
+			SET note = EXCLUDED.note, updated_at = now()
+	`, userID, eventID, round, note); err != nil {
+		return fmt.Errorf("setting round note: %w", err)
 	}
 	return nil
 }

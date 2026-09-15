@@ -38,6 +38,9 @@ type fakeUserStore struct {
 	// label if already followed" semantics are easy to reproduce.
 	follows      map[int64]map[string]user.Follow
 	recentEvents map[int64][]user.RecentEvent
+	// roundNotes is keyed by userID, then by "eventId:round" — mirrors
+	// the real store's (user_id, event_id, round) composite key.
+	roundNotes map[int64]map[string]string
 
 	// newUserStatus overrides the default RoleUser/StatusApproved a
 	// brand-new fake user gets (see UpsertUserFromGoogle's comment below)
@@ -54,6 +57,7 @@ func newFakeUserStore() *fakeUserStore {
 		sessions:     make(map[string]int64),
 		follows:      make(map[int64]map[string]user.Follow),
 		recentEvents: make(map[int64][]user.RecentEvent),
+		roundNotes:   make(map[int64]map[string]string),
 	}
 }
 
@@ -90,6 +94,8 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 		// new row starts at "system", same as a guest who's never
 		// touched the toggle.
 		u.ThemePreference = user.ThemeSystem
+		// Matches the real Store's migration-0009 default.
+		u.AccentTheme = "brass"
 	}
 	u.Email, u.Name, u.AvatarURL = email, name, avatarURL
 	f.byGoogle[googleSub] = u
@@ -194,6 +200,31 @@ func (f *fakeUserStore) RecordRecentEvent(_ context.Context, userID int64, event
 		LastViewedAt: time.Now(),
 	})
 	f.recentEvents[userID] = next
+	return nil
+}
+
+func roundNoteFakeKey(eventID string, round int) string {
+	return fmt.Sprintf("%s:%d", eventID, round)
+}
+
+func (f *fakeUserStore) GetRoundNote(_ context.Context, userID int64, eventID string, round int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roundNotes[userID][roundNoteFakeKey(eventID, round)], nil
+}
+
+func (f *fakeUserStore) SetRoundNote(_ context.Context, userID int64, eventID string, round int, note string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := roundNoteFakeKey(eventID, round)
+	if strings.TrimSpace(note) == "" {
+		delete(f.roundNotes[userID], key)
+		return nil
+	}
+	if f.roundNotes[userID] == nil {
+		f.roundNotes[userID] = make(map[string]string)
+	}
+	f.roundNotes[userID][key] = note
 	return nil
 }
 

@@ -446,3 +446,46 @@ func TestStore_SetThemePreference(t *testing.T) {
 		t.Fatalf("ThemePreference after re-sign-in = %q, want unchanged %q", u2.ThemePreference, ThemeDark)
 	}
 }
+
+func TestStore_SetAccentTheme(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	// Migration 0009's DEFAULT clause.
+	if u.AccentTheme != "brass" {
+		t.Fatalf("new user AccentTheme = %q, want %q (DEFAULT clause)", u.AccentTheme, "brass")
+	}
+
+	if err := store.SetAccentTheme(ctx, u.ID, "necron-emerald"); err != nil {
+		t.Fatalf("SetAccentTheme: %v", err)
+	}
+
+	// GetUserBySession is what /api/me and the accent-theme-sync route
+	// actually read — the real proof this took effect where it matters,
+	// not just a raw column read.
+	token, err := store.CreateSession(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	got, err := store.GetUserBySession(ctx, token)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if got.AccentTheme != "necron-emerald" {
+		t.Fatalf("AccentTheme after SetAccentTheme = %q, want %q", got.AccentTheme, "necron-emerald")
+	}
+
+	// Re-signing-in (UpsertUserFromGoogle's ON CONFLICT path) must never
+	// reset a saved preference — same reasoning as ThemePreference.
+	u2, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna Updated", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle (re-sign-in): %v", err)
+	}
+	if u2.AccentTheme != "necron-emerald" {
+		t.Fatalf("AccentTheme after re-sign-in = %q, want unchanged %q", u2.AccentTheme, "necron-emerald")
+	}
+}

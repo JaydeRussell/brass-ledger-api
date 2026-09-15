@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -41,6 +42,16 @@ type recordRecentEventRequest struct {
 	TeamEvent bool   `json:"teamEvent"`
 }
 
+// roundNoteResponse is GET /api/me/events/:eventId/rounds/:round/note's body.
+type roundNoteResponse struct {
+	Note string `json:"note"`
+}
+
+// setRoundNoteRequest is the body for PUT /api/me/events/:eventId/rounds/:round/note.
+type setRoundNoteRequest struct {
+	Note string `json:"note"`
+}
+
 // SyncHandler wires up cross-device sync for the two pieces of state
 // that used to live only in per-browser localStorage: per-event follows
 // (teams/players a user is tracking — see app/page.tsx's
@@ -71,6 +82,8 @@ func (h *SyncHandler) Register(e *echo.Echo) {
 	e.DELETE("/api/me/events/:eventId/follows/:kind/:refId", h.RemoveFollow)
 	e.GET("/api/me/recent-events", h.ListRecentEvents)
 	e.POST("/api/me/recent-events", h.RecordRecentEvent)
+	e.GET("/api/me/events/:eventId/rounds/:round/note", h.GetRoundNote)
+	e.PUT("/api/me/events/:eventId/rounds/:round/note", h.SetRoundNote)
 }
 
 // ListFollows is GET /api/me/events/:eventId/follows.
@@ -168,6 +181,60 @@ func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 	}
 
 	if err := h.store.RecordRecentEvent(c.Request().Context(), u.ID, eventID, req.EventName, req.TeamEvent); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// parseRoundParam parses the :round path param as a positive round
+// number — shared by GetRoundNote/SetRoundNote below.
+func parseRoundParam(c echo.Context) (int, error) {
+	round, err := strconv.Atoi(c.Param("round"))
+	if err != nil || round < 1 {
+		return 0, c.JSON(http.StatusBadRequest, map[string]string{"error": "round must be a positive integer"})
+	}
+	return round, nil
+}
+
+// GetRoundNote is GET /api/me/events/:eventId/rounds/:round/note — a
+// signed-in account's own private note for that round, "" if they've
+// never saved one.
+func (h *SyncHandler) GetRoundNote(c echo.Context) error {
+	u, err := requireApprovedUser(c, h.store)
+	if err != nil {
+		return err
+	}
+	round, err := parseRoundParam(c)
+	if err != nil {
+		return err
+	}
+
+	note, err := h.store.GetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, roundNoteResponse{Note: note})
+}
+
+// SetRoundNote is PUT /api/me/events/:eventId/rounds/:round/note —
+// saves (or, given an empty/whitespace-only note, clears) a signed-in
+// account's private note for that round.
+func (h *SyncHandler) SetRoundNote(c echo.Context) error {
+	u, err := requireApprovedUser(c, h.store)
+	if err != nil {
+		return err
+	}
+	round, err := parseRoundParam(c)
+	if err != nil {
+		return err
+	}
+
+	var req setRoundNoteRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+
+	if err := h.store.SetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round, req.Note); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.NoContent(http.StatusNoContent)

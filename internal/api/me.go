@@ -129,6 +129,7 @@ func (h *MeHandler) Register(e *echo.Echo) {
 	e.POST("/api/me/bcp-profile", h.SetBcpProfile)
 	e.GET("/api/me/events", h.Events)
 	e.POST("/api/me/theme", h.SetTheme)
+	e.POST("/api/me/accent-theme", h.SetAccentTheme)
 }
 
 // SetBcpProfile is POST /api/me/bcp-profile: links (or unlinks) a BCP
@@ -181,6 +182,35 @@ func (h *MeHandler) SetTheme(c echo.Context) error {
 	}
 
 	if err := h.store.SetThemePreference(c.Request().Context(), u.ID, req.Theme); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// accentThemeRequest is the body for POST /api/me/accent-theme.
+type accentThemeRequest struct {
+	AccentTheme string `json:"accentTheme"`
+}
+
+// SetAccentTheme is POST /api/me/accent-theme: saves the signed-in
+// account's accent-color theme choice — the frontend's second,
+// independent theming axis alongside SetTheme's light/dark/system above
+// (see brass-ledger-web's app/lib/theme.ts's AccentTheme/useAccentTheme).
+// Deliberately requireUser, not requireApprovedUser — same reasoning as
+// SetTheme: a personal UI preference, not BCP data access.
+func (h *MeHandler) SetAccentTheme(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+
+	var req accentThemeRequest
+	if bindErr := c.Bind(&req); bindErr != nil || !user.IsValidAccentTheme(req.AccentTheme) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": `"accentTheme" must be one of ` + strings.Join(user.ValidAccentThemes, ", ")})
+	}
+
+	if err := h.store.SetAccentTheme(c.Request().Context(), u.ID, req.AccentTheme); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 

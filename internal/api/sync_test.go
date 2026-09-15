@@ -204,3 +204,119 @@ func TestRecentEvents_RejectsMissingEventID(t *testing.T) {
 		t.Errorf("status = %d, want %d (body: %s)", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
+
+func TestRoundNote_RequiresSignIn(t *testing.T) {
+	e := newSyncTestEcho(newFakeUserStore())
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/me/events/evt-1/rounds/3/note"},
+		{http.MethodPut, "/api/me/events/evt-1/rounds/3/note"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`))
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestRoundNote_GetIsEmptyUntilSet(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+	e := newSyncTestEcho(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/events/evt-1/rounds/3/note", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body roundNoteResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	if body.Note != "" {
+		t.Errorf("note = %q, want empty before ever set", body.Note)
+	}
+}
+
+func TestRoundNote_SetThenGetRoundTrips(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+	e := newSyncTestEcho(store)
+
+	set := func(round, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/me/events/evt-1/rounds/"+round+"/note", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec
+	}
+	get := func(round string) roundNoteResponse {
+		req := httptest.NewRequest(http.MethodGet, "/api/me/events/evt-1/rounds/"+round+"/note", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var body roundNoteResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("couldn't parse body: %v", err)
+		}
+		return body
+	}
+
+	if rec := set("3", `{"note": "Remember to redeploy fliers"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("set status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := get("3"); got.Note != "Remember to redeploy fliers" {
+		t.Errorf("note = %q, want %q", got.Note, "Remember to redeploy fliers")
+	}
+	// A different round on the same event is independent.
+	if got := get("4"); got.Note != "" {
+		t.Errorf("round 4 note = %q, want empty (independent of round 3)", got.Note)
+	}
+
+	// Overwriting replaces, not appends.
+	if rec := set("3", `{"note": "Updated note"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("overwrite status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := get("3"); got.Note != "Updated note" {
+		t.Errorf("note after overwrite = %q, want %q", got.Note, "Updated note")
+	}
+
+	// Setting to empty clears it back to "" rather than leaving a
+	// whitespace-only row behind.
+	if rec := set("3", `{"note": "   "}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("clear status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := get("3"); got.Note != "" {
+		t.Errorf("note after clearing = %q, want empty", got.Note)
+	}
+}
+
+func TestRoundNote_RejectsNonPositiveRound(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+	e := newSyncTestEcho(store)
+
+	for _, round := range []string{"0", "-1", "not-a-number"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/me/events/evt-1/rounds/"+round+"/note", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("round %q: status = %d, want %d (body: %s)", round, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	}
+}

@@ -171,17 +171,20 @@ type PairingRecord struct {
 // values BCP reports (e.g. "Wins", "Battle Points") rather than
 // hardcoded fields, since these vary by event/scoring format.
 //
-// BcpUserID is only ever set for an individual-event row (BCP's own
-// standings resource carries a `user` object there the same way
-// FetchPlayers' roster resource does — see bcpPlacingRecord.User); a
-// team-event row's `name` is the team itself, not one person, so there's
-// no single BCP account to point it at and this stays empty.
+// BcpUserID, Faction, and SubFaction are only ever set for an
+// individual-event row (BCP's own standings resource carries `user`/
+// `faction`/`subFaction` objects there the same way FetchPlayers'
+// roster resource does — see bcpPlacingRecord); a team-event row's
+// `name` is the team itself, not one person or one army, so there's no
+// single BCP account or faction to point these at and they stay empty.
 type PlacingEntry struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Placing   *int            `json:"placing,omitempty"`
-	Metrics   []PlacingMetric `json:"metrics"`
-	BcpUserID string          `json:"bcpUserId,omitempty"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Placing    *int            `json:"placing,omitempty"`
+	Metrics    []PlacingMetric `json:"metrics"`
+	BcpUserID  string          `json:"bcpUserId,omitempty"`
+	Faction    string          `json:"faction,omitempty"`
+	SubFaction string          `json:"subFaction,omitempty"`
 }
 
 // PlacingMetric is one named scoring value BCP reports for a placing

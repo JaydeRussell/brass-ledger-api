@@ -42,11 +42,13 @@ func TestSplitPlacingsKey_Errors(t *testing.T) {
 
 func TestFetchPlacings(t *testing.T) {
 	cases := []struct {
-		name        string
-		teamEvent   bool
-		body        string
-		wantOrder   []string // expected Name order after sorting by Placing
-		wantUserIDs []string // expected BcpUserID order, parallel to wantOrder
+		name           string
+		teamEvent      bool
+		body           string
+		wantOrder      []string // expected Name order after sorting by Placing
+		wantUserIDs    []string // expected BcpUserID order, parallel to wantOrder
+		wantFactions   []string // expected Faction order, parallel to wantOrder ("" if omitted)
+		wantSubFaction []string // expected SubFaction order, parallel to wantOrder ("" if omitted)
 	}{
 		{
 			name:      "individual placings sorted by placing, ties/missing last",
@@ -59,6 +61,21 @@ func TestFetchPlacings(t *testing.T) {
 			]}`,
 			wantOrder:   []string{"First Place", "Second Place", "Third Place", "No Placing"},
 			wantUserIDs: []string{"u1", "u2", "u3", "u4"},
+		},
+		{
+			// Field names/shape confirmed against a real event's response
+			// on 2026-09-14 (see placings.go's bcpPlacingRecord comment):
+			// this really is "faction"/"subFaction" on the individual
+			// placings-flavored response, same as the plain roster one.
+			name:      "individual placings carry faction/subFaction",
+			teamEvent: false,
+			body: `{"active": [
+				{"id": "p1", "user": {"id": "u1", "firstName": "Anna", "lastName": "Adams"}, "placing": 1, "faction": {"name": "Necrons"}, "subFaction": {"name": "Take and Hold"}}
+			]}`,
+			wantOrder:      []string{"Anna Adams"},
+			wantUserIDs:    []string{"u1"},
+			wantFactions:   []string{"Necrons"},
+			wantSubFaction: []string{"Take and Hold"},
 		},
 		{
 			name:      "team placings use the team name field and have no BcpUserID",
@@ -94,6 +111,12 @@ func TestFetchPlacings(t *testing.T) {
 			for i, entry := range got {
 				if entry.Name != tc.wantOrder[i] {
 					t.Errorf("entry %d name = %q, want %q", i, entry.Name, tc.wantOrder[i])
+				}
+				if i < len(tc.wantFactions) && entry.Faction != tc.wantFactions[i] {
+					t.Errorf("entry %d faction = %q, want %q", i, entry.Faction, tc.wantFactions[i])
+				}
+				if i < len(tc.wantSubFaction) && entry.SubFaction != tc.wantSubFaction[i] {
+					t.Errorf("entry %d subFaction = %q, want %q", i, entry.SubFaction, tc.wantSubFaction[i])
 				}
 				if entry.BcpUserID != tc.wantUserIDs[i] {
 					t.Errorf("entry %d BcpUserID = %q, want %q", i, entry.BcpUserID, tc.wantUserIDs[i])
