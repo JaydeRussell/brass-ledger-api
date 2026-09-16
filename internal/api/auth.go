@@ -67,11 +67,8 @@ type userStore interface {
 	SetStatus(ctx context.Context, userID int64, status string) error
 	SetRole(ctx context.Context, userID int64, role string) error
 	ListUsers(ctx context.Context) ([]user.User, error)
-	// SetThemePreference is used by MeHandler (internal/api/me.go), same
-	// reason as SetBcpUserID above.
-	SetThemePreference(ctx context.Context, userID int64, theme string) error
 	// SetAccentTheme is used by MeHandler (internal/api/me.go), same
-	// reason as SetThemePreference above.
+	// reason as SetBcpUserID above.
 	SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error
 }
 
@@ -289,15 +286,14 @@ func (h *AuthHandler) Me(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"id":              u.ID,
-		"email":           u.Email,
-		"name":            u.Name,
-		"avatarUrl":       u.AvatarURL,
-		"bcpUserId":       u.BcpUserID,
-		"role":            u.Role,
-		"status":          u.Status,
-		"themePreference": u.ThemePreference,
-		"accentTheme":     u.AccentTheme,
+		"id":          u.ID,
+		"email":       u.Email,
+		"name":        u.Name,
+		"avatarUrl":   u.AvatarURL,
+		"bcpUserId":   u.BcpUserID,
+		"role":        u.Role,
+		"status":      u.Status,
+		"accentTheme": u.AccentTheme,
 	})
 }
 

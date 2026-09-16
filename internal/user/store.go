@@ -48,19 +48,10 @@ type User struct {
 	// just its first).
 	Status string
 
-	// ThemePreference is "light", "dark", or "system" (migration 0008)
-	// — the redesign's light/dark/system toggle, synced to the account
-	// so it follows a signed-in visitor across devices instead of
-	// staying stuck in one browser's localStorage. Defaults to "system"
-	// for every account, same as a guest who's never touched the
-	// toggle.
-	ThemePreference string
-
 	// AccentTheme is one of ValidAccentThemes (migration 0009) — the
-	// frontend's second, independent theming axis alongside
-	// ThemePreference above (see brass-ledger-web's app/lib/theme.ts's
-	// AccentTheme type, which this mirrors exactly). Defaults to
-	// "brass" for every account.
+	// frontend's accent-color theme choice (see brass-ledger-web's
+	// app/lib/theme.ts's AccentTheme type, which this mirrors exactly).
+	// Defaults to "brass" for every account.
 	AccentTheme string
 }
 
@@ -74,18 +65,12 @@ const (
 	StatusPending  = "pending"
 	StatusApproved = "approved"
 	StatusRejected = "rejected"
-
-	// ThemeLight, ThemeDark, and ThemeSystem are ThemePreference's three
-	// valid values (also enforced by migration 0008's CHECK constraint).
-	ThemeLight  = "light"
-	ThemeDark   = "dark"
-	ThemeSystem = "system"
 )
 
 // ValidAccentThemes are AccentTheme's valid values (also enforced by
 // migration 0009's CHECK constraint) — a slice rather than 12 named
-// constants like ThemeLight/Dark/System above, since there are too many
-// of these for that to stay readable; IsValidAccentTheme below is the
+// constants like RoleAdmin/RoleUser above, since there are too many of
+// these for that to stay readable; IsValidAccentTheme below is the
 // actual validation entry point callers use.
 var ValidAccentThemes = []string{
 	"brass", "ultramarine", "sanguine", "verdant", "plague-bloom",
@@ -96,7 +81,7 @@ var ValidAccentThemes = []string{
 // IsValidAccentTheme reports whether theme is one of ValidAccentThemes —
 // used by internal/api/me.go's SetAccentTheme to reject a bad value
 // before it reaches the database (migration 0009's CHECK constraint is
-// the actual backstop, same division of labor as SetTheme/ThemePreference).
+// the actual backstop, same division of labor as SetStatus/SetRole).
 func IsValidAccentTheme(theme string) bool {
 	for _, v := range ValidAccentThemes {
 		if v == theme {
@@ -157,8 +142,8 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, theme_preference, accent_theme, (xmax = 0) AS inserted
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference, &u.AccentTheme, &inserted)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, (xmax = 0) AS inserted
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &inserted)
 	if err != nil {
 		return User{}, false, fmt.Errorf("upserting user: %w", err)
 	}
@@ -186,11 +171,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.theme_preference, u.accent_theme
+		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.accent_theme
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.ThemePreference, &u.AccentTheme)
+	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -250,23 +235,8 @@ func (s *Store) SetRole(ctx context.Context, userID int64, role string) error {
 	return nil
 }
 
-// SetThemePreference updates a signed-in account's saved light/dark/
-// system choice — see internal/api/me.go, the only caller. Like
-// SetStatus/SetRole, the value itself is validated by the caller (a
-// fixed set of accepted strings); migration 0008's CHECK constraint is
-// the actual backstop against a bad value ever reaching the database.
-func (s *Store) SetThemePreference(ctx context.Context, userID int64, theme string) error {
-	if _, err := s.pool.Exec(ctx,
-		`UPDATE users SET theme_preference = $1 WHERE id = $2`,
-		theme, userID,
-	); err != nil {
-		return fmt.Errorf("setting theme_preference: %w", err)
-	}
-	return nil
-}
-
 // SetAccentTheme updates a signed-in account's saved accent-color theme
-// — see internal/api/me.go, the only caller. Like SetThemePreference
+// — see internal/api/me.go, the only caller. Like SetStatus/SetRole
 // above, the value itself is validated by the caller (IsValidAccentTheme);
 // migration 0009's CHECK constraint is the actual backstop against a bad
 // value ever reaching the database.

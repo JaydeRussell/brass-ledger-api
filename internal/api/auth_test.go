@@ -90,10 +90,6 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 		} else {
 			u.Status = user.StatusApproved
 		}
-		// Matches the real Store's migration-0008 default — a brand
-		// new row starts at "system", same as a guest who's never
-		// touched the toggle.
-		u.ThemePreference = user.ThemeSystem
 		// Matches the real Store's migration-0009 default.
 		u.AccentTheme = "brass"
 	}
