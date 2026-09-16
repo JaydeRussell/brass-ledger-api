@@ -17,17 +17,34 @@ import "context"
 // optional and every existing test (which never sets one) is unaffected.
 //
 // Get decodes the stored JSON into dest (a pointer) and reports whether
-// a value was found at all. Set marshals value as JSON and stores it —
-// callers only ever call Set once they've confirmed the underlying BCP
-// data can never change again (an already-concluded event's info,
-// roster, pairings, placings; a league's gw_itc/hobby classification,
-// which is effectively permanent). Because of that, anything found here
-// is trusted unconditionally on read — there's no TTL or "is this still
-// valid" check, unlike the in-memory Cache.
+// a value was found at all — false both when nothing is stored under
+// key and when something is but under a different version than the one
+// passed in (see CacheSchemaVersion below). Set marshals value as JSON
+// and stores it, tagged with version — callers only ever call Set once
+// they've confirmed the underlying BCP data can never change again (an
+// already-concluded event's info, roster, pairings, placings; a
+// league's gw_itc/hobby classification, which is effectively
+// permanent). Because of that, a version match is trusted
+// unconditionally on read — there's no TTL or "is this still valid"
+// check beyond the version, unlike the in-memory Cache.
 type DurableCache interface {
-	Get(ctx context.Context, key string, dest any) (bool, error)
-	Set(ctx context.Context, key string, value any) error
+	Get(ctx context.Context, key string, version int, dest any) (bool, error)
+	Set(ctx context.Context, key string, version int, value any) error
 }
+
+// CacheSchemaVersion tags every durable Get/Set call in this package.
+// Bump it whenever a struct that flows into the durable cache
+// (EventInfo, Player, PairingRecord, PlacingEntry, LeagueInfo) gains or
+// changes a field that existing callers should stop trusting — every
+// previously-written row (including rows written before this version
+// column even existed, which the 0012 migration backfilled to 0) then
+// simply stops matching on its next read and gets transparently
+// refetched from BCP and re-cached at the new version. This is what
+// caught PlacingEntry's Faction/SubFaction fields (added in commit
+// b6b26da) being permanently absent from any event durably cached
+// before that change shipped — see that incident's write-up before
+// assuming a durable row is safe to read as-is after any schema change.
+const CacheSchemaVersion = 1
 
 // SetDurableCache installs c's durable cache. Call once, right after
 // NewClient/NewClientWithBaseURL, before any fetches happen — it's not

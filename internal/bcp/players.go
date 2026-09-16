@@ -59,7 +59,7 @@ func playersDurableKey(eventID string) string { return "players:" + eventID }
 func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Player, error) {
 	if c.durable != nil {
 		var cached []Player
-		if found, err := c.durable.Get(ctx, playersDurableKey(eventID), &cached); err == nil && found {
+		if found, err := c.durable.Get(ctx, playersDurableKey(eventID), CacheSchemaVersion, &cached); err == nil && found {
 			return cached, nil
 		}
 	}
@@ -132,7 +132,7 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 	// the Roster tab.
 	if c.durable != nil {
 		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
-			_ = c.durable.Set(ctx, playersDurableKey(eventID), players)
+			_ = c.durable.Set(ctx, playersDurableKey(eventID), CacheSchemaVersion, players)
 		}
 	}
 

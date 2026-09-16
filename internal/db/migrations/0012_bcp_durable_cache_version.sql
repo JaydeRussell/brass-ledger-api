@@ -1,0 +1,13 @@
+-- Adds a schema version to the durable BCP cache (see
+-- internal/bcp/durable.go's CacheSchemaVersion) so a future change to
+-- what a cached struct actually holds (e.g. PlacingEntry gaining
+-- Faction/SubFaction in commit b6b26da) can bust every row cached under
+-- the old shape, instead of silently serving stale data forever for
+-- events that concluded before the change shipped.
+--
+-- DEFAULT 0 backfills every existing row to version 0 — CacheSchemaVersion
+-- starts at 1, so every row already in this table (all of them,
+-- necessarily written before this column existed) stops matching on the
+-- very next read and gets transparently refetched and re-cached at the
+-- current version. No explicit bulk UPDATE/DELETE needed for that.
+ALTER TABLE bcp_durable_cache ADD COLUMN IF NOT EXISTS cache_version INTEGER NOT NULL DEFAULT 0;

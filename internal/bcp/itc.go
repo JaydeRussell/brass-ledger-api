@@ -72,7 +72,7 @@ func leagueInfoDurableKey(leagueID string) string { return "league:" + leagueID 
 func (c *Client) fetchLeagueInfoUncached(ctx context.Context, leagueID string) (*LeagueInfo, error) {
 	if c.durable != nil {
 		var cached LeagueInfo
-		if found, err := c.durable.Get(ctx, leagueInfoDurableKey(leagueID), &cached); err == nil && found {
+		if found, err := c.durable.Get(ctx, leagueInfoDurableKey(leagueID), CacheSchemaVersion, &cached); err == nil && found {
 			return &cached, nil
 		}
 	}
@@ -88,7 +88,7 @@ func (c *Client) fetchLeagueInfoUncached(ctx context.Context, leagueID string) (
 	// effectively permanent reference data the moment it exists — no
 	// "ended" gate needed.
 	if c.durable != nil {
-		_ = c.durable.Set(ctx, leagueInfoDurableKey(leagueID), *info)
+		_ = c.durable.Set(ctx, leagueInfoDurableKey(leagueID), CacheSchemaVersion, *info)
 	}
 
 	return info, nil

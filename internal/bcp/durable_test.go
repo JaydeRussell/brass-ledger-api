@@ -11,33 +11,38 @@ import (
 // fakeDurableCache is a plain in-memory stand-in for bcp.DurableCache —
 // good enough to test this package's *decision logic* (persist only
 // once-immutable data, trust anything durably cached unconditionally on
-// read) without a real Postgres. internal/bcpcache.Store itself isn't
-// unit tested for the same reason internal/user/store.go isn't: it's a
-// thin marshal/exec wrapper that needs a real database to test
-// meaningfully.
+// read, bust anything cached under a different CacheSchemaVersion)
+// without a real Postgres. internal/bcpcache.Store itself isn't unit
+// tested for the same reason internal/user/store.go isn't: it's a thin
+// marshal/exec wrapper that needs a real database to test meaningfully.
 type fakeDurableCache struct {
-	data map[string][]byte
+	data map[string]fakeDurableCacheEntry
 	sets int
 }
 
-func newFakeDurableCache() *fakeDurableCache {
-	return &fakeDurableCache{data: make(map[string][]byte)}
+type fakeDurableCacheEntry struct {
+	raw     []byte
+	version int
 }
 
-func (f *fakeDurableCache) Get(_ context.Context, key string, dest any) (bool, error) {
-	raw, ok := f.data[key]
-	if !ok {
+func newFakeDurableCache() *fakeDurableCache {
+	return &fakeDurableCache{data: make(map[string]fakeDurableCacheEntry)}
+}
+
+func (f *fakeDurableCache) Get(_ context.Context, key string, version int, dest any) (bool, error) {
+	entry, ok := f.data[key]
+	if !ok || entry.version != version {
 		return false, nil
 	}
-	return true, json.Unmarshal(raw, dest)
+	return true, json.Unmarshal(entry.raw, dest)
 }
 
-func (f *fakeDurableCache) Set(_ context.Context, key string, value any) error {
+func (f *fakeDurableCache) Set(_ context.Context, key string, version int, value any) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	f.data[key] = raw
+	f.data[key] = fakeDurableCacheEntry{raw: raw, version: version}
 	f.sets++
 	return nil
 }
@@ -102,6 +107,52 @@ func TestFetchEventInfo_DurableCache(t *testing.T) {
 			t.Errorf("durable Set called %d times, want 0 (event hasn't ended)", fake.sets)
 		}
 	})
+}
+
+// TestDurableCache_VersionMismatchBustsCache is the regression test for
+// the incident CacheSchemaVersion's doc comment describes: a row cached
+// under an older schema version (here simulated directly, the same way
+// a real row written before the 0012 migration would come back at
+// version 0) must never be trusted, even though the key matches —
+// fetchEventInfoUncached should treat it as a miss, hit BCP for real,
+// and re-cache at the current version.
+func TestDurableCache_VersionMismatchBustsCache(t *testing.T) {
+	fake := newFakeDurableCache()
+	fake.data[eventInfoDurableKey("evt-1")] = fakeDurableCacheEntry{
+		raw:     []byte(`{"id": "evt-1", "name": "Stale Pre-Version Data", "ended": true}`),
+		version: CacheSchemaVersion - 1,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1", jsonHandler(http.StatusOK, `{"id": "evt-1", "name": "Fresh From BCP", "status": {"ended": true}}`))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := newTestClient(server)
+	client.SetDurableCache(fake)
+
+	got, err := client.FetchEventInfo(context.Background(), "evt-1")
+	if err != nil {
+		t.Fatalf("FetchEventInfo: %v", err)
+	}
+	if got.Name != "Fresh From BCP" {
+		t.Errorf("Name = %q, want %q (the stale cached row should have been ignored)", got.Name, "Fresh From BCP")
+	}
+
+	// Re-cached at the current version — a fresh Client pointed at a
+	// failing server should now be served from the durable cache again,
+	// with the up-to-date value.
+	client2 := NewClientWithBaseURL(failingServer(t).URL)
+	client2.SetDurableCache(fake)
+	got2, err := client2.FetchEventInfo(context.Background(), "evt-1")
+	if err != nil {
+		t.Fatalf("FetchEventInfo (from durable cache): %v", err)
+	}
+	if got2.Name != "Fresh From BCP" {
+		t.Errorf("Name = %q, want %q", got2.Name, "Fresh From BCP")
+	}
+	if fake.data[eventInfoDurableKey("evt-1")].version != CacheSchemaVersion {
+		t.Errorf("re-cached row's version = %d, want %d", fake.data[eventInfoDurableKey("evt-1")].version, CacheSchemaVersion)
+	}
 }
 
 func TestFetchLeagueInfo_DurableCache(t *testing.T) {

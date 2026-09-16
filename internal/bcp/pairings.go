@@ -40,7 +40,7 @@ func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairin
 	durableKey := "pairings:" + pairingsKey(eventID, pairingType, round)
 	if c.durable != nil {
 		var cached []PairingRecord
-		if found, err := c.durable.Get(ctx, durableKey, &cached); err == nil && found {
+		if found, err := c.durable.Get(ctx, durableKey, CacheSchemaVersion, &cached); err == nil && found {
 			return cached, nil
 		}
 	}
@@ -60,7 +60,7 @@ func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairin
 	// fetchPlayersUncached above.
 	if c.durable != nil {
 		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
-			_ = c.durable.Set(ctx, durableKey, body.Active)
+			_ = c.durable.Set(ctx, durableKey, CacheSchemaVersion, body.Active)
 		}
 	}
 
