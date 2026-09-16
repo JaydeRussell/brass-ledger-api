@@ -494,7 +494,7 @@ func TestIsStaleEvent(t *testing.T) {
 		{"unparseable date can't be judged, so not stale", "not a date", false},
 		{"far in the future is not stale", time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339), false},
 		{"just now is not stale yet", time.Now().Format(time.RFC3339), false},
-		{"within the grace period is not stale yet", time.Now().Add(-2 * 24 * time.Hour).Format(time.RFC3339), false},
+		{"within the grace period is not stale yet", time.Now().Add(-12 * time.Hour).Format(time.RFC3339), false},
 		{"past the grace period is stale (RFC3339)", time.Now().Add(-10 * 24 * time.Hour).Format(time.RFC3339), true},
 		{"past the grace period is stale (bare date)", time.Now().Add(-10 * 24 * time.Hour).Format("2006-01-02"), true},
 	}

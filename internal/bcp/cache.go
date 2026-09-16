@@ -56,26 +56,42 @@ type Cache[T any] struct {
 	entries  map[string]cacheEntry[T]
 	inFlight map[string]*inflight[T]
 	fetch    func(ctx context.Context, key string) (T, error)
+	ttl      time.Duration
 }
 
-// NewCache builds a Cache backed by fetch — fetch is called at most once
-// per key per minRefetchInterval, with concurrent callers for the same
-// key sharing a single underlying call.
+// NewCache builds a Cache backed by fetch, using the default
+// minRefetchInterval TTL — fetch is called at most once per key per
+// minRefetchInterval, with concurrent callers for the same key sharing a
+// single underlying call. Use NewCacheWithTTL instead for a BCP call
+// whose data goes stale on a meaningfully different schedule (see that
+// constructor's doc comment).
 func NewCache[T any](fetch func(ctx context.Context, key string) (T, error)) *Cache[T] {
+	return NewCacheWithTTL(fetch, minRefetchInterval)
+}
+
+// NewCacheWithTTL builds a Cache backed by fetch with a custom TTL,
+// for a BCP call whose result goes stale far slower (or faster) than the
+// default minRefetchInterval — e.g. a signed-in account's own event
+// registrations/placings history, which only changes when they register
+// for something new or an event concludes, not on every page load the
+// way live pairings/standings do. Concurrent callers for the same key
+// still share a single underlying fetch, exactly as NewCache.
+func NewCacheWithTTL[T any](fetch func(ctx context.Context, key string) (T, error), ttl time.Duration) *Cache[T] {
 	return &Cache[T]{
 		entries:  make(map[string]cacheEntry[T]),
 		inFlight: make(map[string]*inflight[T]),
 		fetch:    fetch,
+		ttl:      ttl,
 	}
 }
 
 // Get returns the cached value for key, fetching (or joining an
 // in-progress fetch) if it's missing or stale. A failed fetch is never
 // cached, so the next call tries again rather than being stuck serving
-// an error for a full minRefetchInterval.
+// an error for a full TTL.
 func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < minRefetchInterval {
+	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < c.ttl {
 		c.mu.Unlock()
 		return e.data, nil
 	}

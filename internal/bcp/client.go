@@ -19,6 +19,19 @@ const (
 	clientIDHeader = "web-app"
 )
 
+// myEventsRefetchInterval is the TTL for a signed-in account's own event
+// registrations (playerEventHistory) and placings history
+// (placingHistory) below — much longer than the default
+// minRefetchInterval (cache.go) because that data just doesn't change on
+// a per-minute basis: it only moves when the account registers for
+// something new or an event's results get published, not on every page
+// load the way live pairings/standings do. A signed-in user who wants a
+// fresher check sooner than this has the "check for updates" button on
+// /my-events (see brass-ledger-web's app/lib/myEvents.ts's `refresh`
+// param and MeHandler.Events' ?refresh=true), which bypasses this cache
+// directly rather than waiting it out.
+const myEventsRefetchInterval = 48 * time.Hour
+
 // Client is this service's connection to BCP's undocumented API,
 // wrapping each kind of call in its own Cache (see cache.go) so every
 // caller of this service — every browser, not just one — shares the
@@ -105,12 +118,12 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 		}
 		return c.fetchItcRankingUncached(ctx, leagueID, bcpUserID)
 	})
-	c.playerEventHistory = NewCache(func(ctx context.Context, bcpUserID string) ([]PlayerEventRecord, error) {
+	c.playerEventHistory = NewCacheWithTTL(func(ctx context.Context, bcpUserID string) ([]PlayerEventRecord, error) {
 		return c.fetchPlayerEventHistoryUncached(ctx, bcpUserID)
-	})
-	c.placingHistory = NewCache(func(ctx context.Context, bcpUserID string) ([]PlacingHistoryEntry, error) {
+	}, myEventsRefetchInterval)
+	c.placingHistory = NewCacheWithTTL(func(ctx context.Context, bcpUserID string) ([]PlacingHistoryEntry, error) {
 		return c.fetchPlacingHistoryUncached(ctx, bcpUserID)
-	})
+	}, myEventsRefetchInterval)
 	// Leagues are a small, shared set reused across every event and every
 	// user of this app (there are only a handful of leagues per game
 	// system per year), so this cache is unusually effective — unlike

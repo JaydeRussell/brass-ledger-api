@@ -274,3 +274,64 @@ func TestCache_Get_minRefetchIntervalIsPositive(t *testing.T) {
 		t.Fatalf("minRefetchInterval = %v, suspiciously short for a real-API rate limit", minRefetchInterval)
 	}
 }
+
+// TestNewCacheWithTTL confirms a custom TTL actually takes effect instead
+// of NewCacheWithTTL silently falling back to minRefetchInterval — a
+// short TTL should let a second Get past it refetch, and a long one
+// should keep serving the cached value well past the default interval.
+func TestNewCacheWithTTL(t *testing.T) {
+	t.Run("a TTL shorter than minRefetchInterval still expires the entry", func(t *testing.T) {
+		var calls int32
+		c := NewCacheWithTTL(func(ctx context.Context, key string) (int, error) {
+			return int(atomic.AddInt32(&calls, 1)), nil
+		}, time.Millisecond)
+
+		first, err := c.Get(context.Background(), "k1")
+		if err != nil {
+			t.Fatalf("first Get: %v", err)
+		}
+		if first != 1 {
+			t.Fatalf("first Get = %d, want 1", first)
+		}
+
+		time.Sleep(5 * time.Millisecond)
+
+		second, err := c.Get(context.Background(), "k1")
+		if err != nil {
+			t.Fatalf("second Get: %v", err)
+		}
+		if second != 2 {
+			t.Errorf("second Get = %d, want 2 (custom short TTL should have expired the entry)", second)
+		}
+	})
+
+	t.Run("a TTL longer than minRefetchInterval keeps serving the cached value", func(t *testing.T) {
+		var calls int32
+		c := NewCacheWithTTL(func(ctx context.Context, key string) (int, error) {
+			return int(atomic.AddInt32(&calls, 1)), nil
+		}, 48*time.Hour)
+
+		if _, err := c.Get(context.Background(), "k1"); err != nil {
+			t.Fatalf("first Get: %v", err)
+		}
+		// Manually age the entry past the default minRefetchInterval to
+		// prove it's the 48h TTL keeping it fresh, not just elapsed time
+		// being short in a fast test.
+		c.mu.Lock()
+		e := c.entries["k1"]
+		e.fetchedAt = time.Now().Add(-2 * minRefetchInterval)
+		c.entries["k1"] = e
+		c.mu.Unlock()
+
+		second, err := c.Get(context.Background(), "k1")
+		if err != nil {
+			t.Fatalf("second Get: %v", err)
+		}
+		if second != 1 {
+			t.Errorf("second Get = %d, want 1 (48h TTL should still be serving the cached value)", second)
+		}
+		if calls != 1 {
+			t.Errorf("fetch called %d times, want 1", calls)
+		}
+	})
+}
