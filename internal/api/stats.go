@@ -39,6 +39,12 @@ type placingWithField struct {
 // detail, not a second chart axis — it isn't comparable across events
 // with different scoring formats the way placing is, so it was never
 // meant to be plotted on its own; see computePlayerStats' doc comment.
+//
+// Faction and Category (the same "team"/"gt"/"rtt" bucket used for the
+// BestPlacing* splits above, via classifyEventCategory) ride along too,
+// so the frontend's event-history table/chart can show which faction was
+// played and let a player filter the trend down to one format, without a
+// second request.
 type placingHistoryPoint struct {
 	EventID   string   `json:"eventId"`
 	EventName string   `json:"eventName"`
@@ -46,6 +52,10 @@ type placingHistoryPoint struct {
 	Placing   int      `json:"placing"`
 	Points    *float64 `json:"points,omitempty"`
 	FieldSize *int     `json:"fieldSize,omitempty"`
+	Faction   string   `json:"faction,omitempty"`
+	// "team", "gt", or "rtt" — omitted if classifyEventCategory couldn't
+	// classify this event (see that function's doc comment for when).
+	Category string `json:"category,omitempty"`
 }
 
 // playerStatsResponse is GET /api/me/stats' body. Linked is false (with
@@ -258,7 +268,8 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 
 		if h.Placing != nil {
 			resp.BestPlacing = keepBestWithField(resp.BestPlacing, *h.Placing, fieldSize)
-			if category, ok := classifyEventCategory(h, infos[h.EventID].TeamEvent); ok {
+			category, categoryOK := classifyEventCategory(h, infos[h.EventID].TeamEvent)
+			if categoryOK {
 				switch category {
 				case categoryTeams:
 					resp.BestPlacingTeams = keepBestWithField(resp.BestPlacingTeams, *h.Placing, fieldSize)
@@ -273,14 +284,19 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 			// chronological trend has nowhere to place a point with no
 			// date.
 			if dateOK {
-				datedHistory = append(datedHistory, datedPoint{t: t, p: placingHistoryPoint{
+				point := placingHistoryPoint{
 					EventID:   h.EventID,
 					EventName: h.EventName,
 					EventDate: h.EventDate,
 					Placing:   *h.Placing,
 					Points:    h.Points,
 					FieldSize: fieldSize,
-				}})
+					Faction:   h.Faction,
+				}
+				if categoryOK {
+					point.Category = category
+				}
+				datedHistory = append(datedHistory, datedPoint{t: t, p: point})
 			}
 		}
 
