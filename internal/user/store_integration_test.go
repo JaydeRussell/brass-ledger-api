@@ -403,50 +403,6 @@ func TestStore_AccessControl(t *testing.T) {
 	}
 }
 
-func TestStore_SetThemePreference(t *testing.T) {
-	store := newTestStore(t)
-	ctx := context.Background()
-	runID := uniqueID(t)
-	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "t@example.com", "Theo", "")
-	if err != nil {
-		t.Fatalf("UpsertUserFromGoogle: %v", err)
-	}
-	// Migration 0008's DEFAULT clause — a brand-new row starts at
-	// "system", same as a guest who's never touched the toggle.
-	if u.ThemePreference != ThemeSystem {
-		t.Fatalf("new user ThemePreference = %q, want %q (DEFAULT clause)", u.ThemePreference, ThemeSystem)
-	}
-
-	if err := store.SetThemePreference(ctx, u.ID, ThemeDark); err != nil {
-		t.Fatalf("SetThemePreference: %v", err)
-	}
-
-	// GetUserBySession is what /api/me and the theme-sync route actually
-	// read — the real proof this took effect where it matters, not just
-	// a raw column read.
-	token, err := store.CreateSession(ctx, u.ID)
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	got, err := store.GetUserBySession(ctx, token)
-	if err != nil {
-		t.Fatalf("GetUserBySession: %v", err)
-	}
-	if got.ThemePreference != ThemeDark {
-		t.Fatalf("ThemePreference after SetThemePreference = %q, want %q", got.ThemePreference, ThemeDark)
-	}
-
-	// Re-signing-in (UpsertUserFromGoogle's ON CONFLICT path) must never
-	// reset a saved preference — same reasoning as role/status.
-	u2, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "t@example.com", "Theo Updated", "")
-	if err != nil {
-		t.Fatalf("UpsertUserFromGoogle (re-sign-in): %v", err)
-	}
-	if u2.ThemePreference != ThemeDark {
-		t.Fatalf("ThemePreference after re-sign-in = %q, want unchanged %q", u2.ThemePreference, ThemeDark)
-	}
-}
-
 func TestStore_SetAccentTheme(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -480,7 +436,7 @@ func TestStore_SetAccentTheme(t *testing.T) {
 	}
 
 	// Re-signing-in (UpsertUserFromGoogle's ON CONFLICT path) must never
-	// reset a saved preference — same reasoning as ThemePreference.
+	// reset a saved preference — same reasoning as role/status.
 	u2, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna Updated", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle (re-sign-in): %v", err)
