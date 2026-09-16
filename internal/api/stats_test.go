@@ -205,14 +205,16 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 	// the flagship-league placing for evt-team (5, not hobby track's 2),
 	// same canonical-per-event rule as every other stat above.
 	wantHistory := []struct {
-		eventID string
-		placing int
+		eventID  string
+		placing  int
+		faction  string
+		category string
 	}{
-		{"evt-club-solo", 3},
-		{"evt-team", 5},
-		{"evt-nodate", 1},
-		{"evt-rtt", 10},
-		{"evt-gt", 2},
+		{"evt-club-solo", 3, "World Eaters", categoryRTT},
+		{"evt-team", 5, "World Eaters", categoryTeams},
+		{"evt-nodate", 1, "Black Legion", categoryRTT},
+		{"evt-rtt", 10, "World Eaters", categoryRTT},
+		{"evt-gt", 2, "World Eaters", categoryGT},
 	}
 	if len(resp.History) != len(wantHistory) {
 		t.Fatalf("history = %+v, want %d entries", resp.History, len(wantHistory))
@@ -221,6 +223,12 @@ func TestPlayerStats_AggregatesPlacingHistory(t *testing.T) {
 		got := resp.History[i]
 		if got.EventID != want.eventID || got.Placing != want.placing {
 			t.Errorf("history[%d] = %+v, want eventId=%q placing=%d", i, got, want.eventID, want.placing)
+		}
+		if got.Faction != want.faction {
+			t.Errorf("history[%d] (%s) faction = %q, want %q", i, want.eventID, got.Faction, want.faction)
+		}
+		if got.Category != want.category {
+			t.Errorf("history[%d] (%s) category = %q, want %q", i, want.eventID, got.Category, want.category)
 		}
 	}
 	// evt-team's fieldSize (12, from teamPlayerCounts) should ride along
@@ -363,6 +371,12 @@ func TestComputePlayerStats_History(t *testing.T) {
 	}
 	if resp.History[0].Points == nil || *resp.History[0].Points != 95 {
 		t.Errorf("history[0].points = %v, want 95", resp.History[0].Points)
+	}
+	// No EventInfo at all was passed in, so classifyEventCategory falls
+	// back to date-span classification — both single-day (no end date),
+	// hence RTT.
+	if resp.History[0].Category != categoryRTT || resp.History[1].Category != categoryRTT {
+		t.Errorf("history categories = [%q, %q], want both %q", resp.History[0].Category, resp.History[1].Category, categoryRTT)
 	}
 	// TotalEvents still counts all 4, even though only 2 made it into History.
 	if resp.TotalEvents != 4 {
