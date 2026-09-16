@@ -14,10 +14,14 @@ import (
 // still shows as "started, not ended" gets reclassified from Present to
 // Past anyway. Some organizers never flip the "ended" switch on their own
 // event even once it's clearly over, which would otherwise leave it
-// stuck in "Ongoing" on the frontend's My Events page forever. A few
-// days' grace avoids misclassifying an event that's still legitimately
-// running a little long (finals dragging on, a rescheduled last round).
-const staleEventAfter = 3 * 24 * time.Hour
+// stuck in "Ongoing" on the frontend's My Events page forever. A day's
+// grace avoids misclassifying an event that's still legitimately running
+// a little long (finals dragging on, a rescheduled last round), while
+// keeping the Ongoing tag from lingering too long now that the
+// Present/Future registration list itself (bcp.Client's
+// playerEventHistory/placingHistory caches) is cached for up to 48
+// hours — see bcp.myEventsRefetchInterval's doc comment.
+const staleEventAfter = 24 * time.Hour
 
 // bcpDateLayouts are the two date shapes this service has actually seen
 // from BCP: FetchEventInfo's Dates.Start/End come back as a bare date
