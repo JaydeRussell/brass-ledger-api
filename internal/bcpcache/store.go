@@ -29,11 +29,14 @@ func New(pool *pgxpool.Pool) *Store {
 }
 
 // Get decodes the stored JSON for key into dest (a pointer) and reports
-// whether a value was found at all. A missing key is not an error.
-func (s *Store) Get(ctx context.Context, key string, dest any) (bool, error) {
+// whether a value was found at all — false if nothing is stored under
+// key, or if something is but tagged with a different cache_version
+// than version (a row written under an older schema; see
+// bcp.CacheSchemaVersion). A miss either way is not an error.
+func (s *Store) Get(ctx context.Context, key string, version int, dest any) (bool, error) {
 	var raw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT data FROM bcp_durable_cache WHERE cache_key = $1`, key,
+		`SELECT data FROM bcp_durable_cache WHERE cache_key = $1 AND cache_version = $2`, key, version,
 	).Scan(&raw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -47,18 +50,22 @@ func (s *Store) Get(ctx context.Context, key string, dest any) (bool, error) {
 	return true, nil
 }
 
-// Set marshals value as JSON and stores it under key, overwriting
-// whatever (if anything) was there before.
-func (s *Store) Set(ctx context.Context, key string, value any) error {
+// Set marshals value as JSON and stores it under key tagged with
+// version, overwriting whatever (if anything, at whatever version) was
+// there before.
+func (s *Store) Set(ctx context.Context, key string, version int, value any) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encoding bcp_durable_cache[%s]: %w", key, err)
 	}
 	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO bcp_durable_cache (cache_key, data, cached_at)
-		VALUES ($1, $2, now())
-		ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, cached_at = EXCLUDED.cached_at
-	`, key, raw); err != nil {
+		INSERT INTO bcp_durable_cache (cache_key, data, cache_version, cached_at)
+		VALUES ($1, $2, $3, now())
+		ON CONFLICT (cache_key) DO UPDATE SET
+			data = EXCLUDED.data,
+			cache_version = EXCLUDED.cache_version,
+			cached_at = EXCLUDED.cached_at
+	`, key, raw, version); err != nil {
 		return fmt.Errorf("writing bcp_durable_cache[%s]: %w", key, err)
 	}
 	return nil

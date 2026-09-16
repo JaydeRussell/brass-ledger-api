@@ -118,7 +118,7 @@ func eventInfoDurableKey(eventID string) string { return "event:" + eventID }
 func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (EventInfo, error) {
 	if c.durable != nil {
 		var cached EventInfo
-		if found, err := c.durable.Get(ctx, eventInfoDurableKey(eventID), &cached); err == nil && found {
+		if found, err := c.durable.Get(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, &cached); err == nil && found {
 			return cached, nil
 		}
 	}
@@ -193,7 +193,7 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 	// this gets asked of BCP again next time; not worth failing the
 	// request over.
 	if c.durable != nil && info.Ended {
-		_ = c.durable.Set(ctx, eventInfoDurableKey(eventID), info)
+		_ = c.durable.Set(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, info)
 	}
 
 	return info, nil

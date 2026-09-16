@@ -64,7 +64,7 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 	durableKey := "placings:" + placingsKey(eventID, teamEvent)
 	if c.durable != nil {
 		var cached []PlacingEntry
-		if found, err := c.durable.Get(ctx, durableKey, &cached); err == nil && found {
+		if found, err := c.durable.Get(ctx, durableKey, CacheSchemaVersion, &cached); err == nil && found {
 			return cached, nil
 		}
 	}
@@ -129,7 +129,7 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 	// above.
 	if c.durable != nil {
 		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
-			_ = c.durable.Set(ctx, durableKey, entries)
+			_ = c.durable.Set(ctx, durableKey, CacheSchemaVersion, entries)
 		}
 	}
 
