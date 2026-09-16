@@ -17,7 +17,7 @@ func TestFetchPlayers(t *testing.T) {
 		wantTeams      []string
 	}{
 		{
-			name: "resolves each player's tournament team and skips players with no submitted list",
+			name: "resolves each player's tournament team, list or no list",
 			playersBody: `{"active": [
 				{"id": "p1", "user": {"id": "u1", "firstName": "Anna", "lastName": "Adams"}, "teamPlayerId": "tp1", "faction": {"name": "Necrons"}, "listId": "l1"},
 				{"id": "p2", "user": {"id": "u2", "firstName": "Bob", "lastName": "Baker"}, "listUrl": "/lists/2", "faction": {"name": "Orks"}},
@@ -25,8 +25,28 @@ func TestFetchPlayers(t *testing.T) {
 			]}`,
 			teamPlayerBody: `{"active": [{"id": "tp1", "name": "Master Crafted"}]}`,
 			teamPlayerCode: http.StatusOK,
-			wantNames:      []string{"Anna Adams", "Bob Baker"},
-			wantTeams:      []string{"Master Crafted", ""},
+			wantNames:      []string{"Anna Adams", "Bob Baker", "No List"},
+			wantTeams:      []string{"Master Crafted", "", ""},
+		},
+		{
+			// Confirmed live 2026-09-16 against a real event (CollectorMania's
+			// September 40K RTT) with zero submitted lists yet, days before
+			// its army-list deadline — BCP's own roster page still lists
+			// every one of these as registered ("not checked in"), so a
+			// player record with no listId/listUrl at all (and no faction
+			// chosen yet either) is a real roster entry, not something to
+			// hide. A previous version of this code treated "no list" as
+			// "not a real registrant" and dropped these entirely, which
+			// made a newly-opened event's Roster tab look empty for as long
+			// as nobody had submitted a list yet.
+			name: "a player who hasn't submitted a list (or picked a faction) yet still shows up",
+			playersBody: `{"active": [
+				{"id": "p1", "user": {"id": "u1", "firstName": "Josh", "lastName": "Marrano"}, "checkedIn": false, "dropped": false}
+			]}`,
+			teamPlayerBody: `{"active": []}`,
+			teamPlayerCode: http.StatusOK,
+			wantNames:      []string{"Josh Marrano"},
+			wantTeams:      []string{""},
 		},
 		{
 			name:           "a missing /teamplayers endpoint (singles event) doesn't fail the whole request",
