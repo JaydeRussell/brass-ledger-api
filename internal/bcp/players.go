@@ -45,11 +45,15 @@ type bcpTeamPlayersResponse struct {
 }
 
 // fetchPlayersUncached mirrors the frontend's original fetchBcpPlayersUncached:
-// a "has a submitted list" check stands in for "is a real roster entry"
-// (check-in doesn't happen until day-of, so filtering on that would hide
-// real rosters submitted days earlier), and each player's actual
-// per-event tournament team name is resolved via teamPlayerId against
-// the separate /teamplayers collection.
+// every entry in BCP's own `active` list is a real registrant — confirmed
+// live against an event with zero submitted lists yet, where BCP's own
+// roster page still lists all of them (as "not checked in") — so this no
+// longer gates on having a submitted list (a previous version of this
+// code did; that hid a real, still-forming roster for as long as no one
+// had submitted a list yet, which is exactly the state a newly-opened
+// event's Roster tab is in for a while). Each player's actual per-event
+// tournament team name is resolved via teamPlayerId against the separate
+// /teamplayers collection.
 func playersDurableKey(eventID string) string { return "players:" + eventID }
 
 func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Player, error) {
@@ -82,10 +86,6 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 
 	players := make([]Player, 0, len(playersBody.Active))
 	for _, r := range playersBody.Active {
-		if r.ListID == "" && r.ListURL == "" {
-			continue // no submitted list yet
-		}
-
 		name := strings.TrimSpace(r.User.FirstName + " " + r.User.LastName)
 		if name == "" {
 			name = "Unknown player"
@@ -140,7 +140,8 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 }
 
 // FetchPlayers returns cached, rate-limited roster data for an event —
-// every registered player with a submitted list, individual or team.
+// every registered player, individual or team, regardless of whether
+// they've submitted a list yet.
 func (c *Client) FetchPlayers(ctx context.Context, eventID string) ([]Player, error) {
 	return c.players.Get(ctx, eventID)
 }
