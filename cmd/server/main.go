@@ -32,6 +32,7 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcpcache"
 	"github.com/JaydeRussell/brass-ledger-api/internal/config"
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
+	"github.com/JaydeRussell/brass-ledger-api/internal/feedback"
 	"github.com/JaydeRussell/brass-ledger-api/internal/notify"
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
@@ -224,13 +225,19 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	// feedback, signed in or not) needs it regardless.
 	notifier := notify.NewResendNotifier(cfg.ResendAPIKey, cfg.EmailFromAddress, cfg.AdminEmails, strings.TrimSuffix(cfg.FrontendBaseURL, "/")+"/admin")
 
+	// Stores every bug report/suggestion submitted through the feedback
+	// widget, admin-only listing/resolving included — a thin wrapper
+	// around pool, same as bcpcache.New above, so building it has no
+	// cost or side effect on its own.
+	feedbackStore := feedback.New(pool)
+
 	// Public — no session/approval gate, since a visitor can hit a bug
 	// before ever signing in. The only thing standing between this route
 	// and being hammered by an anonymous caller is this per-IP rate
 	// limit (20 requests/minute, bursting to 5) — deliberately simple,
 	// in-memory, no external dependency; revisit only if real abuse
 	// shows up.
-	api.NewFeedbackHandler(userStore, notifier).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+	api.NewFeedbackHandler(userStore, feedbackStore, notifier).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
 			Rate:      20.0 / 60, // ~20 requests/minute, refilled continuously
 			Burst:     5,
@@ -258,9 +265,10 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
 		api.NewStatsHandler(userStore, bcpClient).Register(e)
-		// Access-control management (migration 0007) — admin-only, same
-		// reason it only makes sense once sign-in itself is enabled.
-		api.NewAdminHandler(userStore).Register(e)
+		// Access-control management (migration 0007) plus feedback
+		// triage — admin-only, same reason it only makes sense once
+		// sign-in itself is enabled.
+		api.NewAdminHandler(userStore, feedbackStore).Register(e)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 		if len(cfg.AdminEmails) == 0 {
 			log.Printf("ADMIN_EMAILS is not set — nobody can approve a pending account (see .env.example)")
