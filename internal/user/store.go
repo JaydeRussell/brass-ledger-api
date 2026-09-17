@@ -250,34 +250,122 @@ func (s *Store) SetAccentTheme(ctx context.Context, userID int64, accentTheme st
 	return nil
 }
 
-// ListUsers returns every account for the admin panel (internal/api/
-// admin.go) — pending accounts first (what an admin actually needs to
-// act on), then everyone else, newest first within each group. No
-// pagination: fine at this project's expected scale, and adding it
-// later if that stops being true doesn't change this method's shape.
-func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.pool.Query(ctx, `
+// DefaultUsersPageSize/MaxUsersPageSize bound ListUsersOptions.PageSize —
+// see ListUsers.
+const (
+	DefaultUsersPageSize = 5
+	MaxUsersPageSize     = 100
+)
+
+// ListUsersOptions filters/paginates ListUsers. Status is "" or "all"
+// for no status filter, else one of StatusPending/StatusApproved/
+// StatusRejected. Search is "" for no name/email filter. Page is
+// 1-based; anything less than 1 is treated as 1. PageSize is clamped to
+// [1, MaxUsersPageSize], defaulting to DefaultUsersPageSize when 0.
+type ListUsersOptions struct {
+	Status   string
+	Search   string
+	Page     int
+	PageSize int
+}
+
+// UserStatusCounts totals every account by status, independent of any
+// Search/Status filter — what the admin panel's tab labels ("Pending
+// (56)") need regardless of what's currently paged/searched.
+type UserStatusCounts struct {
+	All      int
+	Pending  int
+	Approved int
+	Rejected int
+}
+
+// ListUsersResult is ListUsers' return value: one page of accounts
+// matching opts, the total count of accounts matching opts (for the
+// caller to compute page count), and the unfiltered per-status totals.
+type ListUsersResult struct {
+	Items  []User
+	Total  int
+	Counts UserStatusCounts
+}
+
+// ListUsers returns one page of accounts for the admin panel
+// (internal/api/admin.go), filtered by opts.Status/opts.Search — within
+// the "all" status filter (or no filter), pending accounts first (what
+// an admin actually needs to act on), then approved, then rejected;
+// newest first within each group and when a single status is filtered.
+// Paginated server-side (opts.Page/opts.PageSize) since a live event's
+// account list can run to several dozen pending sign-ups alone.
+func (s *Store) ListUsers(ctx context.Context, opts ListUsersOptions) (ListUsersResult, error) {
+	page := opts.Page
+	if page < 1 {
+		page = 1
+	}
+	pageSize := opts.PageSize
+	if pageSize <= 0 {
+		pageSize = DefaultUsersPageSize
+	}
+	if pageSize > MaxUsersPageSize {
+		pageSize = MaxUsersPageSize
+	}
+
+	var result ListUsersResult
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE status = 'pending'),
+		       count(*) FILTER (WHERE status = 'approved'),
+		       count(*) FILTER (WHERE status = 'rejected')
+		FROM users
+	`).Scan(&result.Counts.All, &result.Counts.Pending, &result.Counts.Approved, &result.Counts.Rejected); err != nil {
+		return ListUsersResult{}, fmt.Errorf("counting users: %w", err)
+	}
+
+	var where []string
+	var args []any
+	if opts.Status != "" && opts.Status != "all" {
+		args = append(args, opts.Status)
+		where = append(where, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if opts.Search != "" {
+		args = append(args, "%"+opts.Search+"%")
+		where = append(where, fmt.Sprintf("(name ILIKE $%d OR email ILIKE $%d)", len(args), len(args)))
+	}
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	countQuery := "SELECT count(*) FROM users " + whereClause
+	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&result.Total); err != nil {
+		return ListUsersResult{}, fmt.Errorf("counting filtered users: %w", err)
+	}
+
+	args = append(args, pageSize, (page-1)*pageSize)
+	itemsQuery := fmt.Sprintf(`
 		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status
 		FROM users
-		ORDER BY (status = 'pending') DESC, created_at DESC
-	`)
+		%s
+		ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'rejected' THEN 2 ELSE 3 END, created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereClause, len(args)-1, len(args))
+
+	rows, err := s.pool.Query(ctx, itemsQuery, args...)
 	if err != nil {
-		return nil, fmt.Errorf("listing users: %w", err)
+		return ListUsersResult{}, fmt.Errorf("listing users: %w", err)
 	}
 	defer rows.Close()
 
-	users := []User{}
+	result.Items = []User{}
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status); err != nil {
-			return nil, fmt.Errorf("scanning user: %w", err)
+			return ListUsersResult{}, fmt.Errorf("scanning user: %w", err)
 		}
-		users = append(users, u)
+		result.Items = append(result.Items, u)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing users: %w", err)
+		return ListUsersResult{}, fmt.Errorf("listing users: %w", err)
 	}
-	return users, nil
+	return result, nil
 }
 
 // MaxRecentEvents mirrors the frontend's own trim limit (see

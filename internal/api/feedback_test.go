@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/JaydeRussell/brass-ledger-api/internal/feedback"
 	"github.com/JaydeRussell/brass-ledger-api/internal/notify"
 )
 
@@ -27,9 +31,71 @@ func (f *fakeFeedbackNotifier) NotifyFeedback(_ context.Context, r notify.Feedba
 	return f.failErr
 }
 
-func newFeedbackTestEcho(store userStore, notifier feedbackNotifier) *echo.Echo {
+// fakeFeedbackStore is an in-memory stand-in for *feedback.Store, shared
+// by feedback_test.go (Submit) and admin_test.go (List/SetStatus/
+// CountOpen) — same reasoning as fakeUserStore for *user.Store.
+type fakeFeedbackStore struct {
+	mu      sync.Mutex
+	reports []feedback.Report
+	nextID  int64
+	failErr error
+}
+
+func newFakeFeedbackStore() *fakeFeedbackStore {
+	return &fakeFeedbackStore{}
+}
+
+func (f *fakeFeedbackStore) Create(_ context.Context, r feedback.Report) (feedback.Report, error) {
+	if f.failErr != nil {
+		return feedback.Report{}, f.failErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	r.ID = f.nextID
+	r.Status = feedback.StatusOpen
+	r.CreatedAt = time.Now()
+	f.reports = append(f.reports, r)
+	return r, nil
+}
+
+func (f *fakeFeedbackStore) List(_ context.Context) ([]feedback.Report, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]feedback.Report, len(f.reports))
+	copy(out, f.reports)
+	return out, nil
+}
+
+func (f *fakeFeedbackStore) SetStatus(_ context.Context, id int64, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, r := range f.reports {
+		if r.ID == id {
+			f.reports[i].Status = status
+			return nil
+		}
+	}
+	return errNotFound
+}
+
+var errNotFound = errors.New("feedback not found")
+
+func (f *fakeFeedbackStore) CountOpen(_ context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.reports {
+		if r.Status == feedback.StatusOpen {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func newFeedbackTestEcho(store userStore, reports feedbackStore, notifier feedbackNotifier) *echo.Echo {
 	e := echo.New()
-	NewFeedbackHandler(store, notifier).Register(e, noopMiddleware)
+	NewFeedbackHandler(store, reports, notifier).Register(e, noopMiddleware)
 	return e
 }
 
@@ -50,7 +116,8 @@ func postFeedback(e *echo.Echo, body string, cookies ...*http.Cookie) *httptest.
 
 func TestFeedbackHandler_Submit(t *testing.T) {
 	notifier := &fakeFeedbackNotifier{}
-	e := newFeedbackTestEcho(newFakeUserStore(), notifier)
+	reports := newFakeFeedbackStore()
+	e := newFeedbackTestEcho(newFakeUserStore(), reports, notifier)
 
 	rec := postFeedback(e, `{"kind":"bug","message":"Overview shows a blank page.","page":"/?event=abc123"}`)
 
@@ -67,13 +134,19 @@ func TestFeedbackHandler_Submit(t *testing.T) {
 	if got.SubmittedBy != "" {
 		t.Errorf("SubmittedBy = %q, want empty for an anonymous submission", got.SubmittedBy)
 	}
+
+	stored, _ := reports.List(context.Background())
+	if len(stored) != 1 || stored[0].Status != feedback.StatusOpen {
+		t.Fatalf("expected one stored open report, got %+v", stored)
+	}
 }
 
 func TestFeedbackHandler_Submit_AttachesSignedInSubmitter(t *testing.T) {
 	store := newFakeUserStore()
 	cookie, _ := newSignedInUser(t, store, "feedback-submitter", "user", "approved")
 	notifier := &fakeFeedbackNotifier{}
-	e := newFeedbackTestEcho(store, notifier)
+	reports := newFakeFeedbackStore()
+	e := newFeedbackTestEcho(store, reports, notifier)
 
 	rec := postFeedback(e, `{"kind":"suggestion","message":"Add dark mode."}`, cookie)
 
@@ -84,11 +157,15 @@ func TestFeedbackHandler_Submit_AttachesSignedInSubmitter(t *testing.T) {
 	if notifier.got[0].SubmittedBy != want {
 		t.Errorf("SubmittedBy = %q, want %q", notifier.got[0].SubmittedBy, want)
 	}
+	stored, _ := reports.List(context.Background())
+	if len(stored) != 1 || stored[0].SubmittedByName != "User feedback-submitter" {
+		t.Fatalf("expected stored report to carry the submitter's name, got %+v", stored)
+	}
 }
 
 func TestFeedbackHandler_Submit_InvalidSessionCookieStillSucceeds(t *testing.T) {
 	notifier := &fakeFeedbackNotifier{}
-	e := newFeedbackTestEcho(newFakeUserStore(), notifier)
+	e := newFeedbackTestEcho(newFakeUserStore(), newFakeFeedbackStore(), notifier)
 
 	rec := postFeedback(e, `{"kind":"bug","message":"test"}`, &http.Cookie{Name: sessionCookieName, Value: "not-a-real-token"})
 
@@ -97,6 +174,22 @@ func TestFeedbackHandler_Submit_InvalidSessionCookieStillSucceeds(t *testing.T) 
 	}
 	if notifier.got[0].SubmittedBy != "" {
 		t.Errorf("SubmittedBy = %q, want empty for a bad session cookie", notifier.got[0].SubmittedBy)
+	}
+}
+
+func TestFeedbackHandler_Submit_StoreErrorFailsTheRequest(t *testing.T) {
+	notifier := &fakeFeedbackNotifier{}
+	reports := newFakeFeedbackStore()
+	reports.failErr = context.DeadlineExceeded
+	e := newFeedbackTestEcho(newFakeUserStore(), reports, notifier)
+
+	rec := postFeedback(e, `{"kind":"bug","message":"test"}`)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d — a real persistence failure should fail the request", rec.Code, http.StatusInternalServerError)
+	}
+	if len(notifier.got) != 0 {
+		t.Errorf("expected no NotifyFeedback call when the report was never saved, got %d", len(notifier.got))
 	}
 }
 
@@ -116,7 +209,7 @@ func TestFeedbackHandler_Submit_Validation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			notifier := &fakeFeedbackNotifier{}
-			e := newFeedbackTestEcho(newFakeUserStore(), notifier)
+			e := newFeedbackTestEcho(newFakeUserStore(), newFakeFeedbackStore(), notifier)
 
 			rec := postFeedback(e, tc.body)
 
@@ -136,7 +229,7 @@ func TestFeedbackHandler_Submit_Validation(t *testing.T) {
 
 func TestFeedbackHandler_Submit_LongPageIsTruncatedNotRejected(t *testing.T) {
 	notifier := &fakeFeedbackNotifier{}
-	e := newFeedbackTestEcho(newFakeUserStore(), notifier)
+	e := newFeedbackTestEcho(newFakeUserStore(), newFakeFeedbackStore(), notifier)
 
 	longPage := "/" + strings.Repeat("a", feedbackPageMaxLen+50)
 	rec := postFeedback(e, `{"kind":"bug","message":"test","page":"`+longPage+`"}`)
@@ -151,7 +244,7 @@ func TestFeedbackHandler_Submit_LongPageIsTruncatedNotRejected(t *testing.T) {
 
 func TestFeedbackHandler_Submit_NotifyErrorStillAccepted(t *testing.T) {
 	notifier := &fakeFeedbackNotifier{failErr: context.DeadlineExceeded}
-	e := newFeedbackTestEcho(newFakeUserStore(), notifier)
+	e := newFeedbackTestEcho(newFakeUserStore(), newFakeFeedbackStore(), notifier)
 
 	rec := postFeedback(e, `{"kind":"bug","message":"test"}`)
 

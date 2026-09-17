@@ -66,7 +66,7 @@ type userStore interface {
 	// reason as the rest of this interface's later additions.
 	SetStatus(ctx context.Context, userID int64, status string) error
 	SetRole(ctx context.Context, userID int64, role string) error
-	ListUsers(ctx context.Context) ([]user.User, error)
+	ListUsers(ctx context.Context, opts user.ListUsersOptions) (user.ListUsersResult, error)
 	// SetAccentTheme is used by MeHandler (internal/api/me.go), same
 	// reason as SetBcpUserID above.
 	SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error

@@ -385,21 +385,21 @@ func TestStore_AccessControl(t *testing.T) {
 		t.Fatalf("status after reject = %q, want %q", got.Status, StatusRejected)
 	}
 
-	users, err := store.ListUsers(ctx)
+	// Searching by this run's own unique email isolates exactly this
+	// user regardless of how many other accounts a persistent local
+	// docker-compose Postgres has accumulated across previous runs (see
+	// uniqueID's own doc comment) — unlike the old unpaginated ListUsers,
+	// a plain "list everything" call could now miss this user entirely
+	// if it doesn't happen to land on the first page.
+	result, err := store.ListUsers(ctx, ListUsersOptions{Search: u.Email})
 	if err != nil {
 		t.Fatalf("ListUsers: %v", err)
 	}
-	var found bool
-	for _, listed := range users {
-		if listed.ID == u.ID {
-			found = true
-			if listed.Role != RoleAdmin || listed.Status != StatusRejected {
-				t.Errorf("ListUsers entry for this user = role %q status %q, want %q/%q", listed.Role, listed.Status, RoleAdmin, StatusRejected)
-			}
-		}
+	if len(result.Items) != 1 {
+		t.Fatalf("ListUsers with Search: %q returned %d items, want exactly 1: %+v", u.Email, len(result.Items), result.Items)
 	}
-	if !found {
-		t.Fatalf("ListUsers didn't include user %d", u.ID)
+	if listed := result.Items[0]; listed.Role != RoleAdmin || listed.Status != StatusRejected {
+		t.Errorf("ListUsers entry for this user = role %q status %q, want %q/%q", listed.Role, listed.Status, RoleAdmin, StatusRejected)
 	}
 }
 
