@@ -250,6 +250,37 @@ func (s *Store) SetAccentTheme(ctx context.Context, userID int64, accentTheme st
 	return nil
 }
 
+// ErrUserNotFound is returned by GetUserByBcpUserID when no account is
+// linked to the given BCP user id.
+var ErrUserNotFound = errors.New("user not found")
+
+// GetUserByBcpUserID looks up the account (if any) linked to a Best
+// Coast Pairings user id — the reverse of the manual link SetBcpUserID
+// records. Used wherever a caller has a bcpUserId in hand (a roster
+// entry, a pairing, a dossier link) and needs to know whether it maps
+// to a Brass Ledger account at all: today, FriendsHandler.SendRequest/
+// Events (internal/api/friends.go) — resolving who to send a friend
+// request to, and whose events a friendship unlocks. bcp_user_id is
+// unique per account in practice (each is set by that account's own
+// owner pasting their own profile), though nothing in the schema
+// enforces that today, so this returns whichever row matches first.
+func (s *Store) GetUserByBcpUserID(ctx context.Context, bcpUserID string) (User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme
+		FROM users
+		WHERE bcp_user_id = $1
+		LIMIT 1
+	`, bcpUserID).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, fmt.Errorf("looking up user by bcp_user_id: %w", err)
+	}
+	return u, nil
+}
+
 // DefaultUsersPageSize/MaxUsersPageSize bound ListUsersOptions.PageSize —
 // see ListUsers.
 const (

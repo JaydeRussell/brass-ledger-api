@@ -265,6 +265,10 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
 		api.NewStatsHandler(userStore, bcpClient).Register(e)
+		// Mutual friending: requests, accept/decline, the friends
+		// list, and a friend’s own events — same session gating,
+		// account-graph data no less real than the rest of this app.
+		api.NewFriendsHandler(userStore, bcpClient).Register(e)
 		// Access-control management (migration 0007) plus feedback
 		// triage — admin-only, same reason it only makes sense once
 		// sign-in itself is enabled.

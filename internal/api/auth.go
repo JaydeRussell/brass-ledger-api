@@ -70,6 +70,17 @@ type userStore interface {
 	// SetAccentTheme is used by MeHandler (internal/api/me.go), same
 	// reason as SetBcpUserID above.
 	SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error
+	// GetUserByBcpUserID and the friend-request methods below are used
+	// by FriendsHandler (internal/api/friends.go), same reason as
+	// SetBcpUserID above.
+	GetUserByBcpUserID(ctx context.Context, bcpUserID string) (user.User, error)
+	SendFriendRequest(ctx context.Context, requesterID, recipientID int64) (user.FriendRequest, error)
+	ListIncomingFriendRequests(ctx context.Context, userID int64) ([]user.FriendRequest, error)
+	AcceptFriendRequest(ctx context.Context, requestID, recipientID int64) error
+	DeclineFriendRequest(ctx context.Context, requestID, recipientID int64) error
+	ListFriends(ctx context.Context, userID int64) ([]user.Friend, error)
+	RemoveFriend(ctx context.Context, userID, friendUserID int64) error
+	AreFriends(ctx context.Context, userID, otherUserID int64) (bool, error)
 }
 
 // signupNotifier is the "alert admins about a new pending signup"
