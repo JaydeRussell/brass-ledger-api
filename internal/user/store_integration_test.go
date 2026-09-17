@@ -445,3 +445,69 @@ func TestStore_SetAccentTheme(t *testing.T) {
 		t.Fatalf("AccentTheme after re-sign-in = %q, want unchanged %q", u2.AccentTheme, "necron-emerald")
 	}
 }
+
+func TestStore_DossierPublic(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	// Migration 0014's DEFAULT clause.
+	if !u.DossierPublic {
+		t.Fatal("new user DossierPublic = false, want true (DEFAULT clause)")
+	}
+
+	if err := store.SetDossierPublic(ctx, u.ID, false); err != nil {
+		t.Fatalf("SetDossierPublic: %v", err)
+	}
+
+	token, err := store.CreateSession(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	got, err := store.GetUserBySession(ctx, token)
+	if err != nil {
+		t.Fatalf("GetUserBySession: %v", err)
+	}
+	if got.DossierPublic {
+		t.Fatal("DossierPublic after SetDossierPublic(false) = true, want false")
+	}
+
+	// Re-signing-in (UpsertUserFromGoogle's ON CONFLICT path) must never
+	// reset a saved preference — same reasoning as accent_theme.
+	u2, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna Updated", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle (re-sign-in): %v", err)
+	}
+	if u2.DossierPublic {
+		t.Fatal("DossierPublic after re-sign-in = true, want unchanged false")
+	}
+}
+
+func TestStore_GetUserByBcpUserID(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+
+	if _, err := store.GetUserByBcpUserID(ctx, "bcp-"+runID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("GetUserByBcpUserID before linking = %v, want %v", err, ErrUserNotFound)
+	}
+
+	if err := store.SetBcpUserID(ctx, u.ID, "bcp-"+runID); err != nil {
+		t.Fatalf("SetBcpUserID: %v", err)
+	}
+
+	got, err := store.GetUserByBcpUserID(ctx, "bcp-"+runID)
+	if err != nil {
+		t.Fatalf("GetUserByBcpUserID: %v", err)
+	}
+	if got.ID != u.ID {
+		t.Fatalf("GetUserByBcpUserID returned id %d, want %d", got.ID, u.ID)
+	}
+}

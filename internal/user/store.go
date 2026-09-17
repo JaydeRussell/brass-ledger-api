@@ -53,6 +53,12 @@ type User struct {
 	// app/lib/theme.ts's AccentTheme type, which this mirrors exactly).
 	// Defaults to "brass" for every account.
 	AccentTheme string
+
+	// DossierPublic is whether this account's player dossier (migration
+	// 0014) is reachable by anyone at GET /api/players/:bcpUserId/dossier
+	// — see internal/api/dossier.go. Defaults to true; SetDossierPublic
+	// is the only way to turn it off.
+	DossierPublic bool
 }
 
 // RoleAdmin and RoleUser are Role's two valid values (also enforced by
@@ -142,8 +148,8 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, (xmax = 0) AS inserted
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &inserted)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, dossier_public, (xmax = 0) AS inserted
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic, &inserted)
 	if err != nil {
 		return User{}, false, fmt.Errorf("upserting user: %w", err)
 	}
@@ -171,11 +177,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.accent_theme
+		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.accent_theme, u.dossier_public
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme)
+	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -248,6 +254,49 @@ func (s *Store) SetAccentTheme(ctx context.Context, userID int64, accentTheme st
 		return fmt.Errorf("setting accent_theme: %w", err)
 	}
 	return nil
+}
+
+// SetDossierPublic turns a signed-in account's player dossier visibility
+// on/off — see internal/api/dossier.go's SetDossierVisibility, the only
+// caller, and User.DossierPublic's doc comment.
+func (s *Store) SetDossierPublic(ctx context.Context, userID int64, public bool) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET dossier_public = $1 WHERE id = $2`,
+		public, userID,
+	); err != nil {
+		return fmt.Errorf("setting dossier_public: %w", err)
+	}
+	return nil
+}
+
+// ErrUserNotFound is returned by GetUserByBcpUserID when no account is
+// linked to the given BCP user id.
+var ErrUserNotFound = errors.New("user not found")
+
+// GetUserByBcpUserID looks up the account (if any) linked to a Best
+// Coast Pairings user id — the reverse of the manual link SetBcpUserID
+// records. Used wherever a caller has a bcpUserId in hand (a roster
+// entry, a pairing) and needs to know whether it maps to a Brass Ledger
+// account at all: today, GET /api/players/:bcpUserId/dossier (see
+// internal/api/dossier.go); bcp_user_id is unique per account in
+// practice (each is set by that account's own owner pasting their own
+// profile), though nothing in the schema enforces that today, so this
+// returns whichever row matches first.
+func (s *Store) GetUserByBcpUserID(ctx context.Context, bcpUserID string) (User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, dossier_public
+		FROM users
+		WHERE bcp_user_id = $1
+		LIMIT 1
+	`, bcpUserID).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, fmt.Errorf("looking up user by bcp_user_id: %w", err)
+	}
+	return u, nil
 }
 
 // DefaultUsersPageSize/MaxUsersPageSize bound ListUsersOptions.PageSize —

@@ -133,6 +133,7 @@ func (h *MeHandler) Register(e *echo.Echo) {
 	e.POST("/api/me/bcp-profile", h.SetBcpProfile)
 	e.GET("/api/me/events", h.Events)
 	e.POST("/api/me/accent-theme", h.SetAccentTheme)
+	e.POST("/api/me/dossier-visibility", h.SetDossierVisibility)
 }
 
 // SetBcpProfile is POST /api/me/bcp-profile: links (or unlinks) a BCP
@@ -184,6 +185,38 @@ func (h *MeHandler) SetAccentTheme(c echo.Context) error {
 	}
 
 	if err := h.store.SetAccentTheme(c.Request().Context(), u.ID, req.AccentTheme); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// dossierVisibilityRequest is the body for POST /api/me/dossier-visibility.
+type dossierVisibilityRequest struct {
+	Public bool `json:"public"`
+}
+
+// SetDossierVisibility is POST /api/me/dossier-visibility: turns the
+// signed-in account's public player dossier (migration 0014, see
+// dossier.go) on or off. Deliberately requireUser, not
+// requireApprovedUser — same reasoning as SetAccentTheme above: a
+// personal privacy preference, not BCP data access, so a pending account
+// isn't blocked from turning this off before an admin's even looked at
+// them. (GET /api/players/:bcpUserId/dossier itself additionally
+// requires the account be approved before showing anything, regardless
+// of this flag — see dossier.go.)
+func (h *MeHandler) SetDossierVisibility(c echo.Context) error {
+	u, err := requireUser(c, h.store)
+	if err != nil {
+		return err
+	}
+
+	var req dossierVisibilityRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+
+	if err := h.store.SetDossierPublic(c.Request().Context(), u.ID, req.Public); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
