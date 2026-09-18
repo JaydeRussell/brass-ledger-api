@@ -493,6 +493,46 @@ func (s *Store) RemoveFollow(ctx context.Context, userID int64, eventID, kind, r
 	return nil
 }
 
+// FollowCount is how many distinct accounts follow one team/player
+// within one event — an aggregate, not tied to any particular follower's
+// identity (see CountFollows).
+type FollowCount struct {
+	Kind  string
+	RefID string
+	Count int
+}
+
+// CountFollows returns, for every team/player anyone follows within one
+// event, how many distinct accounts follow it — the "N people tracking
+// this" social-proof feature (internal/api/sync.go's FollowCounts). Pure
+// aggregation over user_follows; never exposes *which* accounts, just a
+// count, the same way a public vote/like count would.
+func (s *Store) CountFollows(ctx context.Context, eventID string) ([]FollowCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT kind, ref_id, count(*)
+		FROM user_follows
+		WHERE event_id = $1
+		GROUP BY kind, ref_id
+	`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("counting follows: %w", err)
+	}
+	defer rows.Close()
+
+	counts := []FollowCount{}
+	for rows.Next() {
+		var c FollowCount
+		if err := rows.Scan(&c.Kind, &c.RefID, &c.Count); err != nil {
+			return nil, fmt.Errorf("scanning follow count: %w", err)
+		}
+		counts = append(counts, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("counting follows: %w", err)
+	}
+	return counts, nil
+}
+
 // ListRecentEvents returns a user's recently-viewed events, most recent
 // first, already capped at MaxRecentEvents.
 func (s *Store) ListRecentEvents(ctx context.Context, userID int64) ([]RecentEvent, error) {

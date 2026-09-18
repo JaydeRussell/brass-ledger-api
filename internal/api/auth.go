@@ -57,6 +57,7 @@ type userStore interface {
 	ListFollows(ctx context.Context, userID int64, eventID string) ([]user.Follow, error)
 	AddFollow(ctx context.Context, userID int64, eventID, kind, refID, label string) error
 	RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error
+	CountFollows(ctx context.Context, eventID string) ([]user.FollowCount, error)
 	ListRecentEvents(ctx context.Context, userID int64) ([]user.RecentEvent, error)
 	RecordRecentEvent(ctx context.Context, userID int64, eventID, eventName string, teamEvent bool) error
 	GetRoundNote(ctx context.Context, userID int64, eventID string, round int) (string, error)

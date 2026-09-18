@@ -294,6 +294,53 @@ func TestStore_Follows(t *testing.T) {
 	}
 }
 
+func TestStore_CountFollows(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u1, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-a-"+runID, "a@example.com", "Anna", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle (u1): %v", err)
+	}
+	u2, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-b-"+runID, "b@example.com", "Bea", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle (u2): %v", err)
+	}
+	eventID := "evt-" + runID
+
+	if err := store.AddFollow(ctx, u1.ID, eventID, "team", "team-1", "Team One"); err != nil {
+		t.Fatalf("AddFollow (u1): %v", err)
+	}
+	if err := store.AddFollow(ctx, u2.ID, eventID, "team", "team-1", "Team One"); err != nil {
+		t.Fatalf("AddFollow (u2): %v", err)
+	}
+	if err := store.AddFollow(ctx, u1.ID, eventID, "player", "p-1", "Player One"); err != nil {
+		t.Fatalf("AddFollow (player): %v", err)
+	}
+	// A different event's follow of the same ref shouldn't leak in.
+	if err := store.AddFollow(ctx, u1.ID, "evt-other-"+runID, "team", "team-1", "Team One"); err != nil {
+		t.Fatalf("AddFollow (other event): %v", err)
+	}
+
+	counts, err := store.CountFollows(ctx, eventID)
+	if err != nil {
+		t.Fatalf("CountFollows: %v", err)
+	}
+	byKey := make(map[string]int, len(counts))
+	for _, c := range counts {
+		byKey[c.Kind+":"+c.RefID] = c.Count
+	}
+	if byKey["team:team-1"] != 2 {
+		t.Errorf("team:team-1 count = %d, want 2", byKey["team:team-1"])
+	}
+	if byKey["player:p-1"] != 1 {
+		t.Errorf("player:p-1 count = %d, want 1", byKey["player:p-1"])
+	}
+	if len(counts) != 2 {
+		t.Errorf("CountFollows returned %d entries, want exactly 2 (other event's follow must not appear): %+v", len(counts), counts)
+	}
+}
+
 func TestStore_RecentEvents_TrimsToMax(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
