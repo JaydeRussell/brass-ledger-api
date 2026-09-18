@@ -276,12 +276,14 @@ var ErrUserNotFound = errors.New("user not found")
 // GetUserByBcpUserID looks up the account (if any) linked to a Best
 // Coast Pairings user id — the reverse of the manual link SetBcpUserID
 // records. Used wherever a caller has a bcpUserId in hand (a roster
-// entry, a pairing) and needs to know whether it maps to a Brass Ledger
-// account at all: today, GET /api/players/:bcpUserId/dossier (see
-// internal/api/dossier.go); bcp_user_id is unique per account in
-// practice (each is set by that account's own owner pasting their own
-// profile), though nothing in the schema enforces that today, so this
-// returns whichever row matches first.
+// entry, a pairing, a dossier link) and needs to know whether it maps
+// to a Brass Ledger account at all: today, GET /api/players/:bcpUserId/
+// dossier (internal/api/dossier.go) and FriendsHandler.SendRequest/
+// Events (internal/api/friends.go) — resolving who to send a friend
+// request to, and whose events a friendship unlocks. bcp_user_id is
+// unique per account in practice (each is set by that account's own
+// owner pasting their own profile), though nothing in the schema
+// enforces that today, so this returns whichever row matches first.
 func (s *Store) GetUserByBcpUserID(ctx context.Context, bcpUserID string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `

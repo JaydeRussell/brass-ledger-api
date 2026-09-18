@@ -49,6 +49,13 @@ type fakeUserStore struct {
 	// without every other existing test needing to simulate an admin
 	// approving it first.
 	newUserStatus string
+
+	// friendRequests and nextFriendRequestID back the friend-request
+	// fake methods (friends_test.go) — a plain slice rather than a map,
+	// since friend_requests' real primary key is a synthetic bigserial
+	// id, not any natural composite key the way follows/roundNotes are.
+	friendRequests      []user.FriendRequest
+	nextFriendRequestID int64
 }
 
 func newFakeUserStore() *fakeUserStore {
