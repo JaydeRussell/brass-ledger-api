@@ -57,6 +57,7 @@ type userStore interface {
 	ListFollows(ctx context.Context, userID int64, eventID string) ([]user.Follow, error)
 	AddFollow(ctx context.Context, userID int64, eventID, kind, refID, label string) error
 	RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error
+	CountFollows(ctx context.Context, eventID string) ([]user.FollowCount, error)
 	ListRecentEvents(ctx context.Context, userID int64) ([]user.RecentEvent, error)
 	RecordRecentEvent(ctx context.Context, userID int64, eventID, eventName string, teamEvent bool) error
 	GetRoundNote(ctx context.Context, userID int64, eventID string, round int) (string, error)
@@ -70,6 +71,9 @@ type userStore interface {
 	// SetAccentTheme is used by MeHandler (internal/api/me.go), same
 	// reason as SetBcpUserID above.
 	SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error
+	// SetDossierPublic is used by DossierHandler (internal/api/dossier.go),
+	// same reason as SetBcpUserID above.
+	SetDossierPublic(ctx context.Context, userID int64, public bool) error
 	// GetUserByBcpUserID and the friend-request methods below are used
 	// by FriendsHandler (internal/api/friends.go), same reason as
 	// SetBcpUserID above.
@@ -297,14 +301,15 @@ func (h *AuthHandler) Me(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"id":          u.ID,
-		"email":       u.Email,
-		"name":        u.Name,
-		"avatarUrl":   u.AvatarURL,
-		"bcpUserId":   u.BcpUserID,
-		"role":        u.Role,
-		"status":      u.Status,
-		"accentTheme": u.AccentTheme,
+		"id":            u.ID,
+		"email":         u.Email,
+		"name":          u.Name,
+		"avatarUrl":     u.AvatarURL,
+		"bcpUserId":     u.BcpUserID,
+		"role":          u.Role,
+		"status":        u.Status,
+		"accentTheme":   u.AccentTheme,
+		"dossierPublic": u.DossierPublic,
 	})
 }
 

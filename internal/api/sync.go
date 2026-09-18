@@ -27,6 +27,22 @@ type addFollowRequest struct {
 	Label string `json:"label"`
 }
 
+// followCountsResponse is GET /api/events/:id/follow-counts' body: how
+// many distinct accounts follow each team/player within that event,
+// keyed exactly like the frontend's own followedKey (see
+// brass-ledger-web's app/lib/follows.ts) — "team:<teamPlayerId>" or
+// "player:<playerId>" — so the frontend can look a count up directly
+// without reshaping this response first.
+type followCountsResponse map[string]int
+
+func toFollowCountsResponse(counts []user.FollowCount) followCountsResponse {
+	resp := make(followCountsResponse, len(counts))
+	for _, c := range counts {
+		resp[c.Kind+":"+c.RefID] = c.Count
+	}
+	return resp
+}
+
 // recentEventResponse is one entry in GET /api/me/recent-events.
 type recentEventResponse struct {
 	EventID      string `json:"eventId"`
@@ -80,6 +96,7 @@ func (h *SyncHandler) Register(e *echo.Echo) {
 	e.GET("/api/me/events/:eventId/follows", h.ListFollows)
 	e.POST("/api/me/events/:eventId/follows", h.AddFollow)
 	e.DELETE("/api/me/events/:eventId/follows/:kind/:refId", h.RemoveFollow)
+	e.GET("/api/events/:id/follow-counts", h.FollowCounts)
 	e.GET("/api/me/recent-events", h.ListRecentEvents)
 	e.POST("/api/me/recent-events", h.RecordRecentEvent)
 	e.GET("/api/me/events/:eventId/rounds/:round/note", h.GetRoundNote)
@@ -139,6 +156,27 @@ func (h *SyncHandler) RemoveFollow(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+// FollowCounts is GET /api/events/:id/follow-counts: for every
+// team/player anyone follows within this event, how many distinct
+// accounts follow it — social proof ("6 people tracking"), not tied to
+// any one caller's own follows. Same requireApprovedUser gate as every
+// other event-scoped route in this app (see BCPHandler.Register) —
+// there's no reason for this one aggregate to be reachable by a
+// signed-out visitor when the roster/pairings data it's counting
+// against isn't.
+func (h *SyncHandler) FollowCounts(c echo.Context) error {
+	if _, err := requireApprovedUser(c, h.store); err != nil {
+		return err
+	}
+	eventID := c.Param("id")
+
+	counts, err := h.store.CountFollows(c.Request().Context(), eventID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, toFollowCountsResponse(counts))
 }
 
 // ListRecentEvents is GET /api/me/recent-events.

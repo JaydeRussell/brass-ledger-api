@@ -265,6 +265,18 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
 		api.NewStatsHandler(userStore, bcpClient).Register(e)
+		// Public player dossiers — deliberately NOT session-gated (see
+		// dossier.go), but only registered once accounts can exist at all
+		// to link a dossier to in the first place. Same rate-limit shape
+		// as the public feedback route above, for the same "unauthenticated
+		// caller, real work behind it" reason.
+		api.NewDossierHandler(userStore, bcpClient).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+				Rate:      20.0 / 60, // ~20 requests/minute, refilled continuously
+				Burst:     5,
+				ExpiresIn: 3 * time.Minute,
+			}),
+		}))
 		// Mutual friending: requests, accept/decline, the friends
 		// list, and a friend’s own events — same session gating,
 		// account-graph data no less real than the rest of this app.

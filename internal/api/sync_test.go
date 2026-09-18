@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,12 +10,46 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 func newSyncTestEcho(store userStore) *echo.Echo {
 	e := echo.New()
 	NewSyncHandler(store).Register(e)
 	return e
+}
+
+// CountFollows extends fakeUserStore (defined in auth_test.go) the same
+// way SetBcpUserID (me_test.go) does — aggregates across every fake
+// user's own follows map (see auth_test.go's `follows` field) for the
+// requested event, same grouping the real Store's SQL does.
+func (f *fakeUserStore) CountFollows(_ context.Context, eventID string) ([]user.FollowCount, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prefix := eventID + "|"
+	byKey := make(map[string]*user.FollowCount)
+	var order []string
+	for _, userFollows := range f.follows {
+		for key, follow := range userFollows {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			countKey := follow.Kind + ":" + follow.RefID
+			c, exists := byKey[countKey]
+			if !exists {
+				c = &user.FollowCount{Kind: follow.Kind, RefID: follow.RefID}
+				byKey[countKey] = c
+				order = append(order, countKey)
+			}
+			c.Count++
+		}
+	}
+	counts := make([]user.FollowCount, len(order))
+	for i, k := range order {
+		counts[i] = *byKey[k]
+	}
+	return counts, nil
 }
 
 func TestFollows_RequireSignIn(t *testing.T) {
@@ -318,5 +353,108 @@ func TestRoundNote_RejectsNonPositiveRound(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("round %q: status = %d, want %d (body: %s)", round, rec.Code, http.StatusBadRequest, rec.Body.String())
 		}
+	}
+}
+
+// secondSignedInSession signs in a *different* fake account than
+// signedInSession's fixed "sub-1" — needed for TestFollowCounts below to
+// prove counting is across distinct accounts, not just distinct rows for
+// the same one.
+func secondSignedInSession(t *testing.T, store *fakeUserStore) *http.Cookie {
+	t.Helper()
+	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-2", "b@example.com", "Bea Brooks", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	token, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	return &http.Cookie{Name: sessionCookieName, Value: token}
+}
+
+func TestFollowCounts_RequiresSignIn(t *testing.T) {
+	e := newSyncTestEcho(newFakeUserStore())
+	req := httptest.NewRequest(http.MethodGet, "/api/events/evt-1/follow-counts", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestFollowCounts_AggregatesAcrossAccounts(t *testing.T) {
+	store := newFakeUserStore()
+	cookieA, _ := signedInSession(t, store)
+	cookieB := secondSignedInSession(t, store)
+	e := newSyncTestEcho(store)
+
+	addFollow := func(cookie *http.Cookie, body string) {
+		req := httptest.NewRequest(http.MethodPost, "/api/me/events/evt-1/follows", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("AddFollow status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+		}
+	}
+	// Both accounts follow the same team — should count as 2. Only
+	// account A follows a player, and a follow in a *different* event —
+	// neither should show up in evt-1's counts.
+	addFollow(cookieA, `{"kind": "team", "refId": "t1", "label": "Team One"}`)
+	addFollow(cookieB, `{"kind": "team", "refId": "t1", "label": "Team One"}`)
+	addFollow(cookieA, `{"kind": "player", "refId": "p1", "label": "Player One"}`)
+	otherEventReq := httptest.NewRequest(http.MethodPost, "/api/me/events/evt-2/follows", strings.NewReader(`{"kind": "team", "refId": "t1", "label": "Team One"}`))
+	otherEventReq.Header.Set("Content-Type", "application/json")
+	otherEventReq.AddCookie(cookieA)
+	otherEventRec := httptest.NewRecorder()
+	e.ServeHTTP(otherEventRec, otherEventReq)
+	if otherEventRec.Code != http.StatusNoContent {
+		t.Fatalf("AddFollow (other event) status = %d, want %d", otherEventRec.Code, http.StatusNoContent)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events/evt-1/follow-counts", nil)
+	req.AddCookie(cookieA)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var counts map[string]int
+	if err := json.Unmarshal(rec.Body.Bytes(), &counts); err != nil {
+		t.Fatalf("couldn't parse body: %v", err)
+	}
+	if counts["team:t1"] != 2 {
+		t.Errorf("team:t1 count = %d, want 2", counts["team:t1"])
+	}
+	if counts["player:p1"] != 1 {
+		t.Errorf("player:p1 count = %d, want 1", counts["player:p1"])
+	}
+	if _, ok := counts["team:t1-evt2-should-not-leak"]; ok {
+		t.Error("unexpected key leaked from a different event")
+	}
+	if len(counts) != 2 {
+		t.Errorf("counts = %+v, want exactly 2 entries (evt-2's follow must not appear)", counts)
+	}
+}
+
+func TestFollowCounts_EmptyEventReturnsEmptyObject(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+	e := newSyncTestEcho(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events/evt-nobody-follows/follow-counts", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if strings.TrimSpace(rec.Body.String()) != "{}" {
+		t.Errorf("body = %s, want {}", rec.Body.String())
 	}
 }

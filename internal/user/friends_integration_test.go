@@ -11,30 +11,9 @@ import (
 	"testing"
 )
 
-func TestStore_GetUserByBcpUserID(t *testing.T) {
-	store := newTestStore(t)
-	ctx := context.Background()
-	runID := uniqueID(t)
-	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "a@example.com", "Anna", "")
-	if err != nil {
-		t.Fatalf("UpsertUserFromGoogle: %v", err)
-	}
-
-	if _, err := store.GetUserByBcpUserID(ctx, "bcp-"+runID); !errors.Is(err, ErrUserNotFound) {
-		t.Fatalf("GetUserByBcpUserID before linking = %v, want %v", err, ErrUserNotFound)
-	}
-
-	if err := store.SetBcpUserID(ctx, u.ID, "bcp-"+runID); err != nil {
-		t.Fatalf("SetBcpUserID: %v", err)
-	}
-	got, err := store.GetUserByBcpUserID(ctx, "bcp-"+runID)
-	if err != nil {
-		t.Fatalf("GetUserByBcpUserID: %v", err)
-	}
-	if got.ID != u.ID {
-		t.Fatalf("GetUserByBcpUserID returned id %d, want %d", got.ID, u.ID)
-	}
-}
+// TestStore_GetUserByBcpUserID lives in store_integration_test.go (added
+// there by the public-dossiers PR, merged ahead of this one) — not
+// redefined here.
 
 func TestStore_FriendRequestLifecycle(t *testing.T) {
 	store := newTestStore(t)

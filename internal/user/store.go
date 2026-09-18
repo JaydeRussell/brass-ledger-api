@@ -53,6 +53,12 @@ type User struct {
 	// app/lib/theme.ts's AccentTheme type, which this mirrors exactly).
 	// Defaults to "brass" for every account.
 	AccentTheme string
+
+	// DossierPublic is whether this account's player dossier (migration
+	// 0014) is reachable by anyone at GET /api/players/:bcpUserId/dossier
+	// — see internal/api/dossier.go. Defaults to true; SetDossierPublic
+	// is the only way to turn it off.
+	DossierPublic bool
 }
 
 // RoleAdmin and RoleUser are Role's two valid values (also enforced by
@@ -142,8 +148,8 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 				name = EXCLUDED.name,
 				avatar_url = EXCLUDED.avatar_url,
 				last_login_at = now()
-		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, (xmax = 0) AS inserted
-	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &inserted)
+		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, dossier_public, (xmax = 0) AS inserted
+	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic, &inserted)
 	if err != nil {
 		return User{}, false, fmt.Errorf("upserting user: %w", err)
 	}
@@ -171,11 +177,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.accent_theme
+		SELECT u.id, u.email, u.name, u.avatar_url, COALESCE(u.bcp_user_id, ''), u.role, u.status, u.accent_theme, u.dossier_public
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme)
+	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -250,6 +256,19 @@ func (s *Store) SetAccentTheme(ctx context.Context, userID int64, accentTheme st
 	return nil
 }
 
+// SetDossierPublic turns a signed-in account's player dossier visibility
+// on/off — see internal/api/dossier.go's SetDossierVisibility, the only
+// caller, and User.DossierPublic's doc comment.
+func (s *Store) SetDossierPublic(ctx context.Context, userID int64, public bool) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE users SET dossier_public = $1 WHERE id = $2`,
+		public, userID,
+	); err != nil {
+		return fmt.Errorf("setting dossier_public: %w", err)
+	}
+	return nil
+}
+
 // ErrUserNotFound is returned by GetUserByBcpUserID when no account is
 // linked to the given BCP user id.
 var ErrUserNotFound = errors.New("user not found")
@@ -258,7 +277,8 @@ var ErrUserNotFound = errors.New("user not found")
 // Coast Pairings user id — the reverse of the manual link SetBcpUserID
 // records. Used wherever a caller has a bcpUserId in hand (a roster
 // entry, a pairing, a dossier link) and needs to know whether it maps
-// to a Brass Ledger account at all: today, FriendsHandler.SendRequest/
+// to a Brass Ledger account at all: today, GET /api/players/:bcpUserId/
+// dossier (internal/api/dossier.go) and FriendsHandler.SendRequest/
 // Events (internal/api/friends.go) — resolving who to send a friend
 // request to, and whose events a friendship unlocks. bcp_user_id is
 // unique per account in practice (each is set by that account's own
@@ -267,11 +287,11 @@ var ErrUserNotFound = errors.New("user not found")
 func (s *Store) GetUserByBcpUserID(ctx context.Context, bcpUserID string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme
+		SELECT id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, dossier_public
 		FROM users
 		WHERE bcp_user_id = $1
 		LIMIT 1
-	`, bcpUserID).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme)
+	`, bcpUserID).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrUserNotFound
@@ -473,6 +493,46 @@ func (s *Store) RemoveFollow(ctx context.Context, userID int64, eventID, kind, r
 		return fmt.Errorf("removing follow: %w", err)
 	}
 	return nil
+}
+
+// FollowCount is how many distinct accounts follow one team/player
+// within one event — an aggregate, not tied to any particular follower's
+// identity (see CountFollows).
+type FollowCount struct {
+	Kind  string
+	RefID string
+	Count int
+}
+
+// CountFollows returns, for every team/player anyone follows within one
+// event, how many distinct accounts follow it — the "N people tracking
+// this" social-proof feature (internal/api/sync.go's FollowCounts). Pure
+// aggregation over user_follows; never exposes *which* accounts, just a
+// count, the same way a public vote/like count would.
+func (s *Store) CountFollows(ctx context.Context, eventID string) ([]FollowCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT kind, ref_id, count(*)
+		FROM user_follows
+		WHERE event_id = $1
+		GROUP BY kind, ref_id
+	`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("counting follows: %w", err)
+	}
+	defer rows.Close()
+
+	counts := []FollowCount{}
+	for rows.Next() {
+		var c FollowCount
+		if err := rows.Scan(&c.Kind, &c.RefID, &c.Count); err != nil {
+			return nil, fmt.Errorf("scanning follow count: %w", err)
+		}
+		counts = append(counts, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("counting follows: %w", err)
+	}
+	return counts, nil
 }
 
 // ListRecentEvents returns a user's recently-viewed events, most recent

@@ -16,18 +16,9 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
-// GetUserByBcpUserID extends fakeUserStore (defined in auth_test.go) the
-// same way SetBcpUserID (me_test.go) does — the reverse lookup.
-func (f *fakeUserStore) GetUserByBcpUserID(_ context.Context, bcpUserID string) (user.User, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, u := range f.byGoogle {
-		if u.BcpUserID == bcpUserID {
-			return u, nil
-		}
-	}
-	return user.User{}, user.ErrUserNotFound
-}
+// GetUserByBcpUserID's fake is defined once in me_test.go (added there
+// by the public-dossiers PR, merged ahead of this one) — reused as-is
+// rather than redefined here.
 
 // SendFriendRequest mirrors the real store's partial-unique-index
 // behavior (migration 0014): a pending or accepted request already
@@ -159,10 +150,14 @@ func newFriendsTestEcho(store userStore, client *bcp.Client) *echo.Echo {
 	return e
 }
 
-// secondSignedInSession signs in a *different* fake account than
-// signedInSession's fixed "sub-1" — needed throughout this file to
-// exercise two-sided flows (send/accept, friend-gated events).
-func secondSignedInSession(t *testing.T, store *fakeUserStore) (*http.Cookie, int64) {
+// secondSignedInSessionWithUserID signs in a *different* fake account
+// than signedInSession's fixed "sub-1" — needed throughout this file to
+// exercise two-sided flows (send/accept, friend-gated events). Distinct
+// from sync_test.go's own secondSignedInSession (same "sub-2"/"Bea
+// Brooks" fake account, added independently for that file's own
+// two-account follow-count tests) since this one also needs the new
+// account's user id back, which that one's callers never did.
+func secondSignedInSessionWithUserID(t *testing.T, store *fakeUserStore) (*http.Cookie, int64) {
 	t.Helper()
 	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-2", "b@example.com", "Bea Brooks", "")
 	if err != nil {
@@ -251,7 +246,7 @@ func newFullFriendshipFixture(t *testing.T, client *bcp.Client) fullFriendshipFi
 	t.Helper()
 	store := newFakeUserStore()
 	cookieA, userA := signedInSession(t, store)
-	cookieB, userB := secondSignedInSession(t, store)
+	cookieB, userB := secondSignedInSessionWithUserID(t, store)
 	ctx := context.Background()
 	if err := store.SetBcpUserID(ctx, userA, "bcp-a"); err != nil {
 		t.Fatalf("SetBcpUserID (A): %v", err)

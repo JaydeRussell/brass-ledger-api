@@ -48,6 +48,34 @@ func (f *fakeUserStore) SetAccentTheme(_ context.Context, userID int64, accentTh
 	return user.ErrSessionNotFound
 }
 
+// SetDossierPublic extends fakeUserStore the same way SetBcpUserID
+// above does, for MeHandler.SetDossierVisibility's tests.
+func (f *fakeUserStore) SetDossierPublic(_ context.Context, userID int64, public bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for sub, u := range f.byGoogle {
+		if u.ID == userID {
+			u.DossierPublic = public
+			f.byGoogle[sub] = u
+			return nil
+		}
+	}
+	return user.ErrSessionNotFound
+}
+
+// GetUserByBcpUserID extends fakeUserStore for DossierHandler's tests
+// (dossier_test.go) — the reverse lookup of SetBcpUserID above.
+func (f *fakeUserStore) GetUserByBcpUserID(_ context.Context, bcpUserID string) (user.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, u := range f.byGoogle {
+		if u.BcpUserID == bcpUserID {
+			return u, nil
+		}
+	}
+	return user.User{}, user.ErrUserNotFound
+}
+
 // signedInSession signs a fake user in (bypassing the Google flow
 // entirely, since these tests are only about the /api/me/* routes'
 // own logic) and returns a session cookie for them plus their id.
