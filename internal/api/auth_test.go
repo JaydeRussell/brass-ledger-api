@@ -92,6 +92,8 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 		}
 		// Matches the real Store's migration-0009 default.
 		u.AccentTheme = "brass"
+		// Matches the real Store's migration-0014 default.
+		u.DossierPublic = true
 	}
 	u.Email, u.Name, u.AvatarURL = email, name, avatarURL
 	f.byGoogle[googleSub] = u

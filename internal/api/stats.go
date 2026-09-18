@@ -384,7 +384,7 @@ func (h *StatsHandler) Stats(c echo.Context) error {
 		return c.JSON(http.StatusOK, emptyPlayerStatsResponse(false))
 	}
 
-	resp, err := h.statsForBcpUser(c.Request().Context(), u.BcpUserID)
+	resp, err := statsForBcpUser(c.Request().Context(), h.client, u.BcpUserID)
 	if err != nil {
 		return bcpError(c, err)
 	}
@@ -403,7 +403,7 @@ func (h *StatsHandler) PlayerStats(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bcpUserId is required"})
 	}
 
-	resp, err := h.statsForBcpUser(c.Request().Context(), bcpUserID)
+	resp, err := statsForBcpUser(c.Request().Context(), h.client, bcpUserID)
 	if err != nil {
 		return bcpError(c, err)
 	}
@@ -411,16 +411,20 @@ func (h *StatsHandler) PlayerStats(c echo.Context) error {
 }
 
 // statsForBcpUser fetches and aggregates one BCP account's placing
-// history into a playerStatsResponse — the shared body of both Stats
-// and PlayerStats above, which differ only in where bcpUserID comes
-// from (the caller's own linked profile vs. a path param).
-func (h *StatsHandler) statsForBcpUser(ctx context.Context, bcpUserID string) (playerStatsResponse, error) {
-	rawHistory, err := h.client.FetchPlacingHistory(ctx, bcpUserID)
+// history into a playerStatsResponse — the shared body of StatsHandler's
+// Stats and PlayerStats above, which differ only in where bcpUserID
+// comes from (the caller's own linked profile vs. a path param), and of
+// DossierHandler (dossier.go), which wraps this same summary with the
+// linked Brass Ledger account's own name for the public dossier page. A
+// package-level function rather than a method so DossierHandler doesn't
+// need a *StatsHandler dependency just to reuse this one computation.
+func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string) (playerStatsResponse, error) {
+	rawHistory, err := client.FetchPlacingHistory(ctx, bcpUserID)
 	if err != nil {
 		return playerStatsResponse{}, err
 	}
-	history := canonicalPlacingPerEvent(ctx, h.client, rawHistory)
-	infos := eventInfoByID(ctx, h.client, history)
+	history := canonicalPlacingPerEvent(ctx, client, rawHistory)
+	infos := eventInfoByID(ctx, client, history)
 
 	resp := computePlayerStats(history, infos)
 
