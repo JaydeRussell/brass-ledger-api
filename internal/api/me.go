@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 	"github.com/labstack/echo/v4"
 )
@@ -285,10 +287,41 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 		client.InvalidatePlayerEventHistory(bcpUserID)
 	}
 
-	placingHistory, err := client.FetchPlacingHistory(ctx, bcpUserID)
-	if err != nil {
-		return nil, nil, nil, err
+	// The two feeds are independent — neither reads the other's result —
+	// but each is a paginated crawl of up to maxHistoryPages sequential
+	// BCP requests, so running them back to back doubled the wait for no
+	// reason. Concurrently, this endpoint costs the slower of the two
+	// rather than their sum.
+	//
+	// Not more requests to BCP, just not serialised: the same two calls,
+	// overlapped. Both go through internal/bcp's cache, which dedupes
+	// concurrent callers for the same key, so a simultaneous
+	// /api/me/stats still shares this one crawl rather than starting
+	// its own.
+	var (
+		placingHistory []bcp.PlacingHistoryEntry
+		registrations  []bcp.PlayerEventRecord
+		placingErr     error
+		regErr         error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		placingHistory, placingErr = client.FetchPlacingHistory(ctx, bcpUserID)
+	}()
+	go func() {
+		defer wg.Done()
+		registrations, regErr = client.FetchPlayerEventHistory(ctx, bcpUserID)
+	}()
+	wg.Wait()
+	if placingErr != nil {
+		return nil, nil, nil, placingErr
 	}
+	if regErr != nil {
+		return nil, nil, nil, regErr
+	}
+
 	// BCP can score one event under several leagues at once (flagship ITC
 	// plus a separate Hobby Track, say), which would otherwise show up as
 	// the same event listed twice in Past with two different point
@@ -296,10 +329,6 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 	// which this reuses rather than duplicating.
 	client.PrewarmLeagueInfo(ctx, distinctLeagueIDs(placingHistory))
 	placingHistory = canonicalPlacingPerEvent(ctx, client, placingHistory)
-	registrations, err := client.FetchPlayerEventHistory(ctx, bcpUserID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
 
 	concluded := make(map[string]bool, len(placingHistory))
 	for _, p := range placingHistory {

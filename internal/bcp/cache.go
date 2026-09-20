@@ -159,6 +159,22 @@ func (c *Cache[T]) Put(key string, data T, fetchedAt time.Time) {
 	c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt}
 }
 
+// Fresh reports whether key has an entry Get would actually still serve
+// — present *and* within the TTL.
+//
+// Deliberately distinct from FetchedAt, which reports only presence: a
+// stale entry still has a fetchedAt, so a caller using FetchedAt as a
+// "do I already have this?" check silently keeps saying yes forever
+// after the first fetch. That exact mistake made prewarm (durable.go) a
+// no-op after the first 60 seconds of a process's life, which put the
+// per-event N+1 it exists to prevent straight back into every request.
+func (c *Cache[T]) Fresh(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	return ok && time.Since(e.fetchedAt) < c.ttl
+}
+
 // FetchedAt reports when key's cached entry was last actually fetched
 // from BCP, without triggering a fetch itself — the "last updated"
 // timestamp a caller can surface to the frontend. ok is false if there's

@@ -108,7 +108,9 @@ func prewarm[T any](
 	keys := make([]string, 0, len(ids))
 	keyToID := make(map[string]string, len(ids))
 	for _, id := range ids {
-		if _, cached := cache.FetchedAt(id); cached {
+		// Fresh, not FetchedAt: a stale-but-present entry is exactly
+		// what this needs to reload, and FetchedAt says yes to those.
+		if cache.Fresh(id) {
 			continue
 		}
 		key := durableKey(id)

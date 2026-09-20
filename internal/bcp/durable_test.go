@@ -580,3 +580,81 @@ func TestPrewarmLeagueInfo_ServesTheFlagshipLookupFromOneQuery(t *testing.T) {
 		t.Errorf("league-itc = %+v, want the prewarmed flagship league", itc)
 	}
 }
+
+func TestPrewarmEventInfo_StillBatchesOnceTheInMemoryEntriesGoStale(t *testing.T) {
+	// The regression this exists for: prewarm used to skip any id the
+	// in-memory cache had *ever* held, because it asked FetchedAt (which
+	// reports presence) instead of Fresh (which reports presence within
+	// the TTL). Past the TTL the entries are stale but still present, so
+	// prewarm issued no query at all and every id fell through to its own
+	// sequential durable read — the exact N+1 prewarm exists to prevent,
+	// silently, after the first 60 seconds of a process's life.
+	fake := newFakeDurableCache()
+	ids := []string{"evt-1", "evt-2", "evt-3"}
+	for _, id := range ids {
+		fake.data[eventInfoDurableKey(id)] = fakeDurableCacheEntry{
+			raw:     []byte(`{"id":"` + id + `","name":"Concluded ` + id + `","ended":true}`),
+			version: CacheSchemaVersion,
+		}
+	}
+
+	client := NewClientWithBaseURL(failingServer(t).URL)
+	client.SetDurableCache(fake)
+
+	client.PrewarmEventInfo(context.Background(), ids)
+	if fake.getManyCalls != 1 {
+		t.Fatalf("GetMany called %d times on the first prewarm, want 1", fake.getManyCalls)
+	}
+
+	// Age every seeded entry past the cache's TTL, as the clock would.
+	for _, id := range ids {
+		at, ok := client.eventInfo.FetchedAt(id)
+		if !ok {
+			t.Fatalf("expected %s to be seeded in memory after prewarm", id)
+		}
+		client.eventInfo.Put(id, mustEventInfo(t, client, id), at.Add(-2*minRefetchInterval))
+	}
+
+	client.PrewarmEventInfo(context.Background(), ids)
+	if fake.getManyCalls != 2 {
+		t.Errorf("GetMany called %d times total, want 2 — stale entries must be re-batched, not skipped", fake.getManyCalls)
+	}
+}
+
+func mustEventInfo(t *testing.T, c *Client, id string) EventInfo {
+	t.Helper()
+	info, err := c.FetchEventInfo(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FetchEventInfo(%s): %v", id, err)
+	}
+	return info
+}
+
+func TestCacheFresh_DistinguishesStaleFromAbsent(t *testing.T) {
+	calls := 0
+	c := NewCacheWithTTL(func(_ context.Context, key string) (string, error) {
+		calls++
+		return "v", nil
+	}, minRefetchInterval)
+
+	if c.Fresh("k") {
+		t.Error("Fresh reported true for a key that was never fetched")
+	}
+	if _, err := c.Get(context.Background(), "k"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !c.Fresh("k") {
+		t.Error("Fresh reported false immediately after a successful fetch")
+	}
+
+	// Age it past the TTL: still present (FetchedAt says so), no longer
+	// fresh (Get would refetch).
+	at, _ := c.FetchedAt("k")
+	c.Put("k", "v", at.Add(-2*minRefetchInterval))
+	if _, present := c.FetchedAt("k"); !present {
+		t.Error("FetchedAt should still report a stale entry as present")
+	}
+	if c.Fresh("k") {
+		t.Error("Fresh reported true for an entry past its TTL — this is the bug that made prewarm a no-op")
+	}
+}
