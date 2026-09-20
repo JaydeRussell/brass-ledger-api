@@ -17,6 +17,12 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// migrateLockID identifies the Postgres advisory lock Migrate holds
+// while it works. An arbitrary but stable constant — advisory locks
+// share one namespace per database, and nothing else in this project
+// takes one.
+const migrateLockID int64 = 8064213 // "brass-ledger migrations"
+
 // Migrate applies every embedded migration that hasn't run yet, in
 // filename order (hence the 0001_, 0002_... prefixes — name new ones
 // accordingly), each inside its own transaction. Deliberately minimal —
@@ -33,7 +39,33 @@ var migrationsFS embed.FS
 // this deploys to sleeps after ten minutes idle, so "every process
 // start" means most real visits — it was pure cold-start latency.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	// Everything below runs on one connection, holding an advisory lock,
+	// because migrating is not safe to do concurrently: CREATE TABLE IF
+	// NOT EXISTS is not atomic against another session creating the same
+	// table (Postgres raises a duplicate-key error on its own catalog),
+	// and two processes that both read an empty schema_migrations will
+	// both decide every migration is pending and both try to apply it.
+	//
+	// That's reachable in CI, where two integration test packages migrate
+	// the same fresh database at once — `go test` runs packages in
+	// parallel — and in principle at boot if more than one container
+	// instance ever starts together. The lock is per-database and
+	// released by the deferred unlock below (and by the session ending,
+	// if this process dies holding it).
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring a connection for migrations: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockID); err != nil {
+		return fmt.Errorf("taking the migration lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockID)
+	}()
+
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version    TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -47,13 +79,13 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("listing embedded migrations: %w", err)
 	}
 
-	applied, err := appliedVersions(ctx, pool)
+	applied, err := appliedVersions(ctx, conn)
 	if err != nil {
 		return err
 	}
 
 	for _, path := range pendingMigrations(paths, applied) {
-		if err := applyMigration(ctx, pool, path); err != nil {
+		if err := applyMigration(ctx, conn, path); err != nil {
 			return err
 		}
 	}
@@ -65,8 +97,8 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 // schema_migrations. Reading the whole column is fine at this schema's
 // size (one short row per migration ever written) and is what replaces
 // the per-file existence check.
-func appliedVersions(ctx context.Context, pool *pgxpool.Pool) (map[string]struct{}, error) {
-	rows, err := pool.Query(ctx, `SELECT version FROM schema_migrations`)
+func appliedVersions(ctx context.Context, conn *pgxpool.Conn) (map[string]struct{}, error) {
+	rows, err := conn.Query(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {
 		return nil, fmt.Errorf("listing applied migrations: %w", err)
 	}
@@ -110,13 +142,13 @@ func pendingMigrations(paths []string, applied map[string]struct{}) []string {
 	return pending
 }
 
-func applyMigration(ctx context.Context, pool *pgxpool.Pool, path string) error {
+func applyMigration(ctx context.Context, conn *pgxpool.Conn, path string) error {
 	sqlBytes, err := migrationsFS.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading migration %s: %w", path, err)
 	}
 
-	tx, err := pool.Begin(ctx)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction for migration %s: %w", path, err)
 	}
