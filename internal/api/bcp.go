@@ -2,10 +2,16 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
 // BCPHandler wires up every BCP-backed endpoint the frontend uses —
@@ -63,6 +69,56 @@ func (h *BCPHandler) Players(c echo.Context) error {
 	return c.JSON(http.StatusOK, players)
 }
 
+// maxConcurrentRounds bounds how many of a multi-round pairings request
+// are fetched from BCP at once.
+//
+// Same reasoning and same low number as me.go's maxConcurrentEventInfo:
+// the request count is identical either way — these are the same rounds
+// that used to be fetched one per HTTP request — but BCP shouldn't see
+// one page load as a burst. What this replaces is worse than a burst
+// anyway: the frontend was walking rounds in a serial `await` loop, so
+// a five-round event meant five sequential browser round trips before
+// anything rendered.
+const maxConcurrentRounds = 3
+
+// parseRounds reads either ?round=N or ?rounds=1,2,3 into a de-duplicated,
+// ordered list. Both spellings are supported: the round board asks for
+// exactly one, while "my pairings" and the placings round strip want a
+// whole event's worth in a single call.
+func parseRounds(c echo.Context) ([]int, error) {
+	raw := c.QueryParam("rounds")
+	if raw == "" {
+		raw = c.QueryParam("round")
+	}
+	if raw == "" {
+		return nil, fmt.Errorf(`"round" or "rounds" query param is required`)
+	}
+
+	seen := make(map[int]bool)
+	rounds := make([]int, 0, 8)
+	for _, part := range strings.Split(raw, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf(`each round must be a positive integer, got %q`, part)
+		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		rounds = append(rounds, n)
+	}
+	if len(rounds) > maxRoundsPerRequest {
+		return nil, fmt.Errorf("at most %d rounds per request, got %d", maxRoundsPerRequest, len(rounds))
+	}
+	return rounds, nil
+}
+
+// maxRoundsPerRequest caps one request's fan-out. Real events run to
+// about eight rounds; this is a guard against a crafted URL turning one
+// request into an unbounded crawl of BCP, not a limit anyone should
+// reach.
+const maxRoundsPerRequest = 20
+
 // Pairings is GET /api/events/:id/pairings. ?refresh=true forces a real
 // BCP check instead of serving the normal cache — the frontend's
 // RoundBoard "check for updated pairings" button (see
@@ -76,23 +132,80 @@ func (h *BCPHandler) Pairings(c echo.Context) error {
 			"error": `"type" query param must be "Pairing" or "TeamPairing"`,
 		})
 	}
-	round, err := strconv.Atoi(c.QueryParam("round"))
-	if err != nil || round < 1 {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": `"round" query param must be a positive integer`,
-		})
+	rounds, err := parseRounds(c)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
+	eventID := c.Param("id")
 	if c.QueryParam("refresh") == "true" {
-		h.client.InvalidateRoundPairings(c.Param("id"), pairingType, round)
+		for _, round := range rounds {
+			h.client.InvalidateRoundPairings(eventID, pairingType, round)
+		}
 	}
 
-	records, err := h.client.FetchRoundPairings(c.Request().Context(), c.Param("id"), pairingType, round)
+	records, err := h.fetchRounds(c.Request().Context(), eventID, pairingType, rounds)
 	if err != nil {
 		return bcpError(c, err)
 	}
 	cacheFor(c, false)
 	return c.JSON(http.StatusOK, records)
+}
+
+// fetchRounds resolves every requested round, a few at a time, and
+// returns them as one flat list.
+//
+// Each record is stamped with the round it was fetched for when BCP
+// didn't set one itself: PairingRecord.Round is a nullable field on
+// their side, and a caller that asked for several rounds at once has no
+// other way to tell them apart. Stamping what we asked for is not an
+// inference — it is the only thing here we know for certain.
+//
+// One round failing fails the whole request, unlike the tolerate-and-
+// skip paths elsewhere in this service. A partial pairings board is
+// worse than an error: it looks like rounds that haven't happened yet.
+func (h *BCPHandler) fetchRounds(ctx context.Context, eventID, pairingType string, rounds []int) ([]bcp.PairingRecord, error) {
+	perRound := make([][]bcp.PairingRecord, len(rounds))
+	errs := make([]error, len(rounds))
+
+	sem := make(chan struct{}, maxConcurrentRounds)
+	var wg sync.WaitGroup
+	for i, round := range rounds {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			records, err := h.client.FetchRoundPairings(ctx, eventID, pairingType, round)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			for j := range records {
+				if records[j].Round == nil {
+					r := round
+					records[j].Round = &r
+				}
+			}
+			perRound[i] = records
+		}()
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Flattened in the order asked for, not completion order, so the
+	// response is stable.
+	out := make([]bcp.PairingRecord, 0, len(rounds)*8)
+	for _, records := range perRound {
+		out = append(out, records...)
+	}
+	return out, nil
 }
 
 // Placings is GET /api/events/:id/placings. ?refresh=true forces a real
