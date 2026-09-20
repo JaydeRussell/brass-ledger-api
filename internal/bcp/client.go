@@ -32,6 +32,36 @@ const (
 // directly rather than waiting it out.
 const myEventsRefetchInterval = 48 * time.Hour
 
+// itcRankingRefetchInterval is the TTL for one player's season-long ITC
+// ranking within a league — and, with the durable cache behind it (see
+// itc.go), the single biggest reduction in BCP traffic this client
+// makes.
+//
+// It was on the default 60 seconds, which is the right answer for
+// something that moves round by round and completely the wrong one
+// here. An ITC ranking is a season aggregate: it changes when an event
+// concludes and BCP processes its results into the league standings,
+// never during the event itself. So the rankings shown on an event
+// page — one per player on the roster — cannot change while anyone is
+// looking at that page.
+//
+// What made the old TTL worse than it looks: the container sleeps after
+// ten minutes idle, so an in-memory-only entry rarely survived to be
+// reused at all. An event page for a team event resolves a whole
+// roster's rankings, one BCP request each, and paid nearly all of them
+// again on the next visit. There is no batch form to soften that —
+// BCP's /placings honours exactly one userId[] (repeated, comma-joined
+// and userIds[] forms were all tested against the real API on
+// 2026-09-20; none filter), so the only lever is not asking again.
+//
+// Twelve hours rather than something longer: a player who has just
+// finished an event will look for their new ranking that evening, and
+// the failure mode of being too generous here is showing someone a
+// stale number for their own result. Same reason it isn't as long as
+// myEventsRefetchInterval above, which covers data the user has an
+// explicit refresh button for.
+const itcRankingRefetchInterval = 12 * time.Hour
+
 // Client is this service's connection to BCP's undocumented API,
 // wrapping each kind of call in its own Cache (see cache.go) so every
 // caller of this service — every browser, not just one — shares the
@@ -171,13 +201,13 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 		return c.fetchPlacingsUncached(ctx, eventID, teamEvent)
 	})
 	// Keyed by "leagueId:bcpUserId" — see FetchItcRanking.
-	c.itcRanking = NewCache(func(ctx context.Context, key string) (*ItcRanking, error) {
+	c.itcRanking = NewCacheWithTTL(func(ctx context.Context, key string) (*ItcRanking, error) {
 		leagueID, bcpUserID, err := splitItcRankingKey(key)
 		if err != nil {
 			return nil, err
 		}
 		return c.fetchItcRankingUncached(ctx, leagueID, bcpUserID)
-	})
+	}, itcRankingRefetchInterval)
 	c.playerEventHistory = NewCacheWithTTL(func(ctx context.Context, bcpUserID string) ([]PlayerEventRecord, error) {
 		return c.fetchPlayerEventHistoryUncached(ctx, bcpUserID)
 	}, myEventsRefetchInterval)

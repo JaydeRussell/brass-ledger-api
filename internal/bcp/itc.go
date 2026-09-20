@@ -131,7 +131,34 @@ func splitItcRankingKey(key string) (leagueID, bcpUserID string, err error) {
 	return leagueID, bcpUserID, nil
 }
 
+func itcRankingDurableKey(leagueID, bcpUserID string) string {
+	return "itc:" + leagueID + ":" + bcpUserID
+}
+
+// itcRankingCacheEntry wraps the stored value so "we asked, and this
+// player has no ranking in this league" is a cacheable answer rather
+// than indistinguishable from "we never asked".
+//
+// That distinction is the whole point of storing it: a nil ranking is a
+// perfectly normal result (a player who hasn't scored in this league
+// yet), and without somewhere to record it, every one of them costs a
+// real BCP request on every page load, forever — a tolerated
+// non-failure with the same cost as a tolerated failure. See
+// CLAUDE.md's note on that, and goneTTL in cache.go for the 404 case.
+type itcRankingCacheEntry struct {
+	Ranking *ItcRanking `json:"ranking"`
+}
+
 func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserID string) (*ItcRanking, error) {
+	durableKey := itcRankingDurableKey(leagueID, bcpUserID)
+	if c.durable != nil {
+		var stored itcRankingCacheEntry
+		found, _, err := c.durable.GetFresh(ctx, durableKey, CacheSchemaVersion, itcRankingRefetchInterval, &stored)
+		if err == nil && found {
+			return stored.Ranking, nil
+		}
+	}
+
 	// Built by hand (not url.Values) to keep the literal "userId[]" this
 	// endpoint actually honors — url.Values.Encode would percent-encode
 	// the brackets, which BCP's API does not treat the same way.
@@ -145,7 +172,18 @@ func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserI
 		return nil, err
 	}
 
+	// Persisted before the "no ranking" early returns below as well as
+	// after a real hit — see itcRankingCacheEntry. A failed write just
+	// means this gets asked of BCP again next time, which is the old
+	// behaviour and not worth failing a request over.
+	store := func(r *ItcRanking) {
+		if c.durable != nil {
+			_ = c.durable.Set(ctx, durableKey, CacheSchemaVersion, itcRankingCacheEntry{Ranking: r})
+		}
+	}
+
 	if len(body.Data) == 0 {
+		store(nil)
 		return nil, nil
 	}
 	record := body.Data[0]
@@ -153,16 +191,19 @@ func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserI
 	// than an empty array or an error — that's this player having no
 	// ranking in this league yet, not a failure.
 	if record.UserID == "" || record.ITCPoints == nil {
+		store(nil)
 		return nil, nil
 	}
 
-	return &ItcRanking{
+	ranking := &ItcRanking{
 		Points:  *record.ITCPoints,
 		Placing: record.Placing,
 		Wins:    record.Wins,
 		Losses:  record.Losses,
 		Ties:    record.Ties,
-	}, nil
+	}
+	store(ranking)
+	return ranking, nil
 }
 
 // FetchItcRanking returns one player's cached, rate-limited ITC ranking
