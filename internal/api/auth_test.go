@@ -290,7 +290,7 @@ func newTestEchoWithAdmins(google *auth.GoogleOAuth, store userStore, adminEmail
 // recorded calls afterward.
 func newTestEchoWithNotifier(google *auth.GoogleOAuth, store userStore, adminEmails []string, notifier signupNotifier) *echo.Echo {
 	e := echo.New()
-	NewAuthHandler(google, store, frontendURL, false, adminEmails, notifier).Register(e)
+	NewAuthHandler(google, store, frontendURL, false, adminEmails, notifier, "").Register(e)
 	return e
 }
 
@@ -782,5 +782,135 @@ func TestMe_NotSignedIn(t *testing.T) {
 				t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 			}
 		})
+	}
+}
+
+// --- Session cookie Domain (SESSION_COOKIE_DOMAIN) --------------------
+
+func newAuthEchoWithCookieDomain(t *testing.T, store userStore, domain string) *echo.Echo {
+	t.Helper()
+	google := stubGoogleServer(t, `{"access_token": "tok"}`, `{"sub": "sub-1", "email": "a@b.com"}`)
+	e := echo.New()
+	NewAuthHandler(google, store, frontendURL, false, nil, &fakeNotifier{}, domain).Register(e)
+	return e
+}
+
+// setCookiesFor pulls the Set-Cookie headers a response wrote for one
+// cookie name.
+func setCookiesFor(rec *httptest.ResponseRecorder, name string) []*http.Cookie {
+	var out []*http.Cookie
+	for _, c := range (&http.Response{Header: rec.Header()}).Cookies() {
+		if c.Name == name {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestLogout_RevokesEverySessionCookieShape is the one that matters
+// most in this file.
+//
+// While the host-only and domain-scoped cookies can coexist, a browser
+// can send two. Revoking only the first leaves the other a working
+// session belonging to somebody who just asked to be signed out, and
+// expiring only one shape leaves its cookie in place to keep sending.
+// A sign-out that doesn't sign you out is worse than no sign-out
+// button, because it looks like it worked.
+func TestLogout_RevokesEverySessionCookieShape(t *testing.T) {
+	store := newFakeUserStore()
+	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-1", "a@b.com", "A B", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	stale, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	live, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	e := newAuthEchoWithCookieDomain(t, store, "brass-ledger.app")
+	rec := doRequest(e, http.MethodPost, "/auth/logout", []*http.Cookie{
+		{Name: sessionCookieName, Value: stale},
+		{Name: sessionCookieName, Value: live},
+	})
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("logout status = %d, want 204", rec.Code)
+	}
+
+	for label, token := range map[string]string{"stale": stale, "live": live} {
+		if _, err := store.GetUserBySession(context.Background(), token); err == nil {
+			t.Errorf("the %s session still resolves after logout — every token the request "+
+				"carried has to be revoked, not just the first", label)
+		}
+	}
+
+	cleared := setCookiesFor(rec, sessionCookieName)
+	if len(cleared) != 2 {
+		t.Fatalf("logout wrote %d session cookies, want 2 (host-only and domain-scoped)", len(cleared))
+	}
+	var sawHostOnly, sawScoped bool
+	for _, c := range cleared {
+		if c.MaxAge >= 0 {
+			t.Errorf("logout wrote a session cookie with MaxAge %d, want it expired", c.MaxAge)
+		}
+		if c.Domain == "" {
+			sawHostOnly = true
+		} else {
+			sawScoped = true
+		}
+	}
+	if !sawHostOnly || !sawScoped {
+		t.Errorf("logout cleared host-only=%t scoped=%t; it must expire both, or the surviving "+
+			"one keeps the user signed in", sawHostOnly, sawScoped)
+	}
+}
+
+// TestSessionResolvesWhicheverCookieWorks — with two shapes in play the
+// browser's ordering is arbitrary, so picking the first by position
+// would sign a user out roughly half the time for no diagnosable
+// reason.
+func TestSessionResolvesWhicheverCookieWorks(t *testing.T) {
+	store := newFakeUserStore()
+	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-1", "a@b.com", "A B", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	live, err := store.CreateSession(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	e := newAuthEchoWithCookieDomain(t, store, "brass-ledger.app")
+
+	for _, order := range [][]*http.Cookie{
+		{{Name: sessionCookieName, Value: "expired-and-gone"}, {Name: sessionCookieName, Value: live}},
+		{{Name: sessionCookieName, Value: live}, {Name: sessionCookieName, Value: "expired-and-gone"}},
+	} {
+		rec := doRequest(e, http.MethodGet, "/api/me", order)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET /api/me = %d with a dead cookie listed %s the live one, want 200",
+				rec.Code, map[bool]string{true: "before", false: "after"}[order[0].Value != live])
+		}
+	}
+}
+
+// TestSessionCookieDomain_OnlyTheSessionCookieIsWidened — the OAuth
+// state cookies live for ten minutes and exist solely for one redirect
+// back to this service. Nothing else has any business receiving them.
+func TestSessionCookieDomain_OnlyTheSessionCookieIsWidened(t *testing.T) {
+	e := newAuthEchoWithCookieDomain(t, newFakeUserStore(), "brass-ledger.app")
+
+	rec := doRequest(e, http.MethodGet, "/auth/google/login", nil)
+
+	for _, name := range []string{stateCookieName, returnToCookieName} {
+		for _, c := range setCookiesFor(rec, name) {
+			if c.Domain != "" {
+				t.Errorf("%s was scoped to %q; only the session cookie is ever widened",
+					name, c.Domain)
+			}
+		}
 	}
 }

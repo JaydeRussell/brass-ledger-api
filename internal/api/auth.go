@@ -112,6 +112,11 @@ type AuthHandler struct {
 	// Callback. A no-op implementation if Resend isn't configured (see
 	// internal/notify.ResendNotifier.enabled), never nil.
 	notifier signupNotifier
+	// sessionCookieDomain, when set, scopes the session cookie to a
+	// parent domain so the frontend's own host can read it during
+	// server-side render. Empty means host-only, which is the default
+	// and what local development uses. See SESSION_COOKIE_DOMAIN.
+	sessionCookieDomain string
 }
 
 // NewAuthHandler builds an AuthHandler.
@@ -120,17 +125,18 @@ type AuthHandler struct {
 // for local http://localhost development — browsers refuse to store a
 // Secure cookie at all over plain HTTP, which would otherwise silently
 // break sign-in locally.
-func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool, adminEmails []string, notifier signupNotifier) *AuthHandler {
+func NewAuthHandler(google *auth.GoogleOAuth, store userStore, frontendURL string, cookieSecure bool, adminEmails []string, notifier signupNotifier, sessionCookieDomain string) *AuthHandler {
 	return &AuthHandler{
 		google: google,
 		store:  store,
 		// Normalized once here rather than trusting callers/config not to
 		// include one — a trailing slash would otherwise turn
 		// frontendURL+"/welcome" into a double slash.
-		frontendURL:  strings.TrimSuffix(frontendURL, "/"),
-		cookieSecure: cookieSecure,
-		adminEmails:  adminEmails,
-		notifier:     notifier,
+		frontendURL:         strings.TrimSuffix(frontendURL, "/"),
+		cookieSecure:        cookieSecure,
+		adminEmails:         adminEmails,
+		notifier:            notifier,
+		sessionCookieDomain: sessionCookieDomain,
 	}
 }
 
@@ -247,7 +253,7 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	}
 
 	log.Printf("google callback: signed in user %d (%s)", u.ID, u.Email)
-	setCookie(c, sessionCookieName, sessionToken, user.SessionDuration, h.cookieSecure)
+	setSessionCookie(c, sessionToken, user.SessionDuration, h.cookieSecure, h.sessionCookieDomain)
 
 	redirectTo := h.frontendURL
 	switch {
@@ -276,14 +282,18 @@ func isAdminEmail(email string, adminEmails []string) bool {
 
 // Logout is POST /auth/logout: ends the caller's session.
 func (h *AuthHandler) Logout(c echo.Context) error {
-	if cookie, err := c.Cookie(sessionCookieName); err == nil {
+	// Every token the request carries, not just the first. While the
+	// host-only and domain-scoped cookies can coexist, a browser may
+	// send two — and revoking one of them leaves the other a working
+	// session belonging to someone who just asked to be signed out.
+	for _, token := range sessionTokens(c) {
 		// Best-effort: whether or not the row still existed, the
 		// caller's desired end state (no valid session) now holds.
-		if err := h.store.DeleteSession(c.Request().Context(), cookie.Value); err != nil {
+		if err := h.store.DeleteSession(c.Request().Context(), token); err != nil {
 			log.Printf("logout: deleting session failed (proceeding anyway): %v", err)
 		}
 	}
-	clearCookie(c, sessionCookieName, h.cookieSecure)
+	clearSessionCookie(c, h.cookieSecure, h.sessionCookieDomain)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -296,12 +306,8 @@ func (h *AuthHandler) Me(c echo.Context) error {
 	// which changes the moment an admin approves an account and is the
 	// first thing every gated page waits on.
 	noCache(c)
-	cookie, err := c.Cookie(sessionCookieName)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-	}
-	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
-	if err != nil {
+	u, ok := resolveSession(c, h.store)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 	}
 	return c.JSON(http.StatusOK, map[string]any{
@@ -332,12 +338,8 @@ func (h *AuthHandler) Me(c echo.Context) error {
 func RequireSession(store userStore) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			cookie, err := c.Cookie(sessionCookieName)
-			if err != nil {
-				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-			}
-			u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
-			if err != nil {
+			u, ok := resolveSession(c, store)
+			if !ok {
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 			}
 			c.Set(contextKeyUser, u)
@@ -370,6 +372,88 @@ func RequireApproved(store userStore) echo.MiddlewareFunc {
 }
 
 const contextKeyUser = "user"
+
+// setSessionCookie writes the session cookie, optionally scoped to a
+// parent domain so the frontend's own host can read it during render
+// (see SESSION_COOKIE_DOMAIN in internal/config).
+//
+// Only this cookie is ever widened. The 10-minute oauth_state and
+// oauth_return_to cookies stay host-only: they exist for the duration
+// of one redirect back to this service and nothing else has any
+// business seeing them.
+func setSessionCookie(c echo.Context, value string, maxAge time.Duration, secure bool, domain string) {
+	c.SetCookie(&http.Cookie{
+		Name:     sessionCookieName,
+		Value:    value,
+		Path:     "/",
+		Domain:   domain,
+		MaxAge:   int(maxAge / time.Second),
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// clearSessionCookie expires the session cookie in BOTH shapes — the
+// host-only one and the domain-scoped one.
+//
+// Not belt and braces. A Set-Cookie carrying a Domain does not replace
+// a host-only cookie of the same name, so once this service starts
+// issuing scoped cookies a browser can hold one of each: an older
+// host-only cookie that predates the change, and the scoped one. Expire
+// only one and the other survives, which means a person who clicks
+// sign out is still signed in. Clearing both is the only version of
+// this that is actually a sign-out.
+func clearSessionCookie(c echo.Context, secure bool, domain string) {
+	clearCookie(c, sessionCookieName, secure)
+	if domain != "" {
+		c.SetCookie(&http.Cookie{
+			Name:     sessionCookieName,
+			Value:    "",
+			Path:     "/",
+			Domain:   domain,
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+		})
+	}
+}
+
+// resolveSession returns the user for the first session cookie on the
+// request that actually resolves to a live session.
+//
+// "First that resolves" rather than "first that exists" is what makes
+// two coexisting cookie shapes harmless instead of ambiguous. A browser
+// holding a stale host-only cookie alongside a live scoped one sends
+// both in an arbitrary order; picking the first by position would sign
+// the user out roughly half the time, for no reason they could
+// possibly diagnose.
+func resolveSession(c echo.Context, store userStore) (user.User, bool) {
+	for _, token := range sessionTokens(c) {
+		if u, err := store.GetUserBySession(c.Request().Context(), token); err == nil {
+			return u, true
+		}
+	}
+	return user.User{}, false
+}
+
+// sessionTokens returns every value the request carries under the
+// session cookie name, in the order the browser sent them.
+//
+// echo's c.Cookie returns only the first match, which is not enough
+// while two shapes can coexist: the first one the browser happens to
+// list may be the stale host-only cookie while the live session is the
+// scoped one, or the other way round. Callers try them in turn.
+func sessionTokens(c echo.Context) []string {
+	var tokens []string
+	for _, cookie := range c.Request().Cookies() {
+		if cookie.Name == sessionCookieName && cookie.Value != "" {
+			tokens = append(tokens, cookie.Value)
+		}
+	}
+	return tokens
+}
 
 func setCookie(c echo.Context, name, value string, maxAge time.Duration, secure bool) {
 	c.SetCookie(&http.Cookie{

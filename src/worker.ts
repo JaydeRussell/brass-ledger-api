@@ -11,6 +11,7 @@ interface Env {
   GOOGLE_REDIRECT_URL: string;
   FRONTEND_BASE_URL: string;
   COOKIE_SECURE: string;
+  SESSION_COOKIE_DOMAIN: string;
   EMAIL_FROM_ADDRESS: string;
   // Secrets, set via `wrangler secret put <NAME>` — never in
   // wrangler.jsonc.
@@ -38,6 +39,11 @@ export class BackendContainer extends Container<Env> {
     GOOGLE_REDIRECT_URL: this.env.GOOGLE_REDIRECT_URL,
     FRONTEND_BASE_URL: this.env.FRONTEND_BASE_URL,
     COOKIE_SECURE: this.env.COOKIE_SECURE,
+    // Forwarded explicitly, like everything else here: this list is
+    // the whole contract between wrangler.jsonc's vars and the Go
+    // process. A setting missing from it is silently ignored rather
+    // than failing, so the feature just quietly does nothing.
+    SESSION_COOKIE_DOMAIN: this.env.SESSION_COOKIE_DOMAIN,
     ADMIN_EMAILS: this.env.ADMIN_EMAILS,
     EMAIL_FROM_ADDRESS: this.env.EMAIL_FROM_ADDRESS,
     RESEND_API_KEY: this.env.RESEND_API_KEY,
