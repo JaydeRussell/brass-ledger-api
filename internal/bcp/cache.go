@@ -34,6 +34,12 @@ var minManualInvalidateInterval = 2 * time.Second
 type cacheEntry[T any] struct {
 	data      T
 	fetchedAt time.Time
+	// This entry's own lifetime. Usually the Cache's default, but a
+	// cache built with NewCacheWithValueTTL can give each entry a
+	// lifetime derived from the value itself — see eventInfoTTL in
+	// client.go, where an event starting next month is worth holding on
+	// to far longer than one currently being played.
+	ttl time.Duration
 }
 
 // inflight represents a fetch already in progress for a given key — a
@@ -57,6 +63,9 @@ type Cache[T any] struct {
 	inFlight map[string]*inflight[T]
 	fetch    func(ctx context.Context, key string) (T, error)
 	ttl      time.Duration
+	// Optional. Given a freshly fetched value, returns how long it's
+	// worth keeping; a non-positive result falls back to ttl.
+	ttlFor func(T) time.Duration
 }
 
 // NewCache builds a Cache backed by fetch, using the default
@@ -77,12 +86,44 @@ func NewCache[T any](fetch func(ctx context.Context, key string) (T, error)) *Ca
 // way live pairings/standings do. Concurrent callers for the same key
 // still share a single underlying fetch, exactly as NewCache.
 func NewCacheWithTTL[T any](fetch func(ctx context.Context, key string) (T, error), ttl time.Duration) *Cache[T] {
+	return NewCacheWithValueTTL(fetch, ttl, nil)
+}
+
+// NewCacheWithValueTTL builds a Cache whose entries can each live for a
+// different length of time, decided by ttlFor from the value itself.
+// Pass nil for ttlFor to get a plain fixed-TTL cache.
+//
+// This exists because "how long is this still true?" isn't always a
+// property of the *kind* of thing fetched, but of the particular thing:
+// an event starting in six weeks isn't going to change in the next hour,
+// while one being played right now changes every round. Caching both for
+// the same 60 seconds means either re-fetching the first pointlessly or
+// serving the second stale — see eventInfoTTL in client.go.
+//
+// ttlFor is called while the cache's lock is held, so it must be quick
+// and must not call back into the cache.
+func NewCacheWithValueTTL[T any](
+	fetch func(ctx context.Context, key string) (T, error),
+	ttl time.Duration,
+	ttlFor func(T) time.Duration,
+) *Cache[T] {
 	return &Cache[T]{
 		entries:  make(map[string]cacheEntry[T]),
 		inFlight: make(map[string]*inflight[T]),
 		fetch:    fetch,
 		ttl:      ttl,
+		ttlFor:   ttlFor,
 	}
+}
+
+// ttlOf is this cache's lifetime for a particular value.
+func (c *Cache[T]) ttlOf(v T) time.Duration {
+	if c.ttlFor != nil {
+		if d := c.ttlFor(v); d > 0 {
+			return d
+		}
+	}
+	return c.ttl
 }
 
 // Get returns the cached value for key, fetching (or joining an
@@ -91,7 +132,7 @@ func NewCacheWithTTL[T any](fetch func(ctx context.Context, key string) (T, erro
 // an error for a full TTL.
 func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < c.ttl {
+	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < e.ttl {
 		c.mu.Unlock()
 		return e.data, nil
 	}
@@ -109,7 +150,7 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 
 	c.mu.Lock()
 	if err == nil {
-		c.entries[key] = cacheEntry[T]{data: data, fetchedAt: time.Now()}
+		c.entries[key] = cacheEntry[T]{data: data, fetchedAt: time.Now(), ttl: c.ttlOf(data)}
 	}
 	delete(c.inFlight, key)
 	c.mu.Unlock()
@@ -156,7 +197,7 @@ func (c *Cache[T]) Invalidate(key string) bool {
 func (c *Cache[T]) Put(key string, data T, fetchedAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt}
+	c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt, ttl: c.ttlOf(data)}
 }
 
 // Fresh reports whether key has an entry Get would actually still serve
@@ -172,7 +213,7 @@ func (c *Cache[T]) Fresh(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
-	return ok && time.Since(e.fetchedAt) < c.ttl
+	return ok && time.Since(e.fetchedAt) < e.ttl
 }
 
 // FetchedAt reports when key's cached entry was last actually fetched
