@@ -288,7 +288,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	// README's "Running locally" section for how to set it up.
 	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" {
 		google := auth.NewGoogleOAuth(cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL)
-		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails, notifier).Register(e)
+		api.NewAuthHandler(google, userStore, cfg.FrontendBaseURL, cfg.CookieSecure, cfg.AdminEmails, notifier, cfg.SessionCookieDomain).Register(e)
 		// The BCP-profile-link + "my events" routes are session-gated (see
 		// internal/api/me.go), so there's no point registering them
 		// without sign-in itself also being enabled.

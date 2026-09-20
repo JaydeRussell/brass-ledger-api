@@ -14,6 +14,18 @@
     "GOOGLE_REDIRECT_URL": "https://api.brass-ledger.app/auth/google/callback",
     "FRONTEND_BASE_URL": "https://brass-ledger.app",
     "COOKIE_SECURE": "true",
+    // Scopes the SESSION cookie to the registrable domain so the
+    // frontend Worker on brass-ledger.app can read it during render,
+    // rather than every gated page waiting on a client-side /api/me
+    // before it can show anything. The short-lived OAuth state cookies
+    // stay host-only regardless — see internal/api's setSessionCookie.
+    //
+    // The cost, deliberately taken: the session cookie now reaches
+    // every subdomain of brass-ledger.app, present and future. Do not
+    // point a subdomain at a third party (a status page, a docs host,
+    // any CNAME to a SaaS) without moving this back first — their
+    // servers would receive session cookies on every request.
+    "SESSION_COOKIE_DOMAIN": "brass-ledger.app",
     // The new-signup admin alert's sender address (see internal/notify)
     // — not secret, but only does anything paired with the
     // RESEND_API_KEY Worker secret below, and only once this domain is

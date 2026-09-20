@@ -287,12 +287,8 @@ func (h *SyncHandler) SetRoundNote(c echo.Context) error {
 // the approval check too) — kept separate anyway so that distinction
 // stays explicit rather than buried in one do-everything function.
 func requireUser(c echo.Context, store userStore) (user.User, error) {
-	cookie, err := c.Cookie(sessionCookieName)
-	if err != nil {
-		return user.User{}, c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
-	}
-	u, err := store.GetUserBySession(c.Request().Context(), cookie.Value)
-	if err != nil {
+	u, ok := resolveSession(c, store)
+	if !ok {
 		return user.User{}, c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 	}
 	return u, nil

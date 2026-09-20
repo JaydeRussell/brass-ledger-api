@@ -143,12 +143,8 @@ func (h *FeedbackHandler) Submit(c echo.Context) error {
 // triage context attached for free when it's there. Returns zero values
 // for an anonymous or invalid-session submitter.
 func (h *FeedbackHandler) submitterInfo(c echo.Context) (userID int64, name, email string) {
-	cookie, err := c.Cookie(sessionCookieName)
-	if err != nil {
-		return 0, "", ""
-	}
-	u, err := h.store.GetUserBySession(c.Request().Context(), cookie.Value)
-	if err != nil {
+	u, ok := resolveSession(c, h.store)
+	if !ok {
 		return 0, "", ""
 	}
 	return u.ID, u.Name, u.Email

@@ -55,6 +55,16 @@ type Config struct {
 	// plain HTTP — and set COOKIE_SECURE=true for any real (HTTPS)
 	// deployment.
 	CookieSecure bool
+	// SessionCookieDomain scopes the session cookie to a parent domain
+	// so the frontend's own host can read it during server-side render
+	// (brass-ledger.app covering both the app and api.brass-ledger.app).
+	//
+	// Empty, the default, means host-only — the browser sends the
+	// cookie back only to this service, which is what local development
+	// wants and what production did before this existed. Only the
+	// session cookie is ever scoped this way; the short-lived OAuth
+	// state cookies stay host-only regardless.
+	SessionCookieDomain string
 
 	// AdminEmails bootstraps access control (see migration 0007 and
 	// internal/api/admin.go): every sign-in whose email matches one of
@@ -85,16 +95,17 @@ type Config struct {
 // state.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:               getEnvOrDefault("PORT", "8080"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		GoogleRedirectURL:  getEnvOrDefault("GOOGLE_REDIRECT_URL", "http://localhost:8080/auth/google/callback"),
-		FrontendBaseURL:    getEnvOrDefault("FRONTEND_BASE_URL", "http://localhost:3000"),
-		CookieSecure:       os.Getenv("COOKIE_SECURE") == "true",
-		AdminEmails:        parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
-		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
-		EmailFromAddress:   os.Getenv("EMAIL_FROM_ADDRESS"),
+		Port:                getEnvOrDefault("PORT", "8080"),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		GoogleClientID:      os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret:  os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURL:   getEnvOrDefault("GOOGLE_REDIRECT_URL", "http://localhost:8080/auth/google/callback"),
+		FrontendBaseURL:     getEnvOrDefault("FRONTEND_BASE_URL", "http://localhost:3000"),
+		CookieSecure:        os.Getenv("COOKIE_SECURE") == "true",
+		SessionCookieDomain: os.Getenv("SESSION_COOKIE_DOMAIN"),
+		AdminEmails:         parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
+		ResendAPIKey:        os.Getenv("RESEND_API_KEY"),
+		EmailFromAddress:    os.Getenv("EMAIL_FROM_ADDRESS"),
 	}
 
 	if cfg.DatabaseURL == "" {
