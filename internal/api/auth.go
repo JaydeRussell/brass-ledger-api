@@ -292,6 +292,10 @@ func (h *AuthHandler) Logout(c echo.Context) error {
 // RequireApproved below), since this is exactly how the frontend learns
 // whether a signed-in visitor is pending/rejected in the first place.
 func (h *AuthHandler) Me(c echo.Context) error {
+	// Never stored: this is the answer to "who am I and am I approved",
+	// which changes the moment an admin approves an account and is the
+	// first thing every gated page waits on.
+	noCache(c)
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})

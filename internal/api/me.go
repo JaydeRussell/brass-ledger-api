@@ -224,6 +224,7 @@ func (h *MeHandler) SetDossierVisibility(c echo.Context) error {
 // same "the whole app needs approval, not just sign-in" bar as
 // BCPHandler's routes.
 func (h *MeHandler) Events(c echo.Context) error {
+	noCache(c)
 	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err
