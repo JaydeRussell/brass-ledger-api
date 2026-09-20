@@ -48,6 +48,35 @@ aggressive retries, or fetch more than a feature actually needs — see the
 frontend's `CLAUDE.md` for the full list this inherited from (the
 frontend used to talk to BCP directly; that logic moved here).
 
+## A page over two seconds is a bug, not a backlog item
+
+Any page whose content takes **more than 2 seconds** to arrive is
+treated as a genuine defect — filed, prioritised and fixed like a
+wrong-data bug, not parked as a "performance improvement" to get to
+later. Past about two seconds a load stops reading as *loading* and
+starts reading as *broken*, and this app is used mid-event on a phone on
+venue wifi, where that judgement happens fast.
+
+Measure with `make latency` (`scripts/latency-map.sh`), which prints
+per-endpoint times and then each page's critical path —
+`max(wave 1) + max(wave 2)` — and flags anything past the threshold.
+`CRITICAL_MS` overrides it.
+
+Two things to know before reading its output:
+
+- **Local numbers are a floor, not an experience.** The endpoints that
+  actually make people wait spend nearly all their time in BCP's API. A
+  local run against an account with no linked BCP profile takes the
+  empty-response path, so it measures *our* overhead (routing, session
+  lookup, Postgres) with the third-party time removed. Useful for
+  catching a regression in our own code; not the number a user sees. For
+  that, run it against production with a real linked session.
+- **Watch what the cache is hiding.** Measuring the same endpoint twice
+  inside a minute reads the second one out of a 60-second in-memory
+  cache and looks fast. That masked a real 4-second regression once
+  already (see the `Fresh` vs `FetchedAt` note in `internal/bcp/cache.go`).
+  Leave a gap between runs, or measure after a container restart.
+
 ## Releases
 
 Brass Ledger is one product across this repo and its sibling frontend

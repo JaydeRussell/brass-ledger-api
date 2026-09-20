@@ -1,4 +1,4 @@
-.PHONY: help build run test test-integration lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
+.PHONY: help build run test test-integration latency lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -56,6 +56,9 @@ docker-reset: ## Rebuild images from your latest code changes and restart the st
 
 db-shell: ## Open a psql shell against the local (docker compose) Postgres
 	docker compose exec db psql -U $${POSTGRES_USER:-brassledger} -d $${POSTGRES_DB:-brass_ledger}
+
+latency: ## Print a latency map of every endpoint (BASE=... SESSION=... RUNS=...)
+	./scripts/latency-map.sh $${BASE:+--base $$BASE} $${SESSION:+--session $$SESSION} $${RUNS:+--runs $$RUNS}
 
 smoke: ## Quick post-rebuild sanity check (healthz/readyz/auth/frontend) — no BCP calls
 	./scripts/smoke-test.sh
