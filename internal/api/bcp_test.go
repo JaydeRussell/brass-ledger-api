@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -387,3 +390,137 @@ func TestBcpError(t *testing.T) {
 type errorString string
 
 func (e errorString) Error() string { return string(e) }
+
+// roundsStub serves each round's pairings and records the concurrency
+// it saw, so a test can tell a parallel fan-out from a serial one.
+func roundsStub(t *testing.T) (*httptest.Server, *countingBCP) {
+	t.Helper()
+	counts := &countingBCP{watched: map[string]bool{"/events/:id/pairings": true}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1/pairings", func(w http.ResponseWriter, r *http.Request) {
+		counts.enter("/events/:id/pairings")
+		defer counts.leave("/events/:id/pairings")
+		time.Sleep(stubDwell)
+		round := r.URL.Query().Get("round")
+		// Deliberately no "round" field: BCP's own is nullable, and the
+		// handler is meant to stamp what it asked for.
+		_, _ = fmt.Fprintf(w, `{"active": [{"id": "pair-r%s", "table": 1}]}`, round)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, counts
+}
+
+// TestPairings_MultipleRoundsInOneRequest covers the batched form.
+//
+// "My pairings" and the placings round strip each walked rounds in a
+// serial `await` loop in the browser, so a five-round event meant five
+// sequential round trips before anything rendered. Same number of BCP
+// requests either way — these are the same rounds, fetched through the
+// same cache — but one HTTP request instead of five, and overlapped
+// instead of chained.
+func TestPairings_MultipleRoundsInOneRequest(t *testing.T) {
+	server, counts := roundsStub(t)
+	e := newBCPTestEcho(bcp.NewClientWithBaseURL(server.URL))
+
+	rec := doBCPRequest(e, http.MethodGet, "/api/events/evt-1/pairings?type=Pairing&rounds=1,2,3")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var got []bcp.PairingRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d records across three rounds, want 3", len(got))
+	}
+
+	// Each record has to say which round it belongs to, or a caller
+	// that asked for several at once cannot tell them apart.
+	for i, want := range []int{1, 2, 3} {
+		if got[i].Round == nil {
+			t.Fatalf("record %d has no round; BCP's own field is nullable, so the handler must stamp "+
+				"the round it asked for", i)
+		}
+		if *got[i].Round != want {
+			t.Errorf("record %d is round %d, want %d — results must come back in the order asked for",
+				i, *got[i].Round, want)
+		}
+	}
+
+	if peak := counts.watchedPeak(); peak < 2 {
+		t.Errorf("peak concurrent round fetches was %d, want at least 2 — "+
+			"fetching them one after another here just moves the serial chain from the browser to the server",
+			peak)
+	}
+	if peak := counts.watchedPeak(); peak > maxConcurrentRounds {
+		t.Errorf("peak concurrent round fetches was %d, above the %d bound — "+
+			"BCP should not see one page load as a burst", peak, maxConcurrentRounds)
+	}
+}
+
+func TestPairings_RoundParamValidation(t *testing.T) {
+	server, counts := roundsStub(t)
+	e := newBCPTestEcho(bcp.NewClientWithBaseURL(server.URL))
+
+	t.Run("the single-round form still works", func(t *testing.T) {
+		rec := doBCPRequest(e, http.MethodGet, "/api/events/evt-1/pairings?type=Pairing&round=2")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("a repeated round is fetched once", func(t *testing.T) {
+		before, _, _ := counts.snapshot()
+		rec := doBCPRequest(e, http.MethodGet, "/api/events/evt-1/pairings?type=Pairing&rounds=7,7,7")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		after, _, _ := counts.snapshot()
+		if after-before != 1 {
+			t.Errorf("rounds=7,7,7 cost %d upstream requests, want 1", after-before)
+		}
+
+		// The upstream count alone does not prove de-duplication: the
+		// cache's own in-flight sharing collapses three concurrent
+		// fetches of one key into a single request regardless. What a
+		// duplicate round actually costs is a duplicated *response* —
+		// the same pairings returned three times, which a caller
+		// grouping by round would count three times.
+		var got []bcp.PairingRecord
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decoding response: %v", err)
+		}
+		if len(got) != 1 {
+			t.Errorf("rounds=7,7,7 returned %d records, want 1 — a repeated round must not "+
+				"appear repeatedly in the response", len(got))
+		}
+	})
+
+	for _, bad := range []string{
+		"/api/events/evt-1/pairings?type=Pairing",
+		"/api/events/evt-1/pairings?type=Pairing&rounds=0",
+		"/api/events/evt-1/pairings?type=Pairing&rounds=1,nope",
+		"/api/events/evt-1/pairings?type=Pairing&rounds=-3",
+	} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			if rec := doBCPRequest(e, http.MethodGet, bad); rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+		})
+	}
+
+	t.Run("caps the fan-out", func(t *testing.T) {
+		many := make([]string, maxRoundsPerRequest+1)
+		for i := range many {
+			many[i] = strconv.Itoa(i + 1)
+		}
+		rec := doBCPRequest(e, http.MethodGet,
+			"/api/events/evt-1/pairings?type=Pairing&rounds="+strings.Join(many, ","))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400 — a crafted URL must not turn one request "+
+				"into an unbounded crawl of BCP", rec.Code)
+		}
+	})
+}
