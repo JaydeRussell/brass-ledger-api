@@ -48,6 +48,11 @@ aggressive retries, or fetch more than a feature actually needs — see the
 frontend's `CLAUDE.md` for the full list this inherited from (the
 frontend used to talk to BCP directly; that logic moved here).
 
+That includes not re-asking for things BCP has already said don't exist:
+a 404 is cached as permanent for `goneTTL` (`internal/bcp/cache.go`).
+Before this existed, one account with two deleted-event registrations
+sent BCP two doomed requests on every single page load.
+
 ## A page over two seconds is a bug, not a backlog item
 
 Any page whose content takes **more than 2 seconds** to arrive is
@@ -120,6 +125,14 @@ Two things to know before reading its output:
   cache and looks fast. That masked a real 4-second regression once
   already (see the `Fresh` vs `FetchedAt` note in `internal/bcp/cache.go`).
   Leave a gap between runs, or measure after a container restart.
+- **A tolerated failure is still a request.** Several call sites
+  deliberately skip an item whose BCP lookup fails rather than failing
+  the whole page — sound behaviour, but a lookup that can never succeed
+  then costs a real round trip on *every* request, invisibly, because
+  the response looks correct. `Cache` negative-caches 404/410 for
+  `goneTTL` for exactly this reason (`internal/bcp/cache.go`). When
+  adding a new "skip it and carry on" path, ask what it costs when the
+  thing is permanently gone.
 
 ## Releases
 

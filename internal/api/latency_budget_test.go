@@ -611,3 +611,78 @@ func TestLatencyBudget_EstimatedProductionCostOfEachPage(t *testing.T) {
 		})
 	}
 }
+
+// A BCP registration can outlive the event it points at: the organizer
+// deletes the event, the player's registration list keeps naming it, and
+// /api/me/events resolves every not-yet-concluded registration through
+// FetchEventInfo. The failure is tolerated and the event is dropped from
+// the response, so nothing looks broken — which is exactly why this went
+// unnoticed. Measured in production on 2026-09-20: two such
+// registrations on one account cost a real BCP round trip on *every*
+// request, warm, putting /api/me/events at 731ms against /api/me/stats'
+// 231ms.
+//
+// One lookup per dead event per process, not per request. Anything else
+// is both a latency bug and a standing request to BCP for something they
+// have already said does not exist — see CLAUDE.md's "Be respectful of
+// BCP's API".
+func TestLatencyBudget_ADeletedEventIsLookedUpOncePerProcessNotPerRequest(t *testing.T) {
+	counts := &countingBCP{watched: map[string]bool{}}
+	handle := func(path, body string, status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			counts.enter(path)
+			defer counts.leave(path)
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", handle("/players", `{"data": [
+		{"event": {"id": "evt-placed", "name": "Already Placed"}},
+		{"event": {"id": "evt-deleted", "name": "Deleted By Organizer"}}
+	]}`, http.StatusOK))
+	mux.HandleFunc("/eventplacings", handle("/eventplacings", `{"data": [
+		{"placing": 4, "event": {"id": "evt-placed", "name": "Already Placed", "eventDate": "2024-01-01T00:00:00.000Z"}}
+	]}`, http.StatusOK))
+	mux.HandleFunc("/events/evt-deleted", handle("/events/:id", `{"message": "not found"}`, http.StatusNotFound))
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	store, cookie := linkedSession(t)
+	e := newMeTestEcho(store, bcp.NewClientWithBaseURL(server.URL))
+
+	var last *httptest.ResponseRecorder
+	for range 3 {
+		last = getWithSession(t, e, "/api/me/events", cookie)
+	}
+
+	_, _, byPath := counts.snapshot()
+	if got := byPath["/events/:id"]; got != 1 {
+		t.Errorf("a deleted event was looked up %d times across 3 requests, want 1.\nBy path: %v\n"+
+			"A 404 is permanent — re-asking it every request is a per-page-load tax on data that will never arrive.",
+			got, byPath)
+	}
+
+	// And the dead event still must not surface. The negative cache
+	// changes how often we ask, never what the user sees.
+	var body struct {
+		Past    []myEvent `json:"past"`
+		Present []myEvent `json:"present"`
+		Future  []myEvent `json:"future"`
+	}
+	if err := json.Unmarshal(last.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	for _, group := range [][]myEvent{body.Past, body.Present, body.Future} {
+		for _, ev := range group {
+			if ev.EventID == "evt-deleted" {
+				t.Errorf("a deleted event appeared in the response as %+v, want it omitted", ev)
+			}
+		}
+	}
+	if len(body.Past) != 1 || body.Past[0].EventID != "evt-placed" {
+		t.Errorf("Past = %+v, want just evt-placed — the real event must still be served", body.Past)
+	}
+}

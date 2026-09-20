@@ -393,7 +393,12 @@ func TestStore_AccessControl(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	runID := uniqueID(t)
-	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "g@example.com", "Grace", "")
+	// The email carries runID too, not just the google_sub: the
+	// ListUsers assertion below searches by email and wants exactly one
+	// row, so a fixed address turns "run this twice against the same
+	// local Postgres" into a failure. It did — see uniqueID's doc
+	// comment for why this suite isolates rather than truncating.
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "grace-"+runID+"@example.com", "Grace", "")
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
