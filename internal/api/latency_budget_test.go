@@ -1000,3 +1000,42 @@ func TestLatencyBudget_StatsPrewarmsOverlap(t *testing.T) {
 			peak)
 	}
 }
+
+// TestLatencyBudget_StatsSummarySkipsThePerEventPass is the one that
+// pays for itself.
+//
+// eventInfoByID resolves every event a player has ever attended, and at
+// 500 events that is 395 of this endpoint's 399 upstream requests —
+// 99% of its traffic to BCP. All of it feeds two things: the
+// Team/GT/RTT split of best placing, and the fieldSize behind every
+// "of 42 - top 17%".
+//
+// Home calls this endpoint on every visit and renders neither. It uses
+// totalEvents, bestPlacing.placing and the top faction, every one of
+// which comes out of the placing-history feed for free.
+func TestLatencyBudget_StatsSummarySkipsThePerEventPass(t *testing.T) {
+	store, cookie := linkedSession(t)
+	server, counts := scaleStub(t, 25)
+	e := newStatsTestEcho(store, bcp.NewClientWithBaseURL(server.URL))
+
+	getWithSession(t, e, "/api/me/stats", cookie)
+	full, _, fullByPath := counts.snapshot()
+
+	counts.reset()
+	e2 := newStatsTestEcho(store, bcp.NewClientWithBaseURL(server.URL))
+	getWithSession(t, e2, "/api/me/stats?summary=true", cookie)
+	summary, _, summaryByPath := counts.snapshot()
+
+	if summaryByPath["/events/:id"] != 0 {
+		t.Errorf("summary mode still made %d per-event lookups, want 0.\nBy path: %v",
+			summaryByPath["/events/:id"], summaryByPath)
+	}
+	if summary >= full {
+		t.Errorf("summary cost %d upstream requests against full's %d — it is meant to be the cheap path.\n"+
+			"full: %v\nsummary: %v", summary, full, fullByPath, summaryByPath)
+	}
+	// The history crawl is the irreducible part and both modes pay it.
+	if summaryByPath["/eventplacings"] == 0 {
+		t.Error("summary mode never read the placing history, which is where all of its data comes from")
+	}
+}

@@ -361,7 +361,10 @@ func TestComputePlayerStats_History(t *testing.T) {
 		{EventID: "evt-noplacing", EventName: "No Placing", EventDate: "2026-03-01T00:00:00.000Z"},
 	}
 
-	resp := computePlayerStats(history, map[string]bcp.EventInfo{})
+	// Full mode, but with no EventInfo resolved for any of these events
+	// — the tolerate-and-skip case eventInfoByID produces when a lookup
+	// fails.
+	resp := computePlayerStats(history, map[string]bcp.EventInfo{}, withEventDetail)
 
 	if len(resp.History) != 2 {
 		t.Fatalf("history = %+v, want exactly 2 entries", resp.History)
@@ -372,11 +375,16 @@ func TestComputePlayerStats_History(t *testing.T) {
 	if resp.History[0].Points == nil || *resp.History[0].Points != 95 {
 		t.Errorf("history[0].points = %v, want 95", resp.History[0].Points)
 	}
-	// No EventInfo at all was passed in, so classifyEventCategory falls
-	// back to date-span classification — both single-day (no end date),
-	// hence RTT.
-	if resp.History[0].Category != categoryRTT || resp.History[1].Category != categoryRTT {
-		t.Errorf("history categories = [%q, %q], want both %q", resp.History[0].Category, resp.History[1].Category, categoryRTT)
+	// These used to come back as RTT: with no EventInfo,
+	// classifyEventCategory fell through to the date span and called
+	// every unresolved event single-day. That reads as a sensible
+	// fallback and isn't one — the date span can't see a team event, so
+	// a team result was filed as an RTT and nothing in the response
+	// said the value was a guess. Unresolved now means uncategorised,
+	// and eventDetailResolved tells the caller why.
+	if resp.History[0].Category != "" || resp.History[1].Category != "" {
+		t.Errorf("history categories = [%q, %q], want both empty for events whose info never resolved",
+			resp.History[0].Category, resp.History[1].Category)
 	}
 	// TotalEvents still counts all 4, even though only 2 made it into History.
 	if resp.TotalEvents != 4 {
@@ -451,5 +459,111 @@ func TestClassifyEventCategory(t *testing.T) {
 				t.Errorf("classifyEventCategory(%+v, teamEvent=%v) = (%q, %v), want (%q, %v)", tc.entry, tc.teamEvent, gotCategory, gotOK, tc.wantCategory, tc.wantOK)
 			}
 		})
+	}
+}
+
+// TestStats_SummaryAgreesWithFullOnEverythingItIncludes is the
+// correctness half of summary mode.
+//
+// Home and /stats call the same endpoint in different modes and both
+// show a "best placing". If those two numbers could disagree, a reader
+// has two answers and no way to know which is right — so summary mode
+// still resolves league info, which is what decides *which* row wins
+// for an event BCP scored under several leagues. Only the per-event
+// pass is skipped.
+func TestStats_SummaryAgreesWithFullOnEverythingItIncludes(t *testing.T) {
+	store, cookie := linkedSession(t)
+	server, _ := scaleStub(t, 25)
+
+	get := func(path string) playerStatsResponse {
+		t.Helper()
+		e := newStatsTestEcho(store, bcp.NewClientWithBaseURL(server.URL))
+		rec := getWithSession(t, e, path, cookie)
+		var resp playerStatsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decoding %s: %v", path, err)
+		}
+		return resp
+	}
+
+	full := get("/api/me/stats")
+	summary := get("/api/me/stats?summary=true")
+
+	if full.EventDetailResolved != withEventDetail || summary.EventDetailResolved != withoutEventDetail {
+		t.Fatalf("eventDetailResolved: full %t, summary %t", full.EventDetailResolved, summary.EventDetailResolved)
+	}
+
+	if !full.EventDetailResolved {
+		t.Error("the full response reported eventDetailResolved=false")
+	}
+	if summary.EventDetailResolved {
+		t.Error("the summary response reported eventDetailResolved=true — a consumer could not then " +
+			"tell an absent split from a player who has never placed in one")
+	}
+
+	if summary.TotalEvents != full.TotalEvents {
+		t.Errorf("totalEvents: summary %d, full %d", summary.TotalEvents, full.TotalEvents)
+	}
+	if summary.CompetingSince != full.CompetingSince {
+		t.Errorf("competingSince: summary %q, full %q", summary.CompetingSince, full.CompetingSince)
+	}
+	if summary.MostRecentEventID != full.MostRecentEventID {
+		t.Errorf("mostRecentEventId: summary %q, full %q", summary.MostRecentEventID, full.MostRecentEventID)
+	}
+	if len(summary.History) != len(full.History) {
+		t.Errorf("history length: summary %d, full %d", len(summary.History), len(full.History))
+	}
+	if len(summary.Factions) != len(full.Factions) {
+		t.Errorf("factions: summary %d, full %d", len(summary.Factions), len(full.Factions))
+	}
+
+	// The headline number Home actually renders.
+	switch {
+	case summary.BestPlacing == nil || full.BestPlacing == nil:
+		t.Fatalf("bestPlacing missing: summary %v, full %v", summary.BestPlacing, full.BestPlacing)
+	case summary.BestPlacing.Placing != full.BestPlacing.Placing:
+		t.Errorf("bestPlacing: summary %d, full %d — Home and /stats would show different numbers",
+			summary.BestPlacing.Placing, full.BestPlacing.Placing)
+	}
+}
+
+// TestStats_SummaryOmitsWhatItDidNotResolve — the fields that need the
+// per-event pass must be absent, not zero.
+func TestStats_SummaryOmitsWhatItDidNotResolve(t *testing.T) {
+	store, cookie := linkedSession(t)
+	server, _ := scaleStub(t, 25)
+	e := newStatsTestEcho(store, bcp.NewClientWithBaseURL(server.URL))
+
+	rec := getWithSession(t, e, "/api/me/stats?summary=true", cookie)
+
+	var resp playerStatsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+
+	for name, split := range map[string]*placingWithField{
+		"bestPlacingTeams": resp.BestPlacingTeams,
+		"bestPlacingGt":    resp.BestPlacingGT,
+		"bestPlacingRtt":   resp.BestPlacingRTT,
+	} {
+		if split != nil {
+			t.Errorf("%s = %+v in a summary response; the per-event lookup it needs never ran, "+
+				"so any value here is a guess", name, split)
+		}
+	}
+	if resp.BestPlacing != nil && resp.BestPlacing.FieldSize != nil {
+		t.Errorf("bestPlacing.fieldSize = %v in a summary response; field size comes from the "+
+			"per-event lookup", *resp.BestPlacing.FieldSize)
+	}
+	for _, p := range resp.History {
+		if p.Category != "" {
+			t.Errorf("history point %s carries category %q; the date span cannot see a team event, "+
+				"so this would be a guess", p.EventID, p.Category)
+			break
+		}
+		if p.FieldSize != nil {
+			t.Errorf("history point %s carries a fieldSize", p.EventID)
+			break
+		}
 	}
 }

@@ -73,7 +73,9 @@ func (h *DossierHandler) Dossier(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "dossier not found"})
 	}
 
-	stats, err := statsForBcpUser(ctx, h.client, bcpUserID)
+	// Always the full computation: the dossier page is what renders the
+	// Team/GT/RTT tiles and the "of N" field sizes in the first place.
+	stats, err := statsForBcpUser(ctx, h.client, bcpUserID, withEventDetail)
 	if err != nil {
 		return bcpError(c, err)
 	}
