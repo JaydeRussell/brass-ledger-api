@@ -518,6 +518,26 @@ func TestLatencyBudget_PendingEventLookupsOverlapButStayBounded(t *testing.T) {
 			"prevent — see CLAUDE.md.",
 			maxConcurrent, maxConcurrentEventInfo)
 	}
+
+	// Pinned to a literal, because the assertion above is satisfied by
+	// any value of the constant — including one somebody raises to
+	// thirty. It would go on passing while BCP saw six times the
+	// traffic.
+	//
+	// This is worth a deliberate stop rather than a comment because the
+	// bound is per-request, not per-process: six simultaneous users
+	// fanning out at six put thirty-six concurrent requests on BCP, and
+	// nothing caps that. Raising this number multiplies against traffic
+	// rather than adding to it, so the next raise should come with a
+	// process-wide ceiling instead.
+	const wantBound = 6
+	if maxConcurrentEventInfo != wantBound {
+		t.Fatalf("maxConcurrentEventInfo is %d, this test is written against %d. "+
+			"Changing it is a real decision about how much of BCP's API one page load may burst "+
+			"— and it is a per-request bound, so it multiplies by the number of simultaneous users. "+
+			"Move this literal and say why in the commit.",
+			maxConcurrentEventInfo, wantBound)
+	}
 }
 
 // timeoutAfter bounds the gated tests above. Generous, because it should
