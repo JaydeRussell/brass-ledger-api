@@ -73,10 +73,50 @@ var minManualInvalidateInterval = 2 * time.Second
 // unaffected.
 var goneTTL = time.Hour
 
-// goneEntry records a fetch that failed in a way that won't get better.
+// upstreamFailureBackoff is how long a fetch that failed for a reason
+// that *might* get better (a 5xx, a 429, a dropped connection) is
+// remembered before anyone tries again.
+//
+// Failures were not cached at all, on the reasoning that being stuck
+// serving an error for a full TTL is worse than retrying. That holds
+// for one caller; it does not hold for a shared service. When BCP has
+// a moment, every page load of every visitor retried immediately, so
+// the traffic we sent them was at its highest exactly while they were
+// least able to serve it. That is the opposite of CLAUDE.md's "be
+// respectful" rule, and it is also useless: the request that just
+// failed a second ago is not going to succeed now.
+//
+// Ten seconds, not goneTTL's hour. A 404 reads as permanent; a 502
+// reads as "not right now", and the moment BCP recovers we want to
+// notice. This bounds the retry rate without making an outage feel
+// meaningfully longer than it is.
+//
+// A var so cache_test.go can shrink it, same as goneTTL.
+var upstreamFailureBackoff = 10 * time.Second
+
+// maxCacheEntries bounds how many keys one Cache holds.
+//
+// Nothing ever removed an entry: a stale one was ignored on read and
+// left in the map. That was survivable only because the container
+// sleeps after ten minutes idle and takes the whole map with it —
+// which is a memory leak being papered over by a restart, and the
+// restart is exactly what the durable cache and the longer TTLs have
+// been reducing the frequency of. The pairings cache is keyed by
+// event:type:round and the ITC one by league:user, so both grow with
+// use rather than with the size of the data.
+//
+// Evicting expired entries first, and only then the oldest surviving
+// ones, keeps this from throwing away something still useful while
+// something dead sits next to it.
+const maxCacheEntries = 512
+
+// goneEntry records a fetch that failed, and for how long that answer
+// should stand — goneTTL for a 404/410, upstreamFailureBackoff for
+// anything else.
 type goneEntry struct {
 	err       error
 	recordedA time.Time
+	ttl       time.Duration
 }
 
 type cacheEntry[T any] struct {
@@ -195,7 +235,7 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 		c.mu.Unlock()
 		return e.data, nil
 	}
-	if g, ok := c.gone[key]; ok && time.Since(g.recordedA) < goneTTL {
+	if g, ok := c.gone[key]; ok && time.Since(g.recordedA) < g.ttl {
 		c.mu.Unlock()
 		var zero T
 		return zero, g.err
@@ -210,7 +250,24 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	c.inFlight[key] = inf
 	c.mu.Unlock()
 
-	data, err := c.fetch(ctx, key)
+	// Detached from the caller's context, deliberately.
+	//
+	// This fetch is shared: whoever arrived first starts it and everyone
+	// else waits on the result. Running it on that first caller's
+	// context meant their navigating away — which on venue wifi is
+	// constant — cancelled it for every other waiter too. None of those
+	// failures were cached, so all of them retried, and one person
+	// pressing back turned into extra BCP requests for strangers.
+	//
+	// The timeout is what keeps "not cancellable" from meaning "can
+	// hang forever". Generous on purpose: the slowest fetch function
+	// here crawls up to maxHistoryPages pages sequentially, which at
+	// the measured per-call cost is a few seconds, so this allows for
+	// a large slowdown before it breaks something that would have
+	// worked.
+	fetchCtx, cancelFetch := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
+	data, err := c.fetch(fetchCtx, key)
+	cancelFetch()
 
 	c.mu.Lock()
 	switch {
@@ -219,8 +276,13 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 		// A key that resolves is no longer gone — covers an event that
 		// 404s while an organizer is mid-edit and comes back.
 		delete(c.gone, key)
+		c.evictLocked()
 	case IsGone(err):
-		c.gone[key] = goneEntry{err: err, recordedA: time.Now()}
+		c.gone[key] = goneEntry{err: err, recordedA: time.Now(), ttl: goneTTL}
+	default:
+		// Might get better, but not in the next few seconds — see
+		// upstreamFailureBackoff.
+		c.gone[key] = goneEntry{err: err, recordedA: time.Now(), ttl: upstreamFailureBackoff}
 	}
 	delete(c.inFlight, key)
 	c.mu.Unlock()
@@ -229,6 +291,51 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	close(inf.done)
 
 	return data, err
+}
+
+// fetchTimeout bounds one shared fetch. See Cache.Get for why the fetch
+// can't simply inherit the caller's deadline, and why this is generous.
+const fetchTimeout = 60 * time.Second
+
+// evictLocked keeps entries under maxCacheEntries. The caller holds
+// c.mu.
+//
+// Expired entries go first — they can never be served again, so
+// dropping one costs nothing. Only if that isn't enough does it start
+// on live entries, oldest fetch first, which is the closest thing to
+// "least likely to be wanted" available without tracking reads.
+func (c *Cache[T]) evictLocked() {
+	if len(c.entries) <= maxCacheEntries {
+		return
+	}
+
+	for key, e := range c.entries {
+		if time.Since(e.fetchedAt) >= e.ttl {
+			delete(c.entries, key)
+		}
+	}
+	// Also drop expired negative entries while we're here; they are
+	// bounded by the same growth and nothing else ever removes them.
+	for key, g := range c.gone {
+		if time.Since(g.recordedA) >= g.ttl {
+			delete(c.gone, key)
+		}
+	}
+
+	for len(c.entries) > maxCacheEntries {
+		var oldestKey string
+		var oldestAt time.Time
+		first := true
+		for key, e := range c.entries {
+			if first || e.fetchedAt.Before(oldestAt) {
+				oldestKey, oldestAt, first = key, e.fetchedAt, false
+			}
+		}
+		if first {
+			return
+		}
+		delete(c.entries, oldestKey)
+	}
 }
 
 // Invalidate clears key's cached entry (if fetched more than
