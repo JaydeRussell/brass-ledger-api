@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -246,17 +247,48 @@ func canonicalPlacingPerEvent(ctx context.Context, client bcpClient, history []b
 // event; an event whose info fails to load just can't be classified or
 // counted toward a game system, rather than failing the whole request.
 func eventInfoByID(ctx context.Context, client bcpClient, history []bcp.PlacingHistoryEntry) map[string]bcp.EventInfo {
-	infos := make(map[string]bcp.EventInfo, len(history))
-	for _, h := range history {
-		if _, ok := infos[h.EventID]; ok {
-			continue
-		}
-		info, err := client.FetchEventInfo(ctx, h.EventID)
-		if err != nil {
-			continue
-		}
-		infos[h.EventID] = info
+	ids := distinctEventIDs(history)
+	infos := make(map[string]bcp.EventInfo, len(ids))
+
+	// Resolved a few at a time rather than one after another, with the
+	// same bound the equivalent loop in me.go uses.
+	//
+	// This one resolves *every* event the account has a placing in, not
+	// just the handful awaiting results, so it's the larger set by far —
+	// and it was strictly serial. With a warm durable cache that's
+	// invisible (the prewarm above turns it into one batched query), but
+	// on a cold one — a first-ever visit, or the first after a
+	// CacheSchemaVersion bump invalidates every row — every event was
+	// its own round trip, in series. Modelled at ~300ms each, a
+	// 100-event account came to about 30 seconds, and a 250-event one
+	// to over a minute. See TestLatencyScale_AcrossAccountSizes, which
+	// is what surfaced this.
+	//
+	// Bounded, and kept to the same low number, for the reason in
+	// CLAUDE.md: the request count is unchanged, but BCP shouldn't see
+	// one page load as a burst.
+	var mu sync.Mutex
+	sem := make(chan struct{}, maxConcurrentEventInfo)
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			info, err := client.FetchEventInfo(ctx, id)
+			if err != nil {
+				// An event whose metadata won't load simply can't be
+				// classified — same as before, skip just that one.
+				return
+			}
+			mu.Lock()
+			infos[id] = info
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
+
 	return infos
 }
 

@@ -57,10 +57,54 @@ later. Past about two seconds a load stops reading as *loading* and
 starts reading as *broken*, and this app is used mid-event on a phone on
 venue wifi, where that judgement happens fast.
 
-Measure with `make latency` (`scripts/latency-map.sh`), which prints
-per-endpoint times and then each page's critical path —
-`max(wave 1) + max(wave 2)` — and flags anything past the threshold.
-`CRITICAL_MS` overrides it.
+**How this is checked — locally, not in the pipeline.**
+
+*With the normal test suite:* `internal/api/latency_budget_test.go`
+asserts the **shape** of the slow endpoints — how many upstream round
+trips they make, that the two history crawls overlap, that the
+per-event lookups overlap but stay bounded, and that the durable cache
+is read in one batch rather than once per event. These are ordinary Go
+tests: they run under `go test ./...` like everything else, needing no
+network and no BCP data.
+
+They count round trips rather than timing them, deliberately. A
+stopwatch in an automated test is measuring a stub server on whatever
+machine happens to run it. Every latency regression this project has
+actually had was structural — a batch that quietly stopped batching, two
+independent fetches left in series, a client waiting on a request it
+didn't need — and that is what these catch. When you change a budget on
+purpose, move it and say why in the commit.
+
+Those counts are then turned back into seconds. `internal/bcp/cost.go`
+holds what a BCP call and a durable read actually cost in production,
+measured and dated, and `EstimatedCost` multiplies them by what a test
+observed to estimate what the same request would cost deployed. So a
+regression fails as *"this would take 3.1s in production"* rather than
+*"the count went from 3 to 12"* — the same defect, in the units the rule
+is written in. The constants carry a calibration table: near-exact on
+the slow cases, ~25% optimistic when things are already fast, which is
+why the asserted budget sits below the real 2s threshold rather than at
+it. Re-measure and update them when the deployment changes shape.
+
+A note on writing these, learned the hard way: assert per-group
+concurrency, never global. Serialising the per-event lookups still
+leaves the history crawls overlapping, so a global peak of 2 hides it
+entirely — and a barrier sized from the constant under test is circular,
+since serialising the code just shrinks the barrier. Both of those
+passed a first mutation check before being caught.
+
+*As part of local regression testing:* run `make latency` before opening
+a PR that touches request handling, caching, or either history feed, and
+read the page table at the bottom. `--gate` / `make latency-gate` exits
+non-zero if any page exceeds `CRITICAL_MS` (default 2000) if you'd
+rather have it fail than be read.
+
+Deliberately **not** wired into CI or the deploy. CI has no BCP data and
+must never call BCP, so the numbers there would be meaningless; and
+after a deploy the first request legitimately pays a container cold
+start, so gating on it would mean a red pipeline for a cold start rather
+than a regression. This is a thing you run and read, with judgement,
+next to the rest of the local checks.
 
 Two things to know before reading its output:
 

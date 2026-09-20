@@ -54,16 +54,27 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 BASE="${BASE_URL:-http://localhost:8080}"
 SESSION=""
 RUNS=5
+# With --gate, exit non-zero if any page's critical path exceeds
+# CRITICAL_MS — so this can be used as a blocking check rather than
+# something a human has to read.
+GATE=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--base)    BASE="$2"; shift 2 ;;
 		--session) SESSION="$2"; shift 2 ;;
 		--runs)    RUNS="$2"; shift 2 ;;
+		--gate)    GATE=1; shift ;;
 		-h|--help) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
+
+# Microseconds -> a millisecond string. Sub-millisecond values keep a
+# decimal so they stay legible rather than collapsing to "0ms".
+as_ms() {
+	awk -v us="$1" 'BEGIN { ms = us/1000; if (ms < 10) printf "%.2fms", ms; else printf "%dms", ms }'
+}
 
 cookie_args=()
 [ -n "$SESSION" ] && cookie_args=(-H "Cookie: session=$SESSION")
@@ -119,8 +130,12 @@ for entry in "${ENDPOINTS[@]}"; do
 		out="$(curl -s -o /dev/null -w '%{time_total} %{http_code}' \
 			-X "$method" --max-time 60 "${cookie_args[@]}" "$BASE$path" 2>/dev/null)"
 		t="${out%% *}"; status="${out##* }"
-		# seconds -> integer milliseconds, without relying on bc
-		times+=("$(awk -v t="$t" 'BEGIN{printf "%d", t*1000}')")
+		# Seconds -> integer MICROseconds, without relying on bc.
+		# Microseconds rather than milliseconds because this repo's own
+		# endpoints answer in under a millisecond locally, and rounding
+		# those to "0ms" would hide exactly the regressions a local run
+		# is there to catch. Displayed as ms below.
+		times+=("$(awk -v t="$t" 'BEGIN{printf "%d", t*1000000}')")
 	done
 
 	sorted="$(printf '%s\n' "${times[@]}" | sort -n)"
@@ -131,8 +146,8 @@ for entry in "${ENDPOINTS[@]}"; do
 
 	MEANS="${MEANS}${path}	${mean}
 "
-	printf '%-18s %-5s %-34s %7sms %7sms %7sms %7sms  %s\n' \
-		"$name" "$method" "$path" "$min" "$p50" "$mean" "$max" "$status"
+	printf '%-18s %-5s %-34s %7s %7s %7s %7s  %s\n' \
+		"$name" "$method" "$path" "$(as_ms "$min")" "$(as_ms "$p50")" "$(as_ms "$mean")" "$(as_ms "$max")" "$status"
 done
 
 # --- Page critical paths --------------------------------------------
@@ -178,6 +193,7 @@ max_of() {
 	echo "$biggest"
 }
 
+over=0
 printf '\n\nPage critical paths (server-side floor: max of wave 1 + max of wave 2)\n'
 printf '%-13s %-12s %9s %9s %9s  %s\n' "page" "route" "wave 1" "wave 2" "total" "verdict"
 printf '%s\n' "------------------------------------------------------------------------------"
@@ -186,12 +202,13 @@ for entry in "${PAGES[@]}"; do
 	name="$(echo "$name" | xargs)"; route="$(echo "$route" | xargs)"
 	a="$(max_of "$w1")"; b="$(max_of "$w2")"
 	total=$((a + b))
-	if [ "$total" -gt "$CRITICAL_MS" ]; then
+	if [ "$total" -gt "$((CRITICAL_MS * 1000))" ]; then
 		verdict="CRITICALLY SLOW (>${CRITICAL_MS}ms)"
+		over=$((over + 1))
 	else
 		verdict="ok"
 	fi
-	printf '%-13s %-12s %8sms %8sms %8sms  %s\n' "$name" "$route" "$a" "$b" "$total" "$verdict"
+	printf '%-13s %-12s %8s %8s %8s  %s\n' "$name" "$route" "$(as_ms "$a")" "$(as_ms "$b")" "$(as_ms "$total")" "$verdict"
 done
 
 printf '\n'
@@ -200,3 +217,8 @@ printf '  200  answered normally\n'
 printf '  401  not signed in — the time is routing + a failed session lookup, not the endpoint\n'
 printf '  403  signed in but not approved\n'
 printf '  404  no such event/record (the bcp:* probes use a deliberately absent id)\n'
+
+if [ "$GATE" -eq 1 ] && [ "$over" -gt 0 ]; then
+	printf '\n%s page(s) over %sms — see CLAUDE.md: a page over two seconds is a bug.\n' "$over" "$CRITICAL_MS" >&2
+	exit 1
+fi

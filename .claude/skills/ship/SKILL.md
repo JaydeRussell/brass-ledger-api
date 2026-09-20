@@ -16,6 +16,20 @@ as committing at all; see the top-level git-safety instructions).
 - Run this repo's verification commands first — `go build ./...`, `go
   vet ./...`, `go test ./...` — and don't open a PR on code that hasn't
   passed all of them.
+- `go vet` is not what CI runs. CI runs golangci-lint, which catches a
+  strictly larger set (`staticcheck`, `unused`, `errcheck`), and it is
+  not installed by default — so a clean `go vet` locally still fails CI
+  on things like an unused helper or `Write([]byte(fmt.Sprintf(...)))`.
+  Run `make lint-ci` before pushing; it fetches the exact pinned version
+  CI uses.
+- If the change touches request handling, caching, or anything either
+  history feed reaches, also run `make latency` against the local stack
+  and read the page table at the bottom. Anything flagged over
+  `CRITICAL_MS` is a bug by this project's own rule — see CLAUDE.md's
+  "A page over two seconds is a bug". Local numbers are a floor, not a
+  user experience (see the script's header for why), so treat a
+  regression *relative to the last run* as the signal, not the absolute
+  value.
 - `git status`/`git diff` to see exactly what's changing. Stage only the
   files that belong to this change — never a blanket `git add -A`
   without reviewing what it actually picked up (check for anything that
