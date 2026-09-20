@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fakeDurableCache is a plain in-memory stand-in for bcp.DurableCache —
@@ -16,13 +18,18 @@ import (
 // tested for the same reason internal/user/store.go isn't: it's a thin
 // marshal/exec wrapper that needs a real database to test meaningfully.
 type fakeDurableCache struct {
-	data map[string]fakeDurableCacheEntry
-	sets int
+	data         map[string]fakeDurableCacheEntry
+	sets         int
+	deletes      int
+	getManyCalls int
 }
 
 type fakeDurableCacheEntry struct {
 	raw     []byte
 	version int
+	// Zero means "written just now" — a test that needs an entry to look
+	// old sets this explicitly (see the GetFresh cases in history_test.go).
+	cachedAt time.Time
 }
 
 func newFakeDurableCache() *fakeDurableCache {
@@ -42,8 +49,38 @@ func (f *fakeDurableCache) Set(_ context.Context, key string, version int, value
 	if err != nil {
 		return err
 	}
-	f.data[key] = fakeDurableCacheEntry{raw: raw, version: version}
+	f.data[key] = fakeDurableCacheEntry{raw: raw, version: version, cachedAt: time.Now()}
 	f.sets++
+	return nil
+}
+
+func (f *fakeDurableCache) GetFresh(_ context.Context, key string, version int, maxAge time.Duration, dest any) (bool, time.Time, error) {
+	entry, ok := f.data[key]
+	if !ok || entry.version != version {
+		return false, time.Time{}, nil
+	}
+	if maxAge > 0 && time.Since(entry.cachedAt) > maxAge {
+		return false, entry.cachedAt, nil
+	}
+	return true, entry.cachedAt, json.Unmarshal(entry.raw, dest)
+}
+
+func (f *fakeDurableCache) GetMany(_ context.Context, keys []string, version int) (map[string]json.RawMessage, error) {
+	f.getManyCalls++
+	found := make(map[string]json.RawMessage, len(keys))
+	for _, key := range keys {
+		entry, ok := f.data[key]
+		if !ok || entry.version != version {
+			continue
+		}
+		found[key] = json.RawMessage(entry.raw)
+	}
+	return found, nil
+}
+
+func (f *fakeDurableCache) Delete(_ context.Context, key string) error {
+	delete(f.data, key)
+	f.deletes++
 	return nil
 }
 
@@ -260,5 +297,286 @@ func TestFetchPlacings_DurableCache(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "Anna Adams" {
 		t.Errorf("got %+v, want the placings from the durable cache", got)
+	}
+}
+
+// --- Player history (the two age-bounded durable values) ---------------
+
+const historyPlayersBody = `{"data": [{"eventId": "evt-1", "event": {"id": "evt-1", "name": "Cold Open"}}]}`
+
+func TestPlayerEventHistory_DurableCacheSurvivesANewClient(t *testing.T) {
+	// The actual point of this cache: the deployed container sleeps after
+	// ten minutes, so "a new Client" is what a returning visitor gets.
+	fake := newFakeDurableCache()
+
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(historyPlayersBody))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	first := NewClientWithBaseURL(server.URL)
+	first.SetDurableCache(fake)
+	got, err := first.FetchPlayerEventHistory(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if len(got) != 1 || got[0].EventID != "evt-1" {
+		t.Fatalf("first fetch = %+v, want one evt-1 record", got)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d after the first fetch, want 1", calls)
+	}
+
+	// A second process (fresh in-memory cache, same Postgres) must not
+	// reach BCP at all — its upstream fails every request to prove it.
+	second := NewClientWithBaseURL(failingServer(t).URL)
+	second.SetDurableCache(fake)
+	got, err = second.FetchPlayerEventHistory(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if len(got) != 1 || got[0].EventID != "evt-1" {
+		t.Errorf("second fetch = %+v, want the durably cached evt-1 record", got)
+	}
+}
+
+func TestPlayerEventHistory_DurableEntryOlderThanTTLIsRefetched(t *testing.T) {
+	fake := newFakeDurableCache()
+	fake.data[playerEventHistoryDurableKey("user-1")] = fakeDurableCacheEntry{
+		raw:      []byte(`[{"eventId":"stale-evt","eventName":"Stale"}]`),
+		version:  CacheSchemaVersion,
+		cachedAt: time.Now().Add(-2 * myEventsRefetchInterval),
+	}
+
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(historyPlayersBody))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.SetDurableCache(fake)
+
+	got, err := client.FetchPlayerEventHistory(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (a durable row past myEventsRefetchInterval must be refetched)", calls)
+	}
+	if len(got) != 1 || got[0].EventID != "evt-1" {
+		t.Errorf("got = %+v, want the freshly fetched evt-1 record, not the stale one", got)
+	}
+}
+
+func TestPlayerEventHistory_DurableSeedKeepsItsRealFetchedAt(t *testing.T) {
+	// FetchedAt is surfaced to the user as "last updated" (see
+	// internal/api/me.go's UpcomingFetchedAt). Seeding from the durable
+	// cache must carry the age the data really has, not restart its clock.
+	stored := time.Now().Add(-6 * time.Hour).Truncate(time.Second)
+	fake := newFakeDurableCache()
+	fake.data[playerEventHistoryDurableKey("user-1")] = fakeDurableCacheEntry{
+		raw:      []byte(`[{"eventId":"evt-1","eventName":"Cold Open"}]`),
+		version:  CacheSchemaVersion,
+		cachedAt: stored,
+	}
+
+	client := NewClientWithBaseURL(failingServer(t).URL)
+	client.SetDurableCache(fake)
+	if _, err := client.FetchPlayerEventHistory(context.Background(), "user-1"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	fetchedAt, ok := client.PlayerEventHistoryFetchedAt("user-1")
+	if !ok {
+		t.Fatal("PlayerEventHistoryFetchedAt reported nothing cached after a durable hit")
+	}
+	if !fetchedAt.Equal(stored) {
+		t.Errorf("FetchedAt = %s, want the durable row's own cached_at %s (not time.Now())", fetchedAt, stored)
+	}
+}
+
+func TestInvalidatePlayerEventHistory_DropsTheDurableRowToo(t *testing.T) {
+	// Without this, an explicit refresh would clear the in-memory entry
+	// and immediately reload the same stale value from Postgres.
+	fake := newFakeDurableCache()
+	key := playerEventHistoryDurableKey("user-1")
+	fake.data[key] = fakeDurableCacheEntry{
+		raw:      []byte(`[{"eventId":"evt-1","eventName":"Cold Open"}]`),
+		version:  CacheSchemaVersion,
+		cachedAt: time.Now().Add(-time.Hour),
+	}
+
+	client := NewClientWithBaseURL(failingServer(t).URL)
+	client.SetDurableCache(fake)
+
+	client.InvalidatePlayerEventHistory("user-1")
+	if _, still := fake.data[key]; still {
+		t.Errorf("durable row survived an invalidate — a refresh would serve the stale value again")
+	}
+	if fake.deletes != 1 {
+		t.Errorf("durable Delete called %d times, want 1", fake.deletes)
+	}
+}
+
+func TestInvalidatePlayerEventHistory_ThrottledCallLeavesTheDurableRowAlone(t *testing.T) {
+	// A throttled invalidate keeps the in-memory entry, so dropping the
+	// durable copy would send the *next* read to BCP — defeating the
+	// throttle rather than respecting it.
+	fake := newFakeDurableCache()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(historyPlayersBody))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.SetDurableCache(fake)
+	if _, err := client.FetchPlayerEventHistory(context.Background(), "user-1"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	client.InvalidatePlayerEventHistory("user-1") // immediately after — throttled
+	if fake.deletes != 0 {
+		t.Errorf("durable Delete called %d times on a throttled invalidate, want 0", fake.deletes)
+	}
+	if _, still := fake.data[playerEventHistoryDurableKey("user-1")]; !still {
+		t.Error("durable row was dropped by a throttled invalidate")
+	}
+}
+
+func TestPlacingHistory_DurableCacheSurvivesANewClient(t *testing.T) {
+	fake := newFakeDurableCache()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data": [{"placing": 3, "event": {"id": "evt-9", "name": "Concluded", "eventDate": "2026-01-01"}}]}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	first := NewClientWithBaseURL(server.URL)
+	first.SetDurableCache(fake)
+	if _, err := first.FetchPlacingHistory(context.Background(), "user-1"); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+
+	second := NewClientWithBaseURL(failingServer(t).URL)
+	second.SetDurableCache(fake)
+	got, err := second.FetchPlacingHistory(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if len(got) != 1 || got[0].EventID != "evt-9" {
+		t.Errorf("second fetch = %+v, want the durably cached evt-9 entry", got)
+	}
+}
+
+// --- Prewarm (the batched durable read) --------------------------------
+
+func TestPrewarmEventInfo_OneQueryForTheWholeSet(t *testing.T) {
+	// The N+1 this exists to kill: without prewarming, a cold in-memory
+	// cache resolves one durable row per event, sequentially.
+	fake := newFakeDurableCache()
+	ids := []string{"evt-1", "evt-2", "evt-3"}
+	for _, id := range ids {
+		fake.data[eventInfoDurableKey(id)] = fakeDurableCacheEntry{
+			raw:     []byte(`{"id":"` + id + `","name":"Concluded ` + id + `","ended":true}`),
+			version: CacheSchemaVersion,
+		}
+	}
+
+	// Upstream fails every request: everything here must come from the
+	// durable cache or not at all.
+	client := NewClientWithBaseURL(failingServer(t).URL)
+	client.SetDurableCache(fake)
+
+	client.PrewarmEventInfo(context.Background(), ids)
+	if fake.getManyCalls != 1 {
+		t.Fatalf("GetMany called %d times for %d ids, want 1", fake.getManyCalls, len(ids))
+	}
+
+	for _, id := range ids {
+		info, err := client.FetchEventInfo(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FetchEventInfo(%s) after prewarm: %v", id, err)
+		}
+		if info.ID != id {
+			t.Errorf("FetchEventInfo(%s) = %q, want it served from the prewarmed cache", id, info.ID)
+		}
+	}
+}
+
+func TestPrewarmEventInfo_SkipsWhatIsAlreadyInMemory(t *testing.T) {
+	fake := newFakeDurableCache()
+
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-live", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"id": "evt-live", "name": "Still Going", "status": {"started": true, "ended": false}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.SetDurableCache(fake)
+
+	// Fetched normally first — an in-flight event, so nothing durable.
+	if _, err := client.FetchEventInfo(context.Background(), "evt-live"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	client.PrewarmEventInfo(context.Background(), []string{"evt-live"})
+	if fake.getManyCalls != 0 {
+		t.Errorf("GetMany called %d times, want 0 (the id was already cached in memory)", fake.getManyCalls)
+	}
+	if calls != 1 {
+		t.Errorf("upstream calls = %d, want 1 (prewarm must not refetch)", calls)
+	}
+}
+
+func TestPrewarmEventInfo_NoDurableCacheIsANoOp(t *testing.T) {
+	// The default for NewClient/NewClientWithBaseURL, and what every
+	// other test in this package relies on.
+	client := NewClientWithBaseURL(failingServer(t).URL)
+	client.PrewarmEventInfo(context.Background(), []string{"evt-1"})
+	client.PrewarmLeagueInfo(context.Background(), []string{"league-1"})
+}
+
+func TestPrewarmLeagueInfo_ServesTheFlagshipLookupFromOneQuery(t *testing.T) {
+	fake := newFakeDurableCache()
+	fake.data[leagueInfoDurableKey("league-itc")] = fakeDurableCacheEntry{
+		raw:     []byte(`{"id":"league-itc","name":"ITC 2026","gwItc":true,"hobby":false}`),
+		version: CacheSchemaVersion,
+	}
+	fake.data[leagueInfoDurableKey("league-hobby")] = fakeDurableCacheEntry{
+		raw:     []byte(`{"id":"league-hobby","name":"Hobby Track","gwItc":true,"hobby":true}`),
+		version: CacheSchemaVersion,
+	}
+
+	client := NewClientWithBaseURL(failingServer(t).URL)
+	client.SetDurableCache(fake)
+
+	client.PrewarmLeagueInfo(context.Background(), []string{"league-itc", "league-hobby", "league-itc"})
+	if fake.getManyCalls != 1 {
+		t.Fatalf("GetMany called %d times, want 1 (and the duplicate id must not add a key)", fake.getManyCalls)
+	}
+
+	itc, err := client.FetchLeagueInfo(context.Background(), "league-itc")
+	if err != nil {
+		t.Fatalf("FetchLeagueInfo: %v", err)
+	}
+	if itc == nil || !itc.GwItc || itc.Hobby {
+		t.Errorf("league-itc = %+v, want the prewarmed flagship league", itc)
 	}
 }

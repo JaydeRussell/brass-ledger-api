@@ -17,14 +17,55 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// migrateLockID identifies the Postgres advisory lock Migrate holds
+// while it works. An arbitrary but stable constant — advisory locks
+// share one namespace per database, and nothing else in this project
+// takes one.
+const migrateLockID int64 = 8064213 // "brass-ledger migrations"
+
 // Migrate applies every embedded migration that hasn't run yet, in
 // filename order (hence the 0001_, 0002_... prefixes — name new ones
 // accordingly), each inside its own transaction. Deliberately minimal —
 // no rollback/down migrations, no external migration tool — since this
 // project's schema is still small; reach for a real migration library if
 // that stops being true.
+//
+// The set of already-applied versions is read in one query rather than
+// one "has this run yet?" round trip per file. On a warm database every
+// migration is a no-op, so that per-file check was the entire cost of
+// this function: 15 sequential round trips to Postgres, on every single
+// process start, to learn that there was nothing to do. This runs before
+// the HTTP listener starts (see cmd/server/main.go), and the container
+// this deploys to sleeps after ten minutes idle, so "every process
+// start" means most real visits — it was pure cold-start latency.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	// Everything below runs on one connection, holding an advisory lock,
+	// because migrating is not safe to do concurrently: CREATE TABLE IF
+	// NOT EXISTS is not atomic against another session creating the same
+	// table (Postgres raises a duplicate-key error on its own catalog),
+	// and two processes that both read an empty schema_migrations will
+	// both decide every migration is pending and both try to apply it.
+	//
+	// That's reachable in CI, where two integration test packages migrate
+	// the same fresh database at once — `go test` runs packages in
+	// parallel — and in principle at boot if more than one container
+	// instance ever starts together. The lock is per-database and
+	// released by the deferred unlock below (and by the session ending,
+	// if this process dies holding it).
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring a connection for migrations: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockID); err != nil {
+		return fmt.Errorf("taking the migration lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockID)
+	}()
+
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version    TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -37,10 +78,14 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return fmt.Errorf("listing embedded migrations: %w", err)
 	}
-	sort.Strings(paths)
 
-	for _, path := range paths {
-		if err := applyMigrationIfNeeded(ctx, pool, path); err != nil {
+	applied, err := appliedVersions(ctx, conn)
+	if err != nil {
+		return err
+	}
+
+	for _, path := range pendingMigrations(paths, applied) {
+		if err := applyMigration(ctx, conn, path); err != nil {
 			return err
 		}
 	}
@@ -48,26 +93,62 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func applyMigrationIfNeeded(ctx context.Context, pool *pgxpool.Pool, path string) error {
-	// The embedded path itself (e.g. "migrations/0001_users_and_sessions.sql")
-	// is the version id — stable, unique, and self-documenting in the
-	// schema_migrations table.
-	var alreadyApplied bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, path,
-	).Scan(&alreadyApplied); err != nil {
-		return fmt.Errorf("checking migration %s: %w", path, err)
+// appliedVersions reads every version already recorded in
+// schema_migrations. Reading the whole column is fine at this schema's
+// size (one short row per migration ever written) and is what replaces
+// the per-file existence check.
+func appliedVersions(ctx context.Context, conn *pgxpool.Conn) (map[string]struct{}, error) {
+	rows, err := conn.Query(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("listing applied migrations: %w", err)
 	}
-	if alreadyApplied {
-		return nil
-	}
+	defer rows.Close()
 
+	applied := make(map[string]struct{})
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("scanning applied migration: %w", err)
+		}
+		applied[version] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading applied migrations: %w", err)
+	}
+	return applied, nil
+}
+
+// pendingMigrations returns the embedded paths that still need applying,
+// in filename order. Pure — no database — so the ordering and
+// already-applied rules are testable without one (see migrate_test.go).
+//
+// The embedded path itself (e.g. "migrations/0001_users_and_sessions.sql")
+// is the version id — stable, unique, and self-documenting in the
+// schema_migrations table. That also means renaming an applied migration
+// file makes it run a second time; see migrate_test.go's
+// TestMigrationsHaveUniqueNumericPrefixes for why that matters.
+func pendingMigrations(paths []string, applied map[string]struct{}) []string {
+	sorted := make([]string, len(paths))
+	copy(sorted, paths)
+	sort.Strings(sorted)
+
+	pending := make([]string, 0, len(sorted))
+	for _, path := range sorted {
+		if _, done := applied[path]; done {
+			continue
+		}
+		pending = append(pending, path)
+	}
+	return pending
+}
+
+func applyMigration(ctx context.Context, conn *pgxpool.Conn, path string) error {
 	sqlBytes, err := migrationsFS.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading migration %s: %w", path, err)
 	}
 
-	tx, err := pool.Begin(ctx)
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction for migration %s: %w", path, err)
 	}

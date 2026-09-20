@@ -123,7 +123,69 @@ func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID 
 		}
 		nextKey = next
 	}
+	if c.durable != nil {
+		// Written unconditionally, unlike the event/roster/placings
+		// caches, which only persist once BCP says the event has ended.
+		// A registration list is never "final" — it's stored with its
+		// age instead and read back through GetFresh, which is what the
+		// myEventsRefetchInterval bound on the read side is for.
+		_ = c.durable.Set(ctx, playerEventHistoryDurableKey(bcpUserID), CacheSchemaVersion, records)
+	}
 	return records, nil
+}
+
+// --- Durable caching for the two history feeds -------------------------
+//
+// Unlike everything else in this package that uses the durable cache,
+// these two aren't immutable: a player's registration list grows when
+// they sign up for something, and their placing history grows when an
+// event concludes. So they're stored with a real age and read back
+// through GetFresh, expiring at the same myEventsRefetchInterval the
+// in-memory Cache already uses for them.
+//
+// The reason they need durable storage at all is that the in-memory TTL
+// is 48 hours but the process it lives in is not: the deployed container
+// sleeps after ten minutes idle (see src/worker.ts's sleepAfter), so for
+// a low-traffic app that cache almost never survives between one
+// visitor's sessions. Each return visit was re-paying a full paginated
+// crawl of both endpoints — up to maxHistoryPages sequential BCP
+// requests each — which is both the slowest thing this API does and the
+// least respectful use of BCP's endpoint. Persisting it turns that into
+// one Postgres read.
+//
+// Keyed with a prefix because the two in-memory caches both key on the
+// bare bcpUserID and only avoid collision by being separate Cache
+// instances; the durable table is one shared keyspace.
+func playerEventHistoryDurableKey(bcpUserID string) string {
+	return "playerhistory:" + bcpUserID
+}
+
+func placingHistoryDurableKey(bcpUserID string) string {
+	return "placinghistory:" + bcpUserID
+}
+
+// seedFromDurable loads key into cache with the age it actually has, if
+// there's a fresh-enough row, and reports whether it did. Only consulted
+// when the in-memory cache has nothing for this user at all — a live
+// entry is always at least as fresh as a stored one, and re-reading
+// Postgres behind it would be pure overhead.
+func seedFromDurable[T any](ctx context.Context, d DurableCache, cache *Cache[T], key, durableKey string, maxAge time.Duration) bool {
+	if d == nil {
+		return false
+	}
+	if _, cached := cache.FetchedAt(key); cached {
+		return false
+	}
+	var stored T
+	found, cachedAt, err := d.GetFresh(ctx, durableKey, CacheSchemaVersion, maxAge, &stored)
+	if err != nil || !found {
+		// A durable read failing is never fatal — it just means the
+		// normal BCP fetch happens, exactly as it did before this
+		// cache existed.
+		return false
+	}
+	cache.Put(key, stored, cachedAt)
+	return true
 }
 
 // FetchPlayerEventHistory returns every event a BCP user has ever
@@ -131,6 +193,7 @@ func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID 
 // rate-limited per user. Pair with FetchPlacingHistory and, for events
 // not covered there, FetchEventInfo to classify each one.
 func (c *Client) FetchPlayerEventHistory(ctx context.Context, bcpUserID string) ([]PlayerEventRecord, error) {
+	seedFromDurable(ctx, c.durable, c.playerEventHistory, bcpUserID, playerEventHistoryDurableKey(bcpUserID), myEventsRefetchInterval)
 	return c.playerEventHistory.Get(ctx, bcpUserID)
 }
 
@@ -141,7 +204,17 @@ func (c *Client) FetchPlayerEventHistory(ctx context.Context, bcpUserID string) 
 // doc comment for why this is meant for an explicit "check again now"
 // action, not routine use.
 func (c *Client) InvalidatePlayerEventHistory(bcpUserID string) {
-	c.playerEventHistory.Invalidate(bcpUserID)
+	if !c.playerEventHistory.Invalidate(bcpUserID) {
+		// Throttled (see Cache.Invalidate) — leave the durable row
+		// alone too, otherwise the next read would go all the way to
+		// BCP and the throttle would have achieved nothing.
+		return
+	}
+	if c.durable != nil {
+		// Best-effort: if this fails the worst case is the stale row
+		// gets served once more, which is what used to happen anyway.
+		_ = c.durable.Delete(context.Background(), playerEventHistoryDurableKey(bcpUserID))
+	}
 }
 
 // PlayerEventHistoryFetchedAt reports when this user's registration list
@@ -235,6 +308,12 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 		return entries[i].EventDate > entries[j].EventDate // most recent first
 	})
 
+	if c.durable != nil {
+		// Same reasoning as the registration list above: a player's
+		// placing history gains an entry every time an event they were
+		// in concludes, so it's age-bounded rather than permanent.
+		_ = c.durable.Set(ctx, placingHistoryDurableKey(bcpUserID), CacheSchemaVersion, entries)
+	}
 	return entries, nil
 }
 
@@ -242,5 +321,6 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 // event a BCP user has a placing in, cached and rate-limited per user,
 // most recent first. Any event returned here is unambiguously "Past".
 func (c *Client) FetchPlacingHistory(ctx context.Context, bcpUserID string) ([]PlacingHistoryEntry, error) {
+	seedFromDurable(ctx, c.durable, c.placingHistory, bcpUserID, placingHistoryDurableKey(bcpUserID), myEventsRefetchInterval)
 	return c.placingHistory.Get(ctx, bcpUserID)
 }

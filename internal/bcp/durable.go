@@ -1,6 +1,10 @@
 package bcp
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
 
 // DurableCache is the persistence layer a Client optionally writes
 // permanently-cacheable BCP responses to and reads them back from —
@@ -27,14 +31,36 @@ import "context"
 // permanent). Because of that, a version match is trusted
 // unconditionally on read — there's no TTL or "is this still valid"
 // check beyond the version, unlike the in-memory Cache.
+//
+// GetFresh, GetMany and Delete exist for the two kinds of durable value
+// that *aren't* permanent:
+//
+//   - GetFresh is Get plus a maximum age, for data that does change —
+//     a player's own event/placing history (history.go), which gains
+//     entries whenever they register for something. It also returns when
+//     the row was written, so an entry seeded from it can carry its real
+//     age rather than claiming it was just fetched. The cached_at column
+//     has existed since migration 0004 and this is the first thing to
+//     read it back.
+//   - GetMany reads a whole set of keys in one query. Callers that know
+//     their key set up front (see Client.PrewarmEventInfo) use it to
+//     avoid one round trip per key — with a cold in-memory cache, a
+//     player's stats page was doing one SELECT per event they'd ever
+//     attended, sequentially.
+//   - Delete drops a row so a user-initiated refresh isn't immediately
+//     undone by reloading the same stale value from Postgres.
 type DurableCache interface {
 	Get(ctx context.Context, key string, version int, dest any) (bool, error)
 	Set(ctx context.Context, key string, version int, value any) error
+	GetFresh(ctx context.Context, key string, version int, maxAge time.Duration, dest any) (bool, time.Time, error)
+	GetMany(ctx context.Context, keys []string, version int) (map[string]json.RawMessage, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // CacheSchemaVersion tags every durable Get/Set call in this package.
 // Bump it whenever a struct that flows into the durable cache
-// (EventInfo, Player, PairingRecord, PlacingEntry, LeagueInfo) gains or
+// (EventInfo, Player, PairingRecord, PlacingEntry, LeagueInfo,
+// PlayerEventRecord, PlacingHistoryEntry) gains or
 // changes a field that existing callers should stop trusting — every
 // previously-written row (including rows written before this version
 // column even existed, which the 0012 migration backfilled to 0) then
@@ -51,4 +77,98 @@ const CacheSchemaVersion = 1
 // safe to swap concurrently with in-flight requests.
 func (c *Client) SetDurableCache(d DurableCache) {
 	c.durable = d
+}
+
+// prewarm loads every key that's in the durable cache but not yet in
+// memory, in one query, and seeds the in-memory cache with what it
+// finds. Keys already in memory are skipped (a live entry is never worse
+// than a stored one), and keys with no row are simply left alone for the
+// normal per-key fetch path to handle.
+//
+// Seeded entries get time.Now() rather than the row's own cached_at, and
+// that's deliberate: everything prewarmed this way is immutable
+// (durable rows for event info and leagues are only ever written once
+// the data can't change again), so its age carries no information. This
+// is also exactly what the per-key path already does — Cache.Get stamps
+// time.Now() on whatever fetchEventInfoUncached returns, durable hit or
+// not — so prewarming doesn't change any entry's observable lifetime.
+// Contrast seedFromDurable in history.go, where age is real.
+func prewarm[T any](
+	ctx context.Context,
+	d DurableCache,
+	cache *Cache[T],
+	ids []string,
+	durableKey func(string) string,
+	decode func(json.RawMessage) (T, bool),
+) {
+	if d == nil || len(ids) == 0 {
+		return
+	}
+
+	keys := make([]string, 0, len(ids))
+	keyToID := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if _, cached := cache.FetchedAt(id); cached {
+			continue
+		}
+		key := durableKey(id)
+		if _, dup := keyToID[key]; dup {
+			continue
+		}
+		keys = append(keys, key)
+		keyToID[key] = id
+	}
+	if len(keys) == 0 {
+		return
+	}
+
+	found, err := d.GetMany(ctx, keys, CacheSchemaVersion)
+	if err != nil {
+		// Best-effort, like every other durable read: falling back to
+		// the per-key path is exactly the old behavior.
+		return
+	}
+	for key, raw := range found {
+		value, ok := decode(raw)
+		if !ok {
+			continue
+		}
+		cache.Put(keyToID[key], value, time.Now())
+	}
+}
+
+// PrewarmEventInfo loads any of these events' durably-cached info into
+// memory in a single query.
+//
+// Worth calling before any loop that fetches event info one id at a
+// time. internal/api/stats.go's eventInfoByID does exactly that, once
+// per distinct event in a player's whole placing history — with a cold
+// in-memory cache (which, given the container sleeps after ten minutes,
+// is most page loads) that was one sequential Postgres round trip per
+// event the player had ever attended.
+//
+// Only ended events are ever written durably (see events.go), so
+// anything this finds is by definition an event whose info can't change.
+func (c *Client) PrewarmEventInfo(ctx context.Context, eventIDs []string) {
+	prewarm(ctx, c.durable, c.eventInfo, eventIDs, eventInfoDurableKey, func(raw json.RawMessage) (EventInfo, bool) {
+		var info EventInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return EventInfo{}, false
+		}
+		return info, true
+	})
+}
+
+// PrewarmLeagueInfo is PrewarmEventInfo's counterpart for ITC league
+// metadata — see internal/api/stats.go's canonicalPlacingPerEvent, which
+// resolves one league per placing to decide which of a player's results
+// at an event is the flagship one.
+func (c *Client) PrewarmLeagueInfo(ctx context.Context, leagueIDs []string) {
+	prewarm(ctx, c.durable, c.leagueInfo, leagueIDs, leagueInfoDurableKey, func(raw json.RawMessage) (*LeagueInfo, bool) {
+		var info LeagueInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return nil, false
+		}
+		return &info, true
+	})
 }

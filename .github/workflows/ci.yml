@@ -114,6 +114,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go test -tags=integration ./internal/user/...
+      - run: go test -tags=integration ./internal/user/... ./internal/bcpcache/... ./internal/db/...
         env:
           DATABASE_URL: postgres://brassledger:brassledger@localhost:5432/brass_ledger?sslmode=disable

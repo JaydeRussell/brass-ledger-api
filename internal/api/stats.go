@@ -138,6 +138,43 @@ func classifyEventCategory(h bcp.PlacingHistoryEntry, teamEvent bool) (category 
 	return categoryRTT, true
 }
 
+// distinctEventIDs and distinctLeagueIDs collect the id sets the two
+// resolution passes below are about to look up one at a time, so they
+// can be prewarmed from the durable cache in a single query each. Both
+// preserve first-seen order, purely so the resulting queries are
+// deterministic and easy to read in a log.
+func distinctEventIDs(history []bcp.PlacingHistoryEntry) []string {
+	seen := make(map[string]struct{}, len(history))
+	ids := make([]string, 0, len(history))
+	for _, h := range history {
+		if h.EventID == "" {
+			continue
+		}
+		if _, dup := seen[h.EventID]; dup {
+			continue
+		}
+		seen[h.EventID] = struct{}{}
+		ids = append(ids, h.EventID)
+	}
+	return ids
+}
+
+func distinctLeagueIDs(history []bcp.PlacingHistoryEntry) []string {
+	seen := make(map[string]struct{}, len(history))
+	ids := make([]string, 0, len(history))
+	for _, h := range history {
+		if h.LeagueID == "" {
+			continue
+		}
+		if _, dup := seen[h.LeagueID]; dup {
+			continue
+		}
+		seen[h.LeagueID] = struct{}{}
+		ids = append(ids, h.LeagueID)
+	}
+	return ids
+}
+
 // canonicalPlacingPerEvent collapses a player's raw placing history down
 // to at most one entry per event. BCP scores one event under several
 // leagues/circuits at once — its flagship ITC ranking, a separate Hobby
@@ -423,7 +460,17 @@ func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string) (p
 	if err != nil {
 		return playerStatsResponse{}, err
 	}
+	// Both passes below resolve one id at a time, and every distinct id
+	// either needs is already knowable from rawHistory — so load whatever
+	// of it is durably cached in two queries up front rather than letting
+	// the loops do one round trip each. With a warm in-memory cache these
+	// are no-ops; with a cold one (most page loads, since the container
+	// sleeps after ten minutes idle) this is the difference between two
+	// queries and one per event the player has ever attended.
+	client.PrewarmLeagueInfo(ctx, distinctLeagueIDs(rawHistory))
+
 	history := canonicalPlacingPerEvent(ctx, client, rawHistory)
+	client.PrewarmEventInfo(ctx, distinctEventIDs(history))
 	infos := eventInfoByID(ctx, client, history)
 
 	resp := computePlayerStats(history, infos)
