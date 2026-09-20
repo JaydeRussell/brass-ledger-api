@@ -55,6 +55,26 @@ const (
 	// error margin, not slack.
 	estimatedPageBudget = 1400 * time.Millisecond
 
+	// What one event-page load may cost upstream.
+	//
+	// The event page is the heaviest thing in the app and the one
+	// actually used mid-event, on a phone, on venue wifi — and until
+	// now it had no budget at all, while /api/me/events and
+	// /api/me/stats each had one. The fixture below is one concluded
+	// event with one league and three players, which the frontend
+	// loads as: event info, roster, the ITC league lookup, one round of
+	// pairings, then one ITC ranking per player.
+	//
+	// That comes to 8: 1 event info (v2), 2 roster (/players and
+	// /teamplayers), 1 league, 1 pairings, 3 ITC rankings. The number
+	// to watch is the last one — it is one call per player by
+	// necessity, not by choice (BCP's /placings honours exactly one
+	// userId[]; repeated, comma-joined and userIds[] forms were all
+	// tested against the real API on 2026-09-20 and none of them
+	// filter). So this budget scales with roster size, and a team
+	// event's two full rosters are the worst case in the app.
+	eventPageUpstreamBudget = 8
+
 	// Per-key durable reads allowed for one /api/me/events on a warm
 	// durable cache. The two history feeds read theirs individually by
 	// design (two keys, not a set). What this bounds is anything *per
@@ -684,5 +704,200 @@ func TestLatencyBudget_ADeletedEventIsLookedUpOncePerProcessNotPerRequest(t *tes
 	}
 	if len(body.Past) != 1 || body.Past[0].EventID != "evt-placed" {
 		t.Errorf("Past = %+v, want just evt-placed — the real event must still be served", body.Past)
+	}
+}
+
+// TestLatencyBudget_ADeadLeagueLookupIsPaidForOnce pins the other
+// tolerate-and-skip site.
+//
+// canonicalPlacingPerEvent (stats.go) resolves one FetchLeagueInfo per
+// distinct league to decide which of a player's placings at an event is
+// the flagship one, and skips any league it can't resolve — "an
+// unresolvable league just means this row can't win flagship status —
+// not a failed request". That is sound behaviour and identical in shape
+// to the one that caused v0.19.7: /api/me/events tolerated a dead event
+// the same way, and because the response still looked correct, two
+// permanently-deleted registrations cost a real BCP round trip on every
+// single page load for weeks without anyone noticing.
+//
+// The fix for that was negative caching in bcp.Cache (goneTTL), which
+// covers this call site too — but nothing asserted it here, and an
+// untested shared fix is exactly how the first one hid. So: a league
+// BCP says does not exist must be asked about once, not once per
+// request.
+func TestLatencyBudget_ADeadLeagueLookupIsPaidForOnce(t *testing.T) {
+	store, cookie := linkedSession(t)
+
+	counts := &countingBCP{watched: map[string]bool{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, _ *http.Request) {
+		counts.enter("/eventplacings")
+		defer counts.leave("/eventplacings")
+		_, _ = w.Write([]byte(`{"data": [
+			{"placing": 3, "leagueId": "league-gone", "event": {"id": "evt-1", "name": "Ended Event", "eventDate": "2024-01-01T00:00:00.000Z"}}
+		]}`))
+	})
+	mux.HandleFunc("/players", func(w http.ResponseWriter, _ *http.Request) {
+		counts.enter("/players")
+		defer counts.leave("/players")
+		_, _ = w.Write([]byte(`{"data": []}`))
+	})
+	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, _ *http.Request) {
+		counts.enter("/events/:id")
+		defer counts.leave("/events/:id")
+		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Ended Event", "status": {"started": true, "ended": true}}`))
+	})
+	// The league this account's placing is scored under has been
+	// deleted. BCP will say so every time it is asked, forever.
+	mux.HandleFunc("/leagues/league-gone", func(w http.ResponseWriter, _ *http.Request) {
+		counts.enter("/leagues/:id")
+		defer counts.leave("/leagues/:id")
+		w.WriteHeader(http.StatusNotFound)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	e := newStatsTestEcho(store, bcp.NewClientWithBaseURL(server.URL))
+
+	const requests = 3
+	for range requests {
+		getWithSession(t, e, "/api/me/stats", cookie)
+	}
+
+	_, _, byPath := counts.snapshot()
+	if got := byPath["/leagues/:id"]; got != 1 {
+		t.Errorf("a permanently-deleted league was looked up %d times across %d requests, want 1.\n"+
+			"By path: %v\n"+
+			"A tolerated failure is still a request: this costs a real BCP round trip on every page load "+
+			"while the response stays correct, so nothing looks broken. See goneTTL in internal/bcp/cache.go.",
+			got, requests, byPath)
+	}
+}
+
+// eventPageServer serves one *in-progress* event with a league and
+// three players — the shape the event page loads on mount.
+//
+// Live, not concluded, deliberately. A concluded event is the easy
+// case: only ended events are written durably, so every lookup is
+// protected by both the in-memory cache and Postgres, and a budget
+// built on one cannot fail when the other breaks. Mid-event is the
+// case CLAUDE.md's two-second rule is actually written about — nothing
+// persists, the 60-second in-memory cache is the only thing between
+// this page and BCP, and the round counts below are what a phone on
+// venue wifi pays.
+func eventPageServer(t *testing.T) (*httptest.Server, *countingBCP) {
+	t.Helper()
+	counts := &countingBCP{watched: map[string]bool{}}
+
+	handle := func(path, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			counts.enter(path)
+			defer counts.leave(path)
+			time.Sleep(stubDwell)
+			_, _ = w.Write([]byte(body))
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1", handle("/events/:id", `{"id": "evt-1", "name": "Live Event",
+		"status": {"started": true, "ended": false, "currentRound": 3, "numberOfRounds": 5},
+		"leagues": [{"id": "league-1", "name": "Flagship"}]}`))
+	mux.HandleFunc("/events/evt-1/players", handle("/events/:id/players", `{"active": [
+		{"id": "p1", "user": {"id": "u1", "firstName": "Ada", "lastName": "L"}, "faction": {"name": "Necrons"}},
+		{"id": "p2", "user": {"id": "u2", "firstName": "Bo", "lastName": "M"}, "faction": {"name": "Orks"}},
+		{"id": "p3", "user": {"id": "u3", "firstName": "Cy", "lastName": "N"}, "faction": {"name": "Tau"}}
+	]}`))
+	mux.HandleFunc("/events/evt-1/teamplayers", handle("/events/:id/teamplayers", `{"active": []}`))
+	mux.HandleFunc("/events/evt-1/pairings", handle("/events/:id/pairings", `{"active": [
+		{"id": "pair-1", "round": 3, "table": 1, "player1Id": "p1", "player2Id": "p2", "published": true}
+	]}`))
+	mux.HandleFunc("/leagues/league-1", handle("/leagues/:id", `{"name": "Flagship", "gw_itc": true, "hobby": false}`))
+	mux.HandleFunc("/placings", handle("/placings", `{"data": [{"userId": "u1", "ITCPoints": 91.5, "placing": 12}]}`))
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, counts
+}
+
+// TestLatencyBudget_EventPageStaysWithinItsUpstreamBudget budgets the
+// page people actually wait on.
+//
+// It loads exactly what the frontend loads on mount and asserts two
+// things the rest of this file doesn't cover:
+//
+//   - event info is fetched once, not once per route that needs it.
+//     Three of these routes resolve the same event (/api/events/:id,
+//     the ITC league lookup, and — until the write path stops doing it
+//     — the roster's own durable-persistence check), so this is the
+//     single likeliest thing to regress when that code is touched.
+//   - the roster is fetched once no matter how many views read it.
+func TestLatencyBudget_EventPageStaysWithinItsUpstreamBudget(t *testing.T) {
+	server, counts := eventPageServer(t)
+	client := bcp.NewClientWithBaseURL(server.URL)
+	// A durable cache is installed even though this event is live and
+	// so nothing will be written to it. Both halves matter: every
+	// persist-if-ended check in internal/bcp sits inside
+	// `if c.durable != nil`, so omitting it would skip those code paths
+	// entirely and the "fetched once" assertions below would guard
+	// nothing — while an *ended* fixture would let Postgres absorb a
+	// broken in-memory cache and hide the same regression the other
+	// way. Live event, durable cache present, nothing persisted: the
+	// in-memory cache is on its own, which is the point.
+	client.SetDurableCache(newCountingDurable())
+	e := newBCPTestEcho(client)
+
+	// Deliberately with the repeats a real load makes. The Overview,
+	// Roster, Pairings and Placings views each read the roster; the
+	// round board, "my pairings" and a team pairing's expanded boards
+	// each read the same round; several panels ask for the same
+	// player's ITC ranking. FetchRoundPairings' doc comment promises
+	// that costs one upstream request "no matter how many of those
+	// views ask for it" — this is what holds it to that. A list with no
+	// duplicates cannot: it passes with every cache in the client
+	// switched off.
+	for _, path := range []string{
+		"/api/events/evt-1",
+		"/api/events/evt-1/players",
+		"/api/itc/leagues/event/evt-1",
+		"/api/events/evt-1/pairings?type=Pairing&round=3",
+		"/api/itc/rankings?leagueId=league-1&userId=u1",
+		"/api/itc/rankings?leagueId=league-1&userId=u2",
+		"/api/itc/rankings?leagueId=league-1&userId=u3",
+		// second wave: the same data, different views
+		"/api/events/evt-1/players",
+		"/api/events/evt-1/pairings?type=Pairing&round=3",
+		"/api/events/evt-1",
+		"/api/itc/rankings?leagueId=league-1&userId=u1",
+		"/api/events/evt-1/pairings?type=Pairing&round=3",
+		"/api/events/evt-1/players",
+	} {
+		if rec := doBCPRequest(e, http.MethodGet, path); rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200 (body: %s)", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	total, _, byPath := counts.snapshot()
+	if total > eventPageUpstreamBudget {
+		t.Errorf("one event-page load made %d upstream requests, budget is %d.\nBy path: %v\n"+
+			"This is the page used mid-event on venue wifi — see CLAUDE.md's two-second rule.",
+			total, eventPageUpstreamBudget, byPath)
+	}
+	if got := byPath["/events/:id"]; got != 1 {
+		t.Errorf("event info fetched %d times across one page load, want 1.\nBy path: %v\n"+
+			"Several routes resolve the same event; they are meant to share one cached lookup.", got, byPath)
+	}
+	if got := byPath["/events/:id/players"]; got != 1 {
+		t.Errorf("roster fetched %d times across one page load, want 1 — "+
+			"every view that shows a player reads the same roster", got)
+	}
+	if got := byPath["/events/:id/pairings"]; got != 1 {
+		t.Errorf("one round's pairings fetched %d times across one page load, want 1.\n"+
+			"The board, \"my pairings\" and a team pairing's individual boards are all "+
+			"derived from the same round — see FetchRoundPairings' doc comment.", got)
+	}
+	if got := byPath["/placings"]; got != 3 {
+		t.Errorf("ITC rankings cost %d upstream calls for 3 players, want 3.\nBy path: %v\n"+
+			"If this dropped, a batch form was found and the budget above should come down with it; "+
+			"if it rose, the per-player cache stopped working.", got, byPath)
 	}
 }

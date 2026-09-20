@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"sort"
 	"time"
@@ -34,6 +35,29 @@ import (
 // misbehaving account can't turn one request into an unbounded crawl of
 // BCP's API.
 const maxHistoryPages = 10
+
+// warnIfTruncated reports a crawl that stopped because it hit
+// maxHistoryPages while BCP was still offering another page.
+//
+// Before this, that case was completely silent: the response looked
+// correct, the events past the cap were simply absent, and nothing —
+// no log, no error, no field on the response — said so. An account
+// with more than maxHistoryPages*100 records would just quietly stop
+// having a full history, which is a wrong-data bug wearing a
+// performance cap's clothing.
+//
+// A log line is the floor, not the fix. The honest fix surfaces it to
+// the caller (and the frontend) so a user can be told their history is
+// incomplete; that needs these two crawls to return a flag alongside
+// their records, which is a wider change than the cap itself warrants
+// today. Revisit if anyone actually approaches the cap.
+func warnIfTruncated(feed, bcpUserID string, records int, nextKey string) {
+	if nextKey == "" {
+		return
+	}
+	log.Printf("bcp: %s history for user %s truncated at %d pages (%d records) — BCP still had more",
+		feed, bcpUserID, maxHistoryPages, records)
+}
 
 // decodeNextKey normalizes a paginated response's nextKey field into the
 // string form the *next* request's "nextKey" query param expects.
@@ -118,11 +142,12 @@ func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID 
 		if err != nil {
 			return nil, fmt.Errorf("decoding nextKey from %s: %w", rawURL, err)
 		}
+		nextKey = next
 		if next == "" {
 			break
 		}
-		nextKey = next
 	}
+	warnIfTruncated("registration", bcpUserID, len(records), nextKey)
 	if c.durable != nil {
 		// Written unconditionally, unlike the event/roster/placings
 		// caches, which only persist once BCP says the event has ended.
@@ -298,11 +323,12 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 		if err != nil {
 			return nil, fmt.Errorf("decoding nextKey from %s: %w", rawURL, err)
 		}
+		nextKey = next
 		if next == "" {
 			break
 		}
-		nextKey = next
 	}
+	warnIfTruncated("placing", bcpUserID, len(entries), nextKey)
 
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entries[i].EventDate > entries[j].EventDate // most recent first
