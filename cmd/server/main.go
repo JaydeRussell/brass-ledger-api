@@ -102,6 +102,11 @@ func main() {
 	if err := e.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("shutdown: %v", err)
 	}
+	// Durable cache writes happen off the request path, so in-flight
+	// ones can outlive the request that started them. Losing one only
+	// costs a future BCP call, but a deploy is the moment most of them
+	// are in flight, and waiting costs nothing when there are none.
+	bcpClient.FlushDurableWrites()
 }
 
 // newServer wires up the Echo instance and routes. Split out from main

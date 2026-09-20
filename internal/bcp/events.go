@@ -210,7 +210,7 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 	// A failed write just means this gets asked of BCP again next time;
 	// not worth failing the request over.
 	if c.durable != nil && eventInfoTTL(info) > minRefetchInterval {
-		_ = c.durable.Set(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, info)
+		c.storeDurably(ctx, eventInfoDurableKey(eventID), info)
 	}
 
 	return info, nil

@@ -202,6 +202,7 @@ func TestFetchItcRanking_SurvivesAColdProcess(t *testing.T) {
 	if *calls != 1 {
 		t.Fatalf("first fetch made %d upstream calls, want 1", *calls)
 	}
+	first.FlushDurableWrites()
 
 	second := NewClientWithBaseURL(server.URL)
 	second.SetDurableCache(durable)
@@ -244,6 +245,7 @@ func TestFetchItcRanking_NoRankingIsCachedToo(t *testing.T) {
 		if got != nil {
 			t.Fatalf("fetch %d returned %+v, want nil for a player with no ranking", i+1, got)
 		}
+		client.FlushDurableWrites()
 	}
 
 	if *calls != 1 {
@@ -283,6 +285,10 @@ func TestFetchItcRanking_IsKeptForHours(t *testing.T) {
 	if _, err := client.FetchItcRanking(context.Background(), "league-1", "u1"); err != nil {
 		t.Fatalf("seed fetch: %v", err)
 	}
+	// Durable writes happen off the request path now, so a test that
+	// reaches into the stored row has to wait for the write it is
+	// about to inspect.
+	client.FlushDurableWrites()
 
 	key := itcRankingDurableKey("league-1", "u1")
 	entry := durable.data[key]
@@ -314,6 +320,10 @@ func TestFetchItcRanking_StaleDurableRowIsRefetched(t *testing.T) {
 	if _, err := client.FetchItcRanking(context.Background(), "league-1", "u1"); err != nil {
 		t.Fatalf("seed fetch: %v", err)
 	}
+	// Durable writes happen off the request path now, so a test that
+	// reaches into the stored row has to wait for the write it is
+	// about to inspect.
+	client.FlushDurableWrites()
 
 	// Age the stored row past itcRankingRefetchInterval.
 	key := itcRankingDurableKey("league-1", "u1")

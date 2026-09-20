@@ -60,7 +60,7 @@ func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairin
 	// fetchPlayersUncached above.
 	if c.durable != nil {
 		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
-			_ = c.durable.Set(ctx, durableKey, CacheSchemaVersion, body.Active)
+			c.storeDurably(ctx, durableKey, body.Active)
 		}
 	}
 

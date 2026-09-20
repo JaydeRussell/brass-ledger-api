@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -91,6 +92,10 @@ type Client struct {
 
 	// See durable.go — nil unless SetDurableCache is called.
 	durable DurableCache
+	// Background durable writes: a concurrency bound and a way to wait
+	// for them (shutdown, tests). See storeDurably.
+	durableWriteSlots chan struct{}
+	durableWrites     sync.WaitGroup
 }
 
 // --- How long an event's info is worth keeping -------------------------
@@ -172,10 +177,11 @@ func NewClientWithBaseURL(base string) *Client {
 // httptest.Server otherwise.
 func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	c := &Client{
-		http:      &http.Client{Timeout: 15 * time.Second},
-		apiBaseV1: apiBaseV1,
-		apiBaseV2: apiBaseV2,
-		siteBase:  siteBase,
+		http:              &http.Client{Timeout: 15 * time.Second},
+		durableWriteSlots: make(chan struct{}, maxConcurrentDurableWrites),
+		apiBaseV1:         apiBaseV1,
+		apiBaseV2:         apiBaseV2,
+		siteBase:          siteBase,
 	}
 
 	c.eventInfo = NewCacheWithValueTTL(func(ctx context.Context, eventID string) (EventInfo, error) {

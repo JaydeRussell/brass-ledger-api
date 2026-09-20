@@ -132,7 +132,7 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 	// the Roster tab.
 	if c.durable != nil {
 		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
-			_ = c.durable.Set(ctx, playersDurableKey(eventID), CacheSchemaVersion, players)
+			c.storeDurably(ctx, playersDurableKey(eventID), players)
 		}
 	}
 

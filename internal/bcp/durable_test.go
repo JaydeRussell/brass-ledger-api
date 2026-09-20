@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,12 @@ import (
 // tested for the same reason internal/user/store.go isn't: it's a thin
 // marshal/exec wrapper that needs a real database to test meaningfully.
 type fakeDurableCache struct {
+	// Guards everything below. The real implementation (internal/bcpcache)
+	// is pgxpool-backed and safe for concurrent use; this fake has to be
+	// too, now that durable writes happen on background goroutines and
+	// several can be in flight at once. Without it the race detector
+	// fires on any test whose fetch persists more than one key.
+	mu           sync.Mutex
 	data         map[string]fakeDurableCacheEntry
 	sets         int
 	deletes      int
@@ -37,6 +44,8 @@ func newFakeDurableCache() *fakeDurableCache {
 }
 
 func (f *fakeDurableCache) Get(_ context.Context, key string, version int, dest any) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	entry, ok := f.data[key]
 	if !ok || entry.version != version {
 		return false, nil
@@ -45,6 +54,8 @@ func (f *fakeDurableCache) Get(_ context.Context, key string, version int, dest 
 }
 
 func (f *fakeDurableCache) Set(_ context.Context, key string, version int, value any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -55,6 +66,8 @@ func (f *fakeDurableCache) Set(_ context.Context, key string, version int, value
 }
 
 func (f *fakeDurableCache) GetFresh(_ context.Context, key string, version int, maxAge time.Duration, dest any) (bool, time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	entry, ok := f.data[key]
 	if !ok || entry.version != version {
 		return false, time.Time{}, nil
@@ -66,6 +79,8 @@ func (f *fakeDurableCache) GetFresh(_ context.Context, key string, version int, 
 }
 
 func (f *fakeDurableCache) GetMany(_ context.Context, keys []string, version int) (map[string]DurableRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.getManyCalls++
 	found := make(map[string]DurableRow, len(keys))
 	for _, key := range keys {
@@ -83,6 +98,8 @@ func (f *fakeDurableCache) GetMany(_ context.Context, keys []string, version int
 }
 
 func (f *fakeDurableCache) Delete(_ context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.data, key)
 	f.deletes++
 	return nil
@@ -114,6 +131,7 @@ func TestFetchEventInfo_DurableCache(t *testing.T) {
 		if _, err := client.FetchEventInfo(context.Background(), "evt-1"); err != nil {
 			t.Fatalf("FetchEventInfo: %v", err)
 		}
+		client.FlushDurableWrites()
 		if fake.sets != 1 {
 			t.Fatalf("durable Set called %d times, want 1", fake.sets)
 		}
@@ -121,6 +139,7 @@ func TestFetchEventInfo_DurableCache(t *testing.T) {
 		// A different Client (fresh in-memory cache), same durable cache,
 		// pointed at a server that fails any request — should be served
 		// entirely from the durable cache.
+		client.FlushDurableWrites()
 		client2 := NewClientWithBaseURL(failingServer(t).URL)
 		client2.SetDurableCache(fake)
 		got, err := client2.FetchEventInfo(context.Background(), "evt-1")
@@ -144,6 +163,7 @@ func TestFetchEventInfo_DurableCache(t *testing.T) {
 		if _, err := client.FetchEventInfo(context.Background(), "evt-live"); err != nil {
 			t.Fatalf("FetchEventInfo: %v", err)
 		}
+		client.FlushDurableWrites()
 		if fake.sets != 0 {
 			t.Errorf("durable Set called %d times, want 0 (event hasn't ended)", fake.sets)
 		}
@@ -182,6 +202,7 @@ func TestDurableCache_VersionMismatchBustsCache(t *testing.T) {
 	// Re-cached at the current version — a fresh Client pointed at a
 	// failing server should now be served from the durable cache again,
 	// with the up-to-date value.
+	client.FlushDurableWrites()
 	client2 := NewClientWithBaseURL(failingServer(t).URL)
 	client2.SetDurableCache(fake)
 	got2, err := client2.FetchEventInfo(context.Background(), "evt-1")
@@ -208,10 +229,12 @@ func TestFetchLeagueInfo_DurableCache(t *testing.T) {
 	if _, err := client.FetchLeagueInfo(context.Background(), "league-1"); err != nil {
 		t.Fatalf("FetchLeagueInfo: %v", err)
 	}
+	client.FlushDurableWrites()
 	if fake.sets != 1 {
 		t.Fatalf("durable Set called %d times, want 1 (leagues persist unconditionally, no ended gate)", fake.sets)
 	}
 
+	client.FlushDurableWrites()
 	client2 := NewClientWithBaseURL(failingServer(t).URL)
 	client2.SetDurableCache(fake)
 	got, err := client2.FetchLeagueInfo(context.Background(), "league-1")
@@ -239,10 +262,12 @@ func TestFetchPlayers_DurableCache(t *testing.T) {
 	}
 	// One Set for the event info (fetched internally to check Ended) and
 	// one for the roster itself.
+	client.FlushDurableWrites()
 	if fake.sets != 2 {
 		t.Fatalf("durable Set called %d times, want 2 (event info + roster)", fake.sets)
 	}
 
+	client.FlushDurableWrites()
 	client2 := NewClientWithBaseURL(failingServer(t).URL)
 	client2.SetDurableCache(fake)
 	got, err := client2.FetchPlayers(context.Background(), "evt-1")
@@ -268,6 +293,7 @@ func TestFetchRoundPairings_DurableCache(t *testing.T) {
 		t.Fatalf("FetchRoundPairings: %v", err)
 	}
 
+	client.FlushDurableWrites()
 	client2 := NewClientWithBaseURL(failingServer(t).URL)
 	client2.SetDurableCache(fake)
 	got, err := client2.FetchRoundPairings(context.Background(), "evt-1", "Pairing", 1)
@@ -293,6 +319,7 @@ func TestFetchPlacings_DurableCache(t *testing.T) {
 		t.Fatalf("FetchPlacings: %v", err)
 	}
 
+	client.FlushDurableWrites()
 	client2 := NewClientWithBaseURL(failingServer(t).URL)
 	client2.SetDurableCache(fake)
 	got, err := client2.FetchPlacings(context.Background(), "evt-1", false)
@@ -337,6 +364,7 @@ func TestPlayerEventHistory_DurableCacheSurvivesANewClient(t *testing.T) {
 
 	// A second process (fresh in-memory cache, same Postgres) must not
 	// reach BCP at all — its upstream fails every request to prove it.
+	first.FlushDurableWrites()
 	second := NewClientWithBaseURL(failingServer(t).URL)
 	second.SetDurableCache(fake)
 	got, err = second.FetchPlayerEventHistory(context.Background(), "user-1")
@@ -449,6 +477,8 @@ func TestInvalidatePlayerEventHistory_ThrottledCallLeavesTheDurableRowAlone(t *t
 		t.Fatalf("fetch: %v", err)
 	}
 
+	client.FlushDurableWrites()
+
 	client.InvalidatePlayerEventHistory("user-1") // immediately after — throttled
 	if fake.deletes != 0 {
 		t.Errorf("durable Delete called %d times on a throttled invalidate, want 0", fake.deletes)
@@ -474,6 +504,7 @@ func TestPlacingHistory_DurableCacheSurvivesANewClient(t *testing.T) {
 		t.Fatalf("first fetch: %v", err)
 	}
 
+	first.FlushDurableWrites()
 	second := NewClientWithBaseURL(failingServer(t).URL)
 	second.SetDurableCache(fake)
 	got, err := second.FetchPlacingHistory(context.Background(), "user-1")
@@ -700,12 +731,14 @@ func TestEventInfo_FarOffEventSurvivesANewClient(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("calls = %d after the first fetch, want 1", calls)
 	}
+	first.FlushDurableWrites()
 	if _, stored := fake.data[eventInfoDurableKey("evt-future")]; !stored {
 		t.Fatal("a far-off event was not persisted — its six-hour TTL is useless in a ten-minute process")
 	}
 
 	// A new process, same Postgres. Its upstream fails every request, so
 	// anything it returns came from the durable cache.
+	first.FlushDurableWrites()
 	second := NewClientWithBaseURL(failingServer(t).URL)
 	second.SetDurableCache(fake)
 	got, err := second.FetchEventInfo(context.Background(), "evt-future")
@@ -765,5 +798,80 @@ func TestEventInfo_InProgressEventIsNotPersisted(t *testing.T) {
 	}
 	if _, stored := fake.data[eventInfoDurableKey("evt-live")]; stored {
 		t.Error("an in-progress event was persisted — its current round changes, so a stored copy goes stale immediately")
+	}
+}
+
+// blockingDurableCache holds every Set open until released, so a test
+// can prove a fetch didn't wait for one.
+type blockingDurableCache struct {
+	fakeDurableCache
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *blockingDurableCache) Set(ctx context.Context, key string, version int, value any) error {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return b.fakeDurableCache.Set(ctx, key, version, value)
+}
+
+// TestDurableWritesDoNotBlockTheResponse is the point of doing them in
+// the background.
+//
+// A cold fetch used to pay a BCP round trip and then a Neon write
+// before it could answer, and /api/me/events does that for every
+// pending event at once. Nothing in the response depends on the write:
+// the value being stored is already in hand and already being returned.
+func TestDurableWritesDoNotBlockTheResponse(t *testing.T) {
+	blocking := &blockingDurableCache{
+		fakeDurableCache: *newFakeDurableCache(),
+		release:          make(chan struct{}),
+		entered:          make(chan struct{}, 1),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1", jsonHandler(http.StatusOK,
+		`{"id": "evt-1", "name": "Ended Event", "status": {"ended": true}}`))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := newTestClient(server)
+	client.SetDurableCache(blocking)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.FetchEventInfo(context.Background(), "evt-1")
+		done <- err
+	}()
+
+	// The write is stuck. The fetch must not be.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("FetchEventInfo: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fetch was still waiting on a durable write that had not completed — " +
+			"the response does not depend on that write and must not block on it")
+	}
+
+	// And the write is genuinely still pending, not skipped.
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("no durable write was attempted at all")
+	}
+	close(blocking.release)
+	client.FlushDurableWrites()
+
+	blocking.mu.Lock()
+	sets := blocking.sets
+	blocking.mu.Unlock()
+	if sets != 1 {
+		t.Errorf("durable Set landed %d times after the flush, want 1 — "+
+			"backgrounding a write must not mean dropping it", sets)
 	}
 }
