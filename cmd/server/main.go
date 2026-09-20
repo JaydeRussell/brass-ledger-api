@@ -36,6 +36,15 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
+// durableCacheRetention is how long an expired durable-cache row is
+// kept before the startup prune removes it.
+//
+// Deliberately far beyond the longest TTL any of those rows has (48
+// hours, for the history feeds). The prune exists to bound growth, not
+// to reclaim space promptly — deleting a row a caller could still have
+// used just buys a needless request to BCP.
+const durableCacheRetention = 7 * 24 * time.Hour
+
 func main() {
 	// Loads a local .env file if one exists (for `go run` during
 	// development) — silently does nothing if it's missing, since a real
@@ -73,6 +82,22 @@ func main() {
 
 	if err := db.Migrate(ctx, pool); err != nil {
 		log.Fatalf("running database migrations: %v", err)
+	}
+
+	// Nothing ever removed a row from the durable cache. Most of what
+	// it holds is permanent on purpose, but the two per-user history
+	// feeds, ITC rankings and never-ended events all expire, and those
+	// simply accumulated. Pruned once at startup rather than on a timer:
+	// the container is recycled often enough that this runs regularly on
+	// its own, and a cheap indexed DELETE at boot costs nothing a cold
+	// start doesn't already pay.
+	//
+	// Non-fatal. A cache that failed to shrink is not a reason to refuse
+	// to serve.
+	if removed, err := bcpcache.New(pool).Prune(ctx, durableCacheRetention); err != nil {
+		log.Printf("pruning the durable BCP cache failed (continuing): %v", err)
+	} else if removed > 0 {
+		log.Printf("pruned %d expired rows from the durable BCP cache", removed)
 	}
 
 	bcpClient := bcp.NewClient()
@@ -280,10 +305,21 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// to link a dossier to in the first place. Same rate-limit shape
 		// as the public feedback route above, for the same "unauthenticated
 		// caller, real work behind it" reason.
+		// Tighter than the feedback route's limit above, despite the
+		// shared shape, because what sits behind them is not comparable.
+		// Feedback writes one row. A dossier runs statsForBcpUser, which
+		// for a bcpUserId nothing has cached yet crawls that player's
+		// whole placing history and resolves every event in it — so at
+		// 20/minute one anonymous caller could start twenty of those
+		// against an API we have no agreement with, simply by varying
+		// the id. Six a minute is still far more than reading dossiers
+		// requires (you look at one player at a time), and a repeat view
+		// of the same player is nearly free now that the underlying
+		// lookups are durably cached.
 		api.NewDossierHandler(userStore, bcpClient).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
-				Rate:      20.0 / 60, // ~20 requests/minute, refilled continuously
-				Burst:     5,
+				Rate:      6.0 / 60, // ~6 requests/minute, refilled continuously
+				Burst:     3,
 				ExpiresIn: 3 * time.Minute,
 			}),
 		}))
