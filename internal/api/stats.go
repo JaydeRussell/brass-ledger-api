@@ -78,21 +78,37 @@ type placingHistoryPoint struct {
 // (deduped) history — BCP already publishes it per event; this just
 // takes the min.
 type playerStatsResponse struct {
-	Linked            bool              `json:"linked"`
-	TotalEvents       int               `json:"totalEvents"`
-	BestPlacing       *placingWithField `json:"bestPlacing,omitempty"`
-	BestPlacingRTT    *placingWithField `json:"bestPlacingRtt,omitempty"`
-	BestPlacingGT     *placingWithField `json:"bestPlacingGt,omitempty"`
-	BestPlacingTeams  *placingWithField `json:"bestPlacingTeams,omitempty"`
-	Factions          []factionStat     `json:"factions"`
-	MostRecentEventID string            `json:"mostRecentEventId,omitempty"`
-	CompetingSince    string            `json:"competingSince,omitempty"`
+	Linked      bool `json:"linked"`
+	TotalEvents int  `json:"totalEvents"`
+	// EventDetailResolved reports whether the per-event lookups behind
+	// the three category splits and every fieldSize were actually
+	// performed.
+	//
+	// It exists so "we didn't look" is distinguishable from "there are
+	// none". Those fields are omitempty, so a summary response and a
+	// player who has genuinely never placed in a team event produce
+	// byte-identical JSON — and a consumer that couldn't tell the
+	// difference would render a confident em-dash for a stat nobody
+	// computed. False means the splits and field sizes are absent by
+	// request, not by absence.
+	EventDetailResolved bool              `json:"eventDetailResolved"`
+	BestPlacing         *placingWithField `json:"bestPlacing,omitempty"`
+	BestPlacingRTT      *placingWithField `json:"bestPlacingRtt,omitempty"`
+	BestPlacingGT       *placingWithField `json:"bestPlacingGt,omitempty"`
+	BestPlacingTeams    *placingWithField `json:"bestPlacingTeams,omitempty"`
+	Factions            []factionStat     `json:"factions"`
+	MostRecentEventID   string            `json:"mostRecentEventId,omitempty"`
+	CompetingSince      string            `json:"competingSince,omitempty"`
 	// Chronological (oldest first) — see placingHistoryPoint.
 	History []placingHistoryPoint `json:"history"`
 }
 
+// An empty response withholds nothing, so EventDetailResolved is true
+// regardless of mode — there were no placings for the per-event pass to
+// have told us anything about.
 func emptyPlayerStatsResponse(linked bool) playerStatsResponse {
-	return playerStatsResponse{Linked: linked, Factions: []factionStat{}, History: []placingHistoryPoint{}}
+	return playerStatsResponse{
+		EventDetailResolved: true, Linked: linked, Factions: []factionStat{}, History: []placingHistoryPoint{}}
 }
 
 // Event category buckets for the "best placing" split — a team event
@@ -300,7 +316,7 @@ func eventInfoByID(ctx context.Context, client bcpClient, history []bcp.PlacingH
 // re-groups and min()s it, never scores or ranks anything itself.
 // Expects history to already be deduped to one entry per event — see
 // canonicalPlacingPerEvent, which every real caller runs first.
-func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.EventInfo) playerStatsResponse {
+func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.EventInfo, withEventDetail bool) playerStatsResponse {
 	resp := emptyPlayerStatsResponse(true)
 	resp.TotalEvents = len(history)
 
@@ -331,14 +347,32 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 
 	var earliest time.Time
 	for _, h := range history {
-		fieldSize := infos[h.EventID].PlayerCount
+		// `resolved` matters as much as the value. A missing entry
+		// yields the zero EventInfo, whose TeamEvent is false — and
+		// classifyEventCategory accepts false as "not a team event" and
+		// files the result under GT or RTT from its dates. So an event
+		// that simply failed to load (eventInfoByID tolerates that) did
+		// not drop out of the split, it landed in the wrong bucket, and
+		// the response looked entirely correct. Checking whether we
+		// actually have the event is what makes "unknown" behave like
+		// unknown.
+		info, resolved := infos[h.EventID]
+		fieldSize := info.PlayerCount
 
 		t, dateOK := bcp.ParseDate(h.EventDate)
 
 		if h.Placing != nil {
 			resp.BestPlacing = keepBestWithField(resp.BestPlacing, *h.Placing, fieldSize)
-			category, categoryOK := classifyEventCategory(h, infos[h.EventID].TeamEvent)
-			if categoryOK {
+			// Classified only when we actually know whether this was a
+			// team event. The date span alone separates GT from RTT
+			// perfectly well and costs nothing — but it cannot see a
+			// team event at all, so without the lookup every team
+			// result is confidently filed as one of the other two.
+			// Absent is the honest answer; the response says so through
+			// eventDetailResolved.
+			categorised := withEventDetail && resolved
+			category, categoryOK := classifyEventCategory(h, info.TeamEvent)
+			if categorised && categoryOK {
 				switch category {
 				case categoryTeams:
 					resp.BestPlacingTeams = keepBestWithField(resp.BestPlacingTeams, *h.Placing, fieldSize)
@@ -362,7 +396,7 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 					FieldSize: fieldSize,
 					Faction:   h.Faction,
 				}
-				if categoryOK {
+				if categorised && categoryOK {
 					point.Category = category
 				}
 				datedHistory = append(datedHistory, datedPoint{t: t, p: point})
@@ -437,6 +471,18 @@ func NewStatsHandler(store userStore, client bcpClient) *StatsHandler {
 // some other player (roster, pairings, placings — anywhere a name
 // already carries a bcpUserId) and looks up that player's own summary
 // instead of the caller's.
+// requestedEventDetail reads ?summary=true, the opt-out from the
+// per-event pass.
+//
+// Opt-out rather than opt-in on purpose: the full response is what
+// every existing caller already expects, and a client that forgets the
+// param gets correct-but-slower rather than quietly-incomplete. The
+// three callers that pass it — Home's stat strip, and both sides of a
+// head-to-head lookup — read only fields the feed already carries.
+func requestedEventDetail(c echo.Context) bool {
+	return c.QueryParam("summary") != "true"
+}
+
 func (h *StatsHandler) Register(e *echo.Echo) {
 	e.GET("/api/me/stats", h.Stats)
 	e.GET("/api/players/:bcpUserId/stats", h.PlayerStats)
@@ -454,7 +500,7 @@ func (h *StatsHandler) Stats(c echo.Context) error {
 		return c.JSON(http.StatusOK, emptyPlayerStatsResponse(false))
 	}
 
-	resp, err := statsForBcpUser(c.Request().Context(), h.client, u.BcpUserID)
+	resp, err := statsForBcpUser(c.Request().Context(), h.client, u.BcpUserID, requestedEventDetail(c))
 	if err != nil {
 		return bcpError(c, err)
 	}
@@ -473,7 +519,7 @@ func (h *StatsHandler) PlayerStats(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "bcpUserId is required"})
 	}
 
-	resp, err := statsForBcpUser(c.Request().Context(), h.client, bcpUserID)
+	resp, err := statsForBcpUser(c.Request().Context(), h.client, bcpUserID, requestedEventDetail(c))
 	if err != nil {
 		return bcpError(c, err)
 	}
@@ -488,7 +534,26 @@ func (h *StatsHandler) PlayerStats(c echo.Context) error {
 // linked Brass Ledger account's own name for the public dossier page. A
 // package-level function rather than a method so DossierHandler doesn't
 // need a *StatsHandler dependency just to reuse this one computation.
-func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string) (playerStatsResponse, error) {
+// withEventDetail decides whether statsForBcpUser resolves every event
+// in the history, which is the difference between a handful of upstream
+// requests and one per event the player has ever attended.
+//
+// It buys exactly two things: the Team/GT/RTT split of best placing,
+// and the fieldSize behind every "of 42 - top 17%". Everything else in
+// the response — total events, overall best placing, the faction
+// breakdown, competing-since, the whole history series — comes out of
+// the placing-history feed and costs nothing extra.
+//
+// That ratio is the point. Measured by the scale test, a 500-event
+// account costs 399 upstream requests with detail and 4 without: 99% of
+// this endpoint's traffic to BCP exists to serve three stat tiles and a
+// suffix. Home renders none of them.
+const (
+	withEventDetail    = true
+	withoutEventDetail = false
+)
+
+func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string, eventDetail bool) (playerStatsResponse, error) {
 	rawHistory, err := client.FetchPlacingHistory(ctx, bcpUserID)
 	if err != nil {
 		return playerStatsResponse{}, err
@@ -501,33 +566,49 @@ func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string) (p
 	// sleeps after ten minutes idle) this is the difference between two
 	// queries and one per event the player has ever attended.
 	//
-	// Overlapped, because they were sequential and had no reason to be.
-	// The event prewarm used to take its ids from canonicalPlacingPerEvent's
-	// output, which made it look dependent on that step — but canonical
-	// only picks one row per event, so it never adds or removes an event
-	// id and distinctEventIDs(rawHistory) is the identical set. Both
-	// key sets are knowable before either query runs.
+	// Overlapped when both run, because they were sequential and had no
+	// reason to be: the event prewarm took its ids from
+	// canonicalPlacingPerEvent's output, which made it look dependent on
+	// that step, but canonical never adds or removes an event id so
+	// distinctEventIDs(rawHistory) is the identical set. Worth one Neon
+	// round trip, measured ~90ms from the deployed container on
+	// 2026-09-20 (/readyz against /healthz). See bcp/cost.go.
+	// League info is resolved in BOTH modes, and that is deliberate.
+	// canonicalPlacingPerEvent needs it to pick which row wins when BCP
+	// scored one event under several leagues, and that choice decides
+	// the placing and points every other figure is built from. Skipping
+	// it in summary mode would make Home's "best placing" disagree with
+	// the same number on /stats for anyone with a dual-league result —
+	// two pages, two answers, no way for a reader to know which is
+	// right. Leagues are a handful per game system per year and shared
+	// across every account, so this is nearly always already cached.
 	//
-	// Worth one round trip, which is not nothing here: a Neon read
-	// measured ~90ms from the deployed container on 2026-09-20
-	// (/readyz, which pings the database, against /healthz, which
-	// doesn't). See internal/bcp/cost.go's DurableReadCost.
+	// What summary mode actually skips is the per-event pass, which is
+	// the expensive one: see withEventDetail above.
 	var prewarm sync.WaitGroup
-	prewarm.Add(2)
+	prewarm.Add(1)
 	go func() {
 		defer prewarm.Done()
 		client.PrewarmLeagueInfo(ctx, distinctLeagueIDs(rawHistory))
 	}()
-	go func() {
-		defer prewarm.Done()
-		client.PrewarmEventInfo(ctx, distinctEventIDs(rawHistory))
-	}()
+	if eventDetail {
+		prewarm.Add(1)
+		go func() {
+			defer prewarm.Done()
+			client.PrewarmEventInfo(ctx, distinctEventIDs(rawHistory))
+		}()
+	}
 	prewarm.Wait()
 
 	history := canonicalPlacingPerEvent(ctx, client, rawHistory)
-	infos := eventInfoByID(ctx, client, history)
 
-	resp := computePlayerStats(history, infos)
+	var infos map[string]bcp.EventInfo
+	if eventDetail {
+		infos = eventInfoByID(ctx, client, history)
+	}
+
+	resp := computePlayerStats(history, infos, eventDetail)
+	resp.EventDetailResolved = eventDetail
 
 	if len(history) > 0 {
 		// history is sorted most-recent-first (FetchPlacingHistory's own
