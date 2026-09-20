@@ -124,8 +124,23 @@ func TestCache_Gone(t *testing.T) {
 			},
 		},
 		{
-			name: "a 500 is still retried every time",
+			// This used to assert the opposite — that a 5xx was retried
+			// on every single call — and that was wrong for a service
+			// every visitor shares. When BCP had a moment, every page
+			// load of every user retried immediately, so the traffic we
+			// sent them peaked exactly while they were least able to
+			// serve it. The request that failed a second ago was not
+			// going to succeed now.
+			//
+			// What has to stay true is that a transient failure never
+			// becomes a permanent one, which is why this backs off for
+			// upstreamFailureBackoff rather than goneTTL's hour.
+			name: "a 500 backs off briefly rather than being retried on every call",
 			run: func(t *testing.T) {
+				restore := upstreamFailureBackoff
+				upstreamFailureBackoff = 20 * time.Millisecond
+				t.Cleanup(func() { upstreamFailureBackoff = restore })
+
 				var calls int32
 				c := NewCache(func(ctx context.Context, key string) (string, error) {
 					atomic.AddInt32(&calls, 1)
@@ -137,14 +152,60 @@ func TestCache_Gone(t *testing.T) {
 						t.Fatal("Get returned nil error, want the upstream failure")
 					}
 				}
-				if calls != 3 {
-					t.Errorf("fetch called %d times, want 3 — a 5xx must stay retryable", calls)
+				if calls != 1 {
+					t.Errorf("fetch called %d times inside the backoff, want 1 — "+
+						"hammering an API that is already failing is the opposite of respecting it", calls)
+				}
+
+				time.Sleep(40 * time.Millisecond)
+				if _, err := c.Get(context.Background(), "flaky"); err == nil {
+					t.Fatal("Get returned nil error, want the upstream failure")
+				}
+				if calls != 2 {
+					t.Errorf("fetch called %d times after the backoff elapsed, want 2 — "+
+						"a 5xx must never become permanent", calls)
 				}
 			},
 		},
 		{
-			name: "a non-status error is still retried every time",
+			// The escape hatch that makes the backoff acceptable: a
+			// person who just watched something fail and pressed the
+			// refresh button gets a real request, not a replayed error.
+			// Same rule as everywhere else here — automatic traffic is
+			// rate-limited, an explicit user action never is.
+			name: "an explicit refresh bypasses the failure backoff",
 			run: func(t *testing.T) {
+				var calls int32
+				c := NewCache(func(ctx context.Context, key string) (string, error) {
+					n := atomic.AddInt32(&calls, 1)
+					if n == 1 {
+						return "", &StatusError{StatusCode: http.StatusBadGateway, URL: "u"}
+					}
+					return "recovered", nil
+				})
+
+				if _, err := c.Get(context.Background(), "flaky"); err == nil {
+					t.Fatal("first Get returned nil error, want the upstream failure")
+				}
+				if !c.Invalidate("flaky") {
+					t.Fatal("Invalidate reported nothing to clear after a failed fetch")
+				}
+				got, err := c.Get(context.Background(), "flaky")
+				if err != nil {
+					t.Fatalf("Get after an explicit refresh returned %v, want a real retry", err)
+				}
+				if got != "recovered" {
+					t.Errorf("Get after refresh = %q, want %q", got, "recovered")
+				}
+			},
+		},
+		{
+			name: "a transport failure backs off the same way a 5xx does",
+			run: func(t *testing.T) {
+				restore := upstreamFailureBackoff
+				upstreamFailureBackoff = 20 * time.Millisecond
+				t.Cleanup(func() { upstreamFailureBackoff = restore })
+
 				var calls int32
 				c := NewCache(func(ctx context.Context, key string) (string, error) {
 					atomic.AddInt32(&calls, 1)
@@ -156,8 +217,17 @@ func TestCache_Gone(t *testing.T) {
 						t.Fatal("Get returned nil error, want the transport failure")
 					}
 				}
-				if calls != 3 {
-					t.Errorf("fetch called %d times, want 3 — a transport failure must stay retryable", calls)
+				if calls != 1 {
+					t.Errorf("fetch called %d times inside the backoff, want 1", calls)
+				}
+
+				time.Sleep(40 * time.Millisecond)
+				if _, err := c.Get(context.Background(), "unreachable"); err == nil {
+					t.Fatal("Get returned nil error, want the transport failure")
+				}
+				if calls != 2 {
+					t.Errorf("fetch called %d times after the backoff, want 2 — "+
+						"a host that was unreachable a moment ago may well be reachable now", calls)
 				}
 			},
 		},

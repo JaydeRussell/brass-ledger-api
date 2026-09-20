@@ -3,6 +3,7 @@ package bcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,8 +110,19 @@ func TestCache_Get(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed fetch is not cached, so the next call retries",
+			// Previously "a failed fetch is not cached, so the next call
+			// retries". It is now held for upstreamFailureBackoff first
+			// — see TestCache_Gone — because retrying on every call
+			// meant an outage at BCP was met with our peak traffic. The
+			// property that still matters, and the one this checks, is
+			// that recovery is picked up as soon as the brief backoff
+			// is over.
+			name: "a failed fetch is retried once the backoff elapses",
 			run: func(t *testing.T) {
+				restore := upstreamFailureBackoff
+				upstreamFailureBackoff = 20 * time.Millisecond
+				t.Cleanup(func() { upstreamFailureBackoff = restore })
+
 				var calls int32
 				boom := errors.New("upstream boom")
 				c := NewCache(func(ctx context.Context, key string) (string, error) {
@@ -126,12 +138,20 @@ func TestCache_Get(t *testing.T) {
 					t.Fatalf("first Get error = %v, want %v", err, boom)
 				}
 
+				if _, err := c.Get(context.Background(), "flaky"); !errors.Is(err, boom) {
+					t.Fatalf("Get inside the backoff = %v, want the replayed failure", err)
+				}
+				if calls != 1 {
+					t.Fatalf("fetch called %d times inside the backoff, want 1", calls)
+				}
+
+				time.Sleep(40 * time.Millisecond)
 				got, err := c.Get(context.Background(), "flaky")
 				if err != nil {
-					t.Fatalf("second Get returned error: %v", err)
+					t.Fatalf("Get after the backoff returned error: %v", err)
 				}
 				if got != "recovered" {
-					t.Errorf("second Get = %q, want %q", got, "recovered")
+					t.Errorf("Get after the backoff = %q, want %q", got, "recovered")
 				}
 				if calls != 2 {
 					t.Errorf("fetch called %d times, want 2 (error must not have been cached)", calls)
@@ -334,4 +354,93 @@ func TestNewCacheWithTTL(t *testing.T) {
 			t.Errorf("fetch called %d times, want 1", calls)
 		}
 	})
+}
+
+// TestCache_OneCallerLeavingDoesNotFailTheOthers covers the fetch's
+// context.
+//
+// The fetch behind a key is shared: whoever arrives first starts it and
+// everyone else waits on that result. It used to run on the first
+// caller's context, so that caller going away — a browser navigating
+// off the page, which on venue wifi happens constantly — cancelled the
+// request for every other waiter too. None of those failures were
+// cached, so all of them retried, and one person pressing back became
+// extra BCP requests for strangers.
+func TestCache_OneCallerLeavingDoesNotFailTheOthers(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	seen := make(chan error, 1)
+
+	c := NewCache(func(ctx context.Context, _ string) (string, error) {
+		close(started)
+		<-release
+		// What the fetch sees *after* the first caller has gone.
+		seen <- ctx.Err()
+		return "fetched anyway", nil
+	})
+
+	leaving, cancel := context.WithCancel(context.Background())
+	go func() {
+		_, _ = c.Get(leaving, "shared")
+	}()
+	<-started
+
+	// The first caller navigates away mid-flight.
+	cancel()
+
+	waiterResult := make(chan string, 1)
+	waiterErr := make(chan error, 1)
+	go func() {
+		got, err := c.Get(context.Background(), "shared")
+		waiterResult <- got
+		waiterErr <- err
+	}()
+
+	close(release)
+
+	if err := <-seen; err != nil {
+		t.Errorf("the shared fetch saw its context cancelled (%v) because one caller left — "+
+			"it must outlive whoever happened to start it", err)
+	}
+	if err := <-waiterErr; err != nil {
+		t.Errorf("a waiting caller got %v after an unrelated caller navigated away, want the value", err)
+	}
+	if got := <-waiterResult; got != "fetched anyway" {
+		t.Errorf("waiting caller got %q, want %q", got, "fetched anyway")
+	}
+}
+
+// TestCache_DoesNotGrowForever bounds the maps.
+//
+// Nothing ever removed an entry: a stale one was ignored on read and
+// left in place. That only survived because the container sleeps after
+// ten minutes idle and takes the whole map with it — a leak papered
+// over by a restart, and the restart is exactly what the durable cache
+// and longer TTLs have been making rarer. The pairings cache is keyed
+// by event:type:round and the ITC one by league:user, so both grow with
+// use rather than with the size of the data.
+func TestCache_DoesNotGrowForever(t *testing.T) {
+	c := NewCache(func(_ context.Context, key string) (string, error) {
+		return key, nil
+	})
+
+	const overfill = maxCacheEntries * 2
+	for i := range overfill {
+		if _, err := c.Get(context.Background(), fmt.Sprintf("key-%d", i)); err != nil {
+			t.Fatalf("Get %d: %v", i, err)
+		}
+	}
+
+	c.mu.Lock()
+	held := len(c.entries)
+	c.mu.Unlock()
+
+	if held > maxCacheEntries {
+		t.Errorf("cache holds %d entries after %d distinct keys, want at most %d",
+			held, overfill, maxCacheEntries)
+	}
+	// And it must still be a cache afterwards, not an empty map.
+	if held == 0 {
+		t.Error("eviction emptied the cache entirely")
+	}
 }
