@@ -76,6 +76,17 @@ as_ms() {
 	awk -v us="$1" 'BEGIN { ms = us/1000; if (ms < 10) printf "%.2fms", ms; else printf "%dms", ms }'
 }
 
+# Expanded below as ${cookie_args[@]+"${cookie_args[@]}"}, not the bare
+# "${cookie_args[@]}". macOS ships bash 3.2, where expanding an EMPTY
+# array under `set -u` (line 51) is an unbound-variable error — so with
+# no --session every curl below died before running, every timing came
+# back 0, and the page table printed a wall of "0.00ms  ok".
+#
+# That is the no-session path, which is exactly what `make regress` and
+# `make latency-gate` run. So the pre-PR latency check silently could
+# not fail, and `--gate` could not gate, for as long as this has been
+# here. Worth remembering when reading any local latency number
+# recorded before 2026-09-20.
 cookie_args=()
 [ -n "$SESSION" ] && cookie_args=(-H "Cookie: session=$SESSION")
 
@@ -128,7 +139,7 @@ for entry in "${ENDPOINTS[@]}"; do
 	status=""
 	for _ in $(seq 1 "$RUNS"); do
 		out="$(curl -s -o /dev/null -w '%{time_total} %{http_code}' \
-			-X "$method" --max-time 60 "${cookie_args[@]}" "$BASE$path" 2>/dev/null)"
+			-X "$method" --max-time 60 ${cookie_args[@]+"${cookie_args[@]}"} "$BASE$path" 2>/dev/null)"
 		t="${out%% *}"; status="${out##* }"
 		# Seconds -> integer MICROseconds, without relying on bc.
 		# Microseconds rather than milliseconds because this repo's own
