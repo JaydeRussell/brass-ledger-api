@@ -31,6 +31,39 @@ const minRefetchInterval = 60 * time.Second
 // unaffected.
 var minManualInvalidateInterval = 2 * time.Second
 
+// goneTTL is how long a Cache remembers that BCP said a key does not
+// exist (404/410 — see IsGone), so a lookup that can never succeed
+// doesn't cost a real request every time someone loads the page.
+//
+// This matters more than it sounds. A BCP registration can outlive the
+// event it points at: the organizer deletes the event, the player's
+// registration list still names it. /api/me/events resolves every
+// not-yet-concluded registration through FetchEventInfo, tolerates the
+// failure, and drops the event from the response — so nothing looked
+// broken, and two dead registrations quietly cost one BCP round trip on
+// every single request. Measured 2026-09-20: warm /api/me/events was
+// 731ms in production against /api/me/stats' 231ms, entirely this.
+//
+// An hour, not longer, and deliberately in memory only — never durable.
+// A 404 is the one status that reads as permanent, but "permanent"
+// here is still an inference from someone else's API, and writing it to
+// Postgres would let one bad hour outlive the process, the deploy, and
+// any chance of noticing. In memory it expires on its own, and a
+// container that sleeps after ten minutes idle forgets it sooner than
+// that anyway.
+//
+// A var rather than a const purely so cache_test.go can shrink it and
+// assert the expiry without sleeping for an hour — the same trick
+// minManualInvalidateInterval uses above. Production behavior is
+// unaffected.
+var goneTTL = time.Hour
+
+// goneEntry records a fetch that failed in a way that won't get better.
+type goneEntry struct {
+	err       error
+	recordedA time.Time
+}
+
 type cacheEntry[T any] struct {
 	data      T
 	fetchedAt time.Time
@@ -61,8 +94,12 @@ type Cache[T any] struct {
 	mu       sync.Mutex
 	entries  map[string]cacheEntry[T]
 	inFlight map[string]*inflight[T]
-	fetch    func(ctx context.Context, key string) (T, error)
-	ttl      time.Duration
+	// Keys BCP has said don't exist, and when it said so. Separate from
+	// entries because there is no value to hold — only the error to
+	// replay. See goneTTL.
+	gone  map[string]goneEntry
+	fetch func(ctx context.Context, key string) (T, error)
+	ttl   time.Duration
 	// Optional. Given a freshly fetched value, returns how long it's
 	// worth keeping; a non-positive result falls back to ttl.
 	ttlFor func(T) time.Duration
@@ -110,6 +147,7 @@ func NewCacheWithValueTTL[T any](
 	return &Cache[T]{
 		entries:  make(map[string]cacheEntry[T]),
 		inFlight: make(map[string]*inflight[T]),
+		gone:     make(map[string]goneEntry),
 		fetch:    fetch,
 		ttl:      ttl,
 		ttlFor:   ttlFor,
@@ -127,14 +165,25 @@ func (c *Cache[T]) ttlOf(v T) time.Duration {
 }
 
 // Get returns the cached value for key, fetching (or joining an
-// in-progress fetch) if it's missing or stale. A failed fetch is never
-// cached, so the next call tries again rather than being stuck serving
-// an error for a full TTL.
+// in-progress fetch) if it's missing or stale.
+//
+// A failed fetch is not cached — the next call tries again rather than
+// being stuck serving an error for a full TTL — with one exception: if
+// BCP said the key does not exist (IsGone), that answer is held for
+// goneTTL and replayed without a request. Retrying a 404 every time is
+// not resilience, it's a permanent per-request tax on data that will
+// never arrive; see goneTTL for the bug that made the difference
+// measurable.
 func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	c.mu.Lock()
 	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < e.ttl {
 		c.mu.Unlock()
 		return e.data, nil
+	}
+	if g, ok := c.gone[key]; ok && time.Since(g.recordedA) < goneTTL {
+		c.mu.Unlock()
+		var zero T
+		return zero, g.err
 	}
 	if inf, ok := c.inFlight[key]; ok {
 		c.mu.Unlock()
@@ -149,8 +198,14 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	data, err := c.fetch(ctx, key)
 
 	c.mu.Lock()
-	if err == nil {
+	switch {
+	case err == nil:
 		c.entries[key] = cacheEntry[T]{data: data, fetchedAt: time.Now(), ttl: c.ttlOf(data)}
+		// A key that resolves is no longer gone — covers an event that
+		// 404s while an organizer is mid-edit and comes back.
+		delete(c.gone, key)
+	case IsGone(err):
+		c.gone[key] = goneEntry{err: err, recordedA: time.Now()}
 	}
 	delete(c.inFlight, key)
 	c.mu.Unlock()
@@ -181,6 +236,12 @@ func (c *Cache[T]) Invalidate(key string) bool {
 		return false
 	}
 	delete(c.entries, key)
+	// An explicit "check again now" drops the gone marker as well: the
+	// whole point of the button is that the user knows something we
+	// inferred is out of date, and a resurrected event is precisely
+	// that. Not throttled separately — the entries check above already
+	// gates the request rate, and a gone key has no entry to gate.
+	delete(c.gone, key)
 	return true
 }
 
@@ -198,6 +259,7 @@ func (c *Cache[T]) Put(key string, data T, fetchedAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt, ttl: c.ttlOf(data)}
+	delete(c.gone, key)
 }
 
 // Fresh reports whether key has an entry Get would actually still serve

@@ -211,7 +211,7 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("BCP request to %s failed: HTTP %d", rawURL, res.StatusCode)
+		return &StatusError{StatusCode: res.StatusCode, URL: rawURL}
 	}
 
 	if out == nil {

@@ -78,11 +78,22 @@ const (
 //	v0.19.3 /api/me/events, 9 serial BCP calls   2.911s  2.942s   0.99
 //	v0.19.4 /api/me/events warm, 3 at a time       511ms   723ms   0.71
 //	v0.19.4 /api/me/stats warm, batched            211ms   279ms   0.76
+//	v0.19.6 /api/me/events warm, 2 dead lookups    371ms   731ms   0.51
 //
 // So it is near-exact on the slow cases — the ones worth catching — and
 // runs roughly 25% optimistic when everything is already fast, because
 // it models only round trips and ignores TLS, the Worker-to-container
 // hop, and serialising a larger response.
+//
+// The last row is the model working as intended and being read wrong by
+// me rather than being wrong: I predicted /api/me/events at ~222ms warm
+// and measured 731ms, because the count I fed it was the count I
+// believed, not the count the endpoint made. Two registrations pointed
+// at deleted events, whose 404s were never cached, so every request
+// paid a round trip the model never heard about. The estimate is only
+// as honest as the observation behind it — which is why the round-trip
+// counts now come from a stub that counts (latency_budget_test.go)
+// rather than from reading the code and reasoning.
 //
 // That makes it a LOWER BOUND, which matters when choosing a budget to
 // assert against: leave headroom below the real threshold rather than
