@@ -42,18 +42,30 @@ import (
 //     age rather than claiming it was just fetched. The cached_at column
 //     has existed since migration 0004 and this is the first thing to
 //     read it back.
-//   - GetMany reads a whole set of keys in one query. Callers that know
+//   - GetMany reads a whole set of keys in one query, each with the time
+//     it was written — callers holding values that expire need the age
+//     to judge them, not just the bytes. Callers that know
 //     their key set up front (see Client.PrewarmEventInfo) use it to
 //     avoid one round trip per key — with a cold in-memory cache, a
 //     player's stats page was doing one SELECT per event they'd ever
 //     attended, sequentially.
 //   - Delete drops a row so a user-initiated refresh isn't immediately
 //     undone by reloading the same stale value from Postgres.
+//
+// DurableRow is one stored value and when it was written. The timestamp
+// matters because not everything in this cache is permanent: an event
+// that hasn't started yet is stored with a lifetime (see eventInfoTTL),
+// so a reader has to know how old the row is before trusting it.
+type DurableRow struct {
+	Data     json.RawMessage
+	CachedAt time.Time
+}
+
 type DurableCache interface {
 	Get(ctx context.Context, key string, version int, dest any) (bool, error)
 	Set(ctx context.Context, key string, version int, value any) error
 	GetFresh(ctx context.Context, key string, version int, maxAge time.Duration, dest any) (bool, time.Time, error)
-	GetMany(ctx context.Context, keys []string, version int) (map[string]json.RawMessage, error)
+	GetMany(ctx context.Context, keys []string, version int) (map[string]DurableRow, error)
 	Delete(ctx context.Context, key string) error
 }
 
@@ -85,21 +97,17 @@ func (c *Client) SetDurableCache(d DurableCache) {
 // than a stored one), and keys with no row are simply left alone for the
 // normal per-key fetch path to handle.
 //
-// Seeded entries get time.Now() rather than the row's own cached_at, and
-// that's deliberate: everything prewarmed this way is immutable
-// (durable rows for event info and leagues are only ever written once
-// the data can't change again), so its age carries no information. This
-// is also exactly what the per-key path already does — Cache.Get stamps
-// time.Now() on whatever fetchEventInfoUncached returns, durable hit or
-// not — so prewarming doesn't change any entry's observable lifetime.
-// Contrast seedFromDurable in history.go, where age is real.
+// Seeded entries carry the row's own cached_at, and the decode function
+// is free to reject a row that's too old for what it holds — event info
+// is no longer all-permanent, since an event that hasn't started yet is
+// now stored with a lifetime rather than not stored at all.
 func prewarm[T any](
 	ctx context.Context,
 	d DurableCache,
 	cache *Cache[T],
 	ids []string,
 	durableKey func(string) string,
-	decode func(json.RawMessage) (T, bool),
+	decode func(DurableRow) (T, bool),
 ) {
 	if d == nil || len(ids) == 0 {
 		return
@@ -130,12 +138,12 @@ func prewarm[T any](
 		// the per-key path is exactly the old behavior.
 		return
 	}
-	for key, raw := range found {
-		value, ok := decode(raw)
+	for key, row := range found {
+		value, ok := decode(row)
 		if !ok {
 			continue
 		}
-		cache.Put(keyToID[key], value, time.Now())
+		cache.Put(keyToID[key], value, row.CachedAt)
 	}
 }
 
@@ -152,9 +160,15 @@ func prewarm[T any](
 // Only ended events are ever written durably (see events.go), so
 // anything this finds is by definition an event whose info can't change.
 func (c *Client) PrewarmEventInfo(ctx context.Context, eventIDs []string) {
-	prewarm(ctx, c.durable, c.eventInfo, eventIDs, eventInfoDurableKey, func(raw json.RawMessage) (EventInfo, bool) {
+	prewarm(ctx, c.durable, c.eventInfo, eventIDs, eventInfoDurableKey, func(row DurableRow) (EventInfo, bool) {
 		var info EventInfo
-		if err := json.Unmarshal(raw, &info); err != nil {
+		if err := json.Unmarshal(row.Data, &info); err != nil {
+			return EventInfo{}, false
+		}
+		// Same rule the in-memory cache and the per-key read use: an
+		// ended event is permanent, anything else is only good for as
+		// long as eventInfoTTL says.
+		if !info.Ended && time.Since(row.CachedAt) >= eventInfoTTL(info) {
 			return EventInfo{}, false
 		}
 		return info, true
@@ -166,11 +180,12 @@ func (c *Client) PrewarmEventInfo(ctx context.Context, eventIDs []string) {
 // resolves one league per placing to decide which of a player's results
 // at an event is the flagship one.
 func (c *Client) PrewarmLeagueInfo(ctx context.Context, leagueIDs []string) {
-	prewarm(ctx, c.durable, c.leagueInfo, leagueIDs, leagueInfoDurableKey, func(raw json.RawMessage) (*LeagueInfo, bool) {
+	prewarm(ctx, c.durable, c.leagueInfo, leagueIDs, leagueInfoDurableKey, func(row DurableRow) (*LeagueInfo, bool) {
 		var info LeagueInfo
-		if err := json.Unmarshal(raw, &info); err != nil {
+		if err := json.Unmarshal(row.Data, &info); err != nil {
 			return nil, false
 		}
+		// A league's gw_itc/hobby classification is permanent.
 		return &info, true
 	})
 }

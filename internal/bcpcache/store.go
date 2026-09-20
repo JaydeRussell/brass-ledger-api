@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
 // Store implements bcp.DurableCache against a single generic
@@ -105,22 +107,23 @@ func (s *Store) GetFresh(ctx context.Context, key string, version int, maxAge ti
 	return true, cachedAt, nil
 }
 
-// GetMany reads every key present in one query, returning the raw JSON
-// for each hit. Keys with no row (or a row at a different version) are
+// GetMany reads every key present in one query, returning each hit's raw
+// JSON along with when it was written — a caller holding values that
+// expire needs the age, not just the bytes. Keys with no row (or a row at a different version) are
 // simply absent from the result — the caller falls back to its normal
 // per-key path for those. Decoding is left to the caller because a
 // single call site can be reading several different value types.
 //
 // This is what keeps a cold stats page from doing one SELECT per event
 // the player has ever attended: see bcp.Client's Prewarm* methods.
-func (s *Store) GetMany(ctx context.Context, keys []string, version int) (map[string]json.RawMessage, error) {
-	found := make(map[string]json.RawMessage, len(keys))
+func (s *Store) GetMany(ctx context.Context, keys []string, version int) (map[string]bcp.DurableRow, error) {
+	found := make(map[string]bcp.DurableRow, len(keys))
 	if len(keys) == 0 {
 		return found, nil
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT cache_key, data FROM bcp_durable_cache WHERE cache_key = ANY($1) AND cache_version = $2`,
+		`SELECT cache_key, data, cached_at FROM bcp_durable_cache WHERE cache_key = ANY($1) AND cache_version = $2`,
 		keys, version,
 	)
 	if err != nil {
@@ -131,10 +134,11 @@ func (s *Store) GetMany(ctx context.Context, keys []string, version int) (map[st
 	for rows.Next() {
 		var key string
 		var raw []byte
-		if err := rows.Scan(&key, &raw); err != nil {
+		var cachedAt time.Time
+		if err := rows.Scan(&key, &raw, &cachedAt); err != nil {
 			return nil, fmt.Errorf("scanning bcp_durable_cache row: %w", err)
 		}
-		found[key] = json.RawMessage(raw)
+		found[key] = bcp.DurableRow{Data: json.RawMessage(raw), CachedAt: cachedAt}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading bcp_durable_cache rows: %w", err)

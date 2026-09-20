@@ -292,14 +292,14 @@ func (d *countingDurable) GetFresh(_ context.Context, key string, _ int, _ time.
 	return true, time.Now(), json.Unmarshal(raw, dest)
 }
 
-func (d *countingDurable) GetMany(_ context.Context, keys []string, _ int) (map[string]json.RawMessage, error) {
+func (d *countingDurable) GetMany(_ context.Context, keys []string, _ int) (map[string]bcp.DurableRow, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.getManys++
-	found := map[string]json.RawMessage{}
+	found := map[string]bcp.DurableRow{}
 	for _, k := range keys {
 		if raw, ok := d.rows[k]; ok {
-			found[k] = json.RawMessage(raw)
+			found[k] = bcp.DurableRow{Data: json.RawMessage(raw), CachedAt: time.Now()}
 		}
 	}
 	return found, nil

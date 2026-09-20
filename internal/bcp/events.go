@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // --- Event metadata ---------------------------------------------------
@@ -117,8 +118,14 @@ func eventInfoDurableKey(eventID string) string { return "event:" + eventID }
 
 func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (EventInfo, error) {
 	if c.durable != nil {
+		// GetFresh with no age bound, because the bound depends on the
+		// value: an ended event is permanent, while one that hasn't
+		// started yet was stored with a lifetime. Fetch the row and its
+		// age, then apply the same eventInfoTTL rule the in-memory
+		// cache uses, so there's one definition of "still true".
 		var cached EventInfo
-		if found, err := c.durable.Get(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, &cached); err == nil && found {
+		found, cachedAt, err := c.durable.GetFresh(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, 0, &cached)
+		if err == nil && found && (cached.Ended || time.Since(cachedAt) < eventInfoTTL(cached)) {
 			return cached, nil
 		}
 	}
@@ -187,12 +194,22 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 		LeagueIDs:         leagueIDs,
 	}
 
-	// Only an already-concluded event's info is safe to persist forever —
-	// Started/Ended/CurrentRound and everything else here can still
-	// change for one that hasn't ended yet. A failed write just means
-	// this gets asked of BCP again next time; not worth failing the
-	// request over.
-	if c.durable != nil && info.Ended {
+	// Persisted whenever it's worth keeping for longer than a single
+	// refetch interval — which eventInfoTTL already decides. That means
+	// a concluded event (permanent) and an event still more than a day
+	// out (good for hours), but not one in progress or about to start,
+	// where Started/CurrentRound move and a Postgres write per request
+	// would buy nothing.
+	//
+	// Storing the far-off ones is what makes the policy actually work.
+	// Their in-memory TTL is six hours, but the container sleeps after
+	// ten minutes — so before this, an event two months away was
+	// re-fetched from BCP by every cold process, forever, because the
+	// only cache that held it never lived long enough to be used.
+	//
+	// A failed write just means this gets asked of BCP again next time;
+	// not worth failing the request over.
+	if c.durable != nil && eventInfoTTL(info) > minRefetchInterval {
 		_ = c.durable.Set(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, info)
 	}
 
