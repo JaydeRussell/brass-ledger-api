@@ -56,15 +56,6 @@ type Config struct {
 	// deployment.
 	CookieSecure bool
 
-	// LogFile is where this service's logs (Echo's per-request access
-	// log, plus its own log.Printf/log.Fatalf calls) are written, in
-	// addition to always being written to stdout too — see
-	// internal/applog. Defaults to "logs/backend.log", a path relative
-	// to the working directory the server was started from. Explicitly
-	// setting LOG_FILE="" (as opposed to leaving it unset) logs to
-	// stdout only.
-	LogFile string
-
 	// AdminEmails bootstraps access control (see migration 0007 and
 	// internal/api/admin.go): every sign-in whose email matches one of
 	// these (case-insensitively) is auto-approved as an admin, every
@@ -101,7 +92,6 @@ func Load() (Config, error) {
 		GoogleRedirectURL:  getEnvOrDefault("GOOGLE_REDIRECT_URL", "http://localhost:8080/auth/google/callback"),
 		FrontendBaseURL:    getEnvOrDefault("FRONTEND_BASE_URL", "http://localhost:3000"),
 		CookieSecure:       os.Getenv("COOKIE_SECURE") == "true",
-		LogFile:            getEnvOrDefaultAllowingEmpty("LOG_FILE", "logs/backend.log"),
 		AdminEmails:        parseAdminEmails(os.Getenv("ADMIN_EMAILS")),
 		ResendAPIKey:       os.Getenv("RESEND_API_KEY"),
 		EmailFromAddress:   os.Getenv("EMAIL_FROM_ADDRESS"),
@@ -136,18 +126,6 @@ func parseAdminEmails(raw string) []string {
 
 func getEnvOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// getEnvOrDefaultAllowingEmpty is like getEnvOrDefault, but distinguishes
-// "unset" from "explicitly set to an empty string" — used for LOG_FILE,
-// where an explicit empty value has a real meaning (stdout-only
-// logging) that plain getEnvOrDefault's "empty means missing" behavior
-// would otherwise silently override back to the default.
-func getEnvOrDefaultAllowingEmpty(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
 		return v
 	}
 	return fallback

@@ -57,14 +57,6 @@ services:
       # an admin. Leave unset and every sign-in just starts pending,
       # same as production unless ADMIN_EMAILS is set there too.
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
-      # Written inside the container at /logs, bind-mounted below to
-      # ./logs on the host — so `make logs`/`make logs-tail` (which read
-      # the same LOG_FILE-relative path from the host) see exactly what
-      # the containerized server wrote, without needing `docker compose
-      # exec`/`docker cp` to get at it.
-      LOG_FILE: /logs/backend.log
-    volumes:
-      - ./logs:/logs
     depends_on:
       db:
         condition: service_healthy
@@ -77,12 +69,6 @@ services:
     restart: unless-stopped
     environment:
       PORT: "3000"
-      # Same idea as the backend's LOG_FILE above — written to /app/logs
-      # in the container (its WORKDIR), bind-mounted to the frontend
-      # repo's own logs/ directory on the host.
-      LOG_FILE: /app/logs/frontend.log
-    volumes:
-      - ../brass-ledger-web/logs:/app/logs
     depends_on:
       - backend
     ports:

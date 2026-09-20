@@ -14,11 +14,6 @@
     "GOOGLE_REDIRECT_URL": "https://api.brass-ledger.app/auth/google/callback",
     "FRONTEND_BASE_URL": "https://brass-ledger.app",
     "COOKIE_SECURE": "true",
-    // Container instances aren't durable storage — logging to stdout
-    // only, not a local file, so Cloudflare's own log tooling captures
-    // it. See LOG_FILE's "explicit empty string" behavior in
-    // internal/config.
-    "LOG_FILE": "",
     // The new-signup admin alert's sender address (see internal/notify)
     // — not secret, but only does anything paired with the
     // RESEND_API_KEY Worker secret below, and only once this domain is

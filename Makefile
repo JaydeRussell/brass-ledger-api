@@ -60,12 +60,8 @@ db-shell: ## Open a psql shell against the local (docker compose) Postgres
 smoke: ## Quick post-rebuild sanity check (healthz/readyz/auth/frontend) — no BCP calls
 	./scripts/smoke-test.sh
 
-logs: ## Show this service's log file so far (see LOG_FILE in .env.example)
-	@f="$${LOG_FILE:-logs/backend.log}"; \
-	if [ -f "$$f" ]; then cat "$$f"; else echo "No log file at $$f yet — has the server been started?"; fi
+logs: ## Show the backend container's logs so far
+	docker compose logs backend
 
-logs-tail: ## Follow this service's log file live (Ctrl-C to stop)
-	@f="$${LOG_FILE:-logs/backend.log}"; \
-	echo "Tailing $$f (Ctrl-C to stop)..."; \
-	touch "$$f"; \
-	tail -f "$$f"
+logs-tail: ## Follow the backend container's logs live (Ctrl-C to stop)
+	docker compose logs -f backend
