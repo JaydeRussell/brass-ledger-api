@@ -500,10 +500,31 @@ func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string) (p
 	// are no-ops; with a cold one (most page loads, since the container
 	// sleeps after ten minutes idle) this is the difference between two
 	// queries and one per event the player has ever attended.
-	client.PrewarmLeagueInfo(ctx, distinctLeagueIDs(rawHistory))
+	//
+	// Overlapped, because they were sequential and had no reason to be.
+	// The event prewarm used to take its ids from canonicalPlacingPerEvent's
+	// output, which made it look dependent on that step — but canonical
+	// only picks one row per event, so it never adds or removes an event
+	// id and distinctEventIDs(rawHistory) is the identical set. Both
+	// key sets are knowable before either query runs.
+	//
+	// Worth one round trip, which is not nothing here: a Neon read
+	// measured ~90ms from the deployed container on 2026-09-20
+	// (/readyz, which pings the database, against /healthz, which
+	// doesn't). See internal/bcp/cost.go's DurableReadCost.
+	var prewarm sync.WaitGroup
+	prewarm.Add(2)
+	go func() {
+		defer prewarm.Done()
+		client.PrewarmLeagueInfo(ctx, distinctLeagueIDs(rawHistory))
+	}()
+	go func() {
+		defer prewarm.Done()
+		client.PrewarmEventInfo(ctx, distinctEventIDs(rawHistory))
+	}()
+	prewarm.Wait()
 
 	history := canonicalPlacingPerEvent(ctx, client, rawHistory)
-	client.PrewarmEventInfo(ctx, distinctEventIDs(history))
 	infos := eventInfoByID(ctx, client, history)
 
 	resp := computePlayerStats(history, infos)
