@@ -92,9 +92,12 @@ stale, rather than appending to it forever.
     caught and fixed before anything was committed.).
 - **Logging** — every request and every application-level log line
   (startup, migrations, each step of the Google sign-in flow) goes to
-  both stdout and `logs/backend.log` (`LOG_FILE` in `.env`, see
-  `internal/applog`, which has its own test suite). `make logs`/`make
-  logs-tail` read it back.
+  stdout. `make logs`/`make logs-tail` read it back via `docker compose
+  logs backend`; in production Cloudflare's own log tooling captures it.
+  This used to also append to `logs/backend.log` via an `internal/applog`
+  package, from a time when reading a file was easier than reading a
+  container's output — removed 2026-09-20, along with the frontend's
+  equivalent `/api/log` route (see that repo's `CLAUDE.md`).
 - **"My events" (past/present/future)** — a signed-in account can link a
   Best Coast Pairings profile and see its full BCP tournament history,
   classified into Past/Present/Future:

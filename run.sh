@@ -16,14 +16,5 @@ if [[ "${1:-}" == "down" ]]; then
   shift
   docker compose down "$@"
 else
-  # Both containers bind-mount a logs/ directory (see docker-compose.yml's
-  # LOG_FILE/volumes) so their log files land on the host, readable
-  # without `docker compose exec`/`docker cp`. Pre-create them here,
-  # world-writable: the backend container runs as a non-root distroless
-  # user, and a directory Docker auto-creates for a bind mount would
-  # otherwise be owned by root with no write access for that user,
-  # causing the server to fail to open its log file at startup.
-  mkdir -p logs ../brass-ledger-web/logs
-  chmod 777 logs ../brass-ledger-web/logs
   docker compose up --build "$@"
 fi

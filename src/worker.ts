@@ -11,7 +11,6 @@ interface Env {
   GOOGLE_REDIRECT_URL: string;
   FRONTEND_BASE_URL: string;
   COOKIE_SECURE: string;
-  LOG_FILE: string;
   EMAIL_FROM_ADDRESS: string;
   // Secrets, set via `wrangler secret put <NAME>` — never in
   // wrangler.jsonc.
@@ -39,7 +38,6 @@ export class BackendContainer extends Container<Env> {
     GOOGLE_REDIRECT_URL: this.env.GOOGLE_REDIRECT_URL,
     FRONTEND_BASE_URL: this.env.FRONTEND_BASE_URL,
     COOKIE_SECURE: this.env.COOKIE_SECURE,
-    LOG_FILE: this.env.LOG_FILE,
     ADMIN_EMAILS: this.env.ADMIN_EMAILS,
     EMAIL_FROM_ADDRESS: this.env.EMAIL_FROM_ADDRESS,
     RESEND_API_KEY: this.env.RESEND_API_KEY,

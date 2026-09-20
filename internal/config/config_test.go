@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"reflect"
 	"testing"
 )
@@ -144,70 +143,6 @@ func TestLoad_GoogleAndCookieDefaults(t *testing.T) {
 			}
 			if cfg.CookieSecure != tc.wantCookieSecure {
 				t.Errorf("cfg.CookieSecure = %v, want %v", cfg.CookieSecure, tc.wantCookieSecure)
-			}
-		})
-	}
-}
-
-// TestLoad_LogFile covers LOG_FILE's three-way behavior: left unset, it
-// defaults to "logs/backend.log"; explicitly set to a path, that path
-// is respected; and explicitly set to an empty string, that empty
-// string is respected too (meaning stdout-only logging — see
-// internal/applog) rather than falling back to the default the way
-// every other getEnvOrDefault-backed field would. t.Setenv can't
-// represent "truly unset" (it always sets, even to ""), so the unset
-// case uses os.Unsetenv directly with a manual restore instead.
-func TestLoad_LogFile(t *testing.T) {
-	cases := []struct {
-		name        string
-		setLogFile  bool // false: leave LOG_FILE unset entirely
-		logFile     string
-		wantLogFile string
-	}{
-		{
-			name:        "unset defaults to logs/backend.log",
-			setLogFile:  false,
-			wantLogFile: "logs/backend.log",
-		},
-		{
-			name:        "explicit path is respected",
-			setLogFile:  true,
-			logFile:     "/var/log/tmm/backend.log",
-			wantLogFile: "/var/log/tmm/backend.log",
-		},
-		{
-			name:        "explicit empty string means stdout-only, not the default",
-			setLogFile:  true,
-			logFile:     "",
-			wantLogFile: "",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db?sslmode=disable")
-
-			original, hadOriginal := os.LookupEnv("LOG_FILE")
-			t.Cleanup(func() {
-				if hadOriginal {
-					os.Setenv("LOG_FILE", original)
-				} else {
-					os.Unsetenv("LOG_FILE")
-				}
-			})
-
-			if tc.setLogFile {
-				os.Setenv("LOG_FILE", tc.logFile)
-			} else {
-				os.Unsetenv("LOG_FILE")
-			}
-
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load() returned error: %v", err)
-			}
-			if cfg.LogFile != tc.wantLogFile {
-				t.Errorf("cfg.LogFile = %q, want %q", cfg.LogFile, tc.wantLogFile)
 			}
 		})
 	}

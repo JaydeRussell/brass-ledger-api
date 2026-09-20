@@ -26,7 +26,6 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/JaydeRussell/brass-ledger-api/internal/api"
-	"github.com/JaydeRussell/brass-ledger-api/internal/applog"
 	"github.com/JaydeRussell/brass-ledger-api/internal/auth"
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcpcache"
@@ -51,19 +50,19 @@ func main() {
 
 	// Every log.Printf/log.Fatalf from here on (in this file and any
 	// package that uses the standard log package — internal/api's auth
-	// routes included) goes to both stdout and cfg.LogFile, so a single
-	// file has the full startup + request + error history to read back
-	// later. See internal/applog and LOG_FILE in .env.example.
-	logWriter, err := applog.Open(cfg.LogFile)
-	if err != nil {
-		log.Fatalf("logging: %v", err)
-	}
-	defer logWriter.Close()
+	// routes included) goes to stdout, alongside Echo's per-request
+	// access log, so one stream has the full startup + request + error
+	// history in the order it happened.
+	//
+	// Stdout only, deliberately: this used to also append to a LOG_FILE
+	// on disk, from a time when reading a file was easier than reading a
+	// container's output. It isn't any more — `docker compose logs
+	// backend` locally, and Cloudflare's own log tooling in production,
+	// where the file was already disabled because a container's
+	// filesystem isn't durable storage.
+	logWriter := io.Writer(os.Stdout)
 	log.SetOutput(logWriter)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	if cfg.LogFile != "" {
-		log.Printf("logging to %s (and stdout)", cfg.LogFile)
-	}
 
 	ctx := context.Background()
 	pool, err := db.New(ctx, cfg.DatabaseURL)

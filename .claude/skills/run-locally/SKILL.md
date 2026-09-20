@@ -14,9 +14,9 @@ testing in this environment; always go through Docker.
 ## 1. Rebuild before you test
 
 **`localhost:3000`/`:8080` are NOT source-mounted.** The containers
-serve a snapshot built at image-build time; only `logs/` is
-bind-mounted. Editing files on disk (in either repo) does nothing to
-the running app until you rebuild:
+serve a snapshot built at image-build time, with nothing bind-mounted
+at all. Editing files on disk (in either repo) does nothing to the
+running app until you rebuild:
 
 ```bash
 ./run.sh -d --build
@@ -76,14 +76,21 @@ ToolSearch("select:mcp__claude-in-chrome__tabs_context_mcp,mcp__claude-in-chrome
 
 The containers are distroless — no shell, so `docker exec ... sh` (or
 `bash`/`cat`/`tail`) fails with "executable file not found in $PATH".
-Read the bind-mounted log files directly from the host instead:
+Read their stdout with `docker compose logs` instead:
 
 ```bash
-tail -30 logs/backend.log
-tail -30 ../brass-ledger-web/logs/frontend.log
+docker compose logs --tail=30 backend
+docker compose logs --tail=30 frontend
 ```
 
 Backend access-log lines are one JSON object per request (method, uri,
 status, latency, user agent) — grep by path or status to confirm a
 specific request actually happened the way you expect, rather than
 guessing from the UI alone.
+
+**Client-side** events (auth checks, caught errors, uncaught exceptions
+— everything through the frontend's `app/lib/clientLog.ts`) go to the
+**browser console**, not to any server log. Read them with the Chrome
+devtools MCP tools (`read_console_messages`). There used to be a
+`logs/` directory and an `/api/log` route that copied them to disk;
+both are gone.
