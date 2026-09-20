@@ -23,6 +23,13 @@ import (
 // Present/Future registration list itself (bcp.Client's
 // playerEventHistory/placingHistory caches) is cached for up to 48
 // hours — see bcp.myEventsRefetchInterval's doc comment.
+// maxConcurrentEventInfo bounds how many event-info lookups classifyMyEvents
+// has in flight at once. Three is a compromise: enough that a handful of
+// pending registrations resolve in one or two rounds instead of a queue,
+// low enough that no single page load is a burst against an API we have
+// no agreement with.
+const maxConcurrentEventInfo = 3
+
 const staleEventAfter = 24 * time.Hour
 
 // bcpDateLayouts are the two date shapes this service has actually seen
@@ -31,26 +38,12 @@ const staleEventAfter = 24 * time.Hour
 // back full RFC3339 ("2024-01-01T00:00:00.000Z") — see internal/bcp's
 // events_test.go and history_test.go fixtures for both. Tried in order;
 // the first that parses wins.
-var bcpDateLayouts = []string{time.RFC3339, "2006-01-02"}
-
-// parseBCPDate parses whichever of bcpDateLayouts matches, or reports ok
-// = false for an empty or unrecognized string — BCP not publishing a
-// date for something isn't an error here, just a "can't tell" for
-// whatever the caller was trying to decide (see isStaleEvent below).
-func parseBCPDate(s string) (t time.Time, ok bool) {
-	for _, layout := range bcpDateLayouts {
-		if parsed, err := time.Parse(layout, s); err == nil {
-			return parsed, true
-		}
-	}
-	return time.Time{}, false
-}
 
 // isStaleEvent reports whether an event's listed end date is far enough
 // in the past that it should be treated as concluded regardless of what
 // BCP's own Started/Ended flags say — see staleEventAfter's doc comment.
 func isStaleEvent(endDate string) bool {
-	parsed, ok := parseBCPDate(endDate)
+	parsed, ok := bcp.ParseDate(endDate)
 	if !ok {
 		return false
 	}
@@ -365,25 +358,59 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 		}
 	}
 	if !refresh {
-		// A refresh is an explicit "ignore what's cached", and the loop
-		// below invalidates each event as it goes — prewarming would
-		// just be undone.
+		// A refresh is an explicit "ignore what's cached", so seeding
+		// from the durable cache would just be undone by the
+		// invalidations below.
 		client.PrewarmEventInfo(ctx, pending)
 	}
 
-	for _, r := range registrations {
-		if concluded[r.EventID] {
+	if refresh {
+		for _, id := range pending {
+			client.InvalidateEventInfo(id)
+		}
+	}
+
+	// Resolve the pending events a few at a time rather than one after
+	// another. Each is its own FetchEventInfo, and the ones that aren't
+	// durably cached (anything not yet ended) are a real BCP round trip
+	// — so for an account with a handful of registrations awaiting
+	// results this was several hundred milliseconds each, in series, and
+	// it was the single biggest remaining cost on this endpoint.
+	//
+	// Bounded deliberately, and kept low: this is an unofficial API we
+	// have no agreement with (see CLAUDE.md). The request count is
+	// unchanged — the same events, resolved the same number of times —
+	// and overlapping them actually shortens the window BCP is holding
+	// connections open for us. What the bound prevents is an account
+	// with a long history turning one page load into a burst.
+	infos := make([]bcp.EventInfo, len(pending))
+	ok := make([]bool, len(pending))
+	sem := make(chan struct{}, maxConcurrentEventInfo)
+	var infoWg sync.WaitGroup
+	for i, id := range pending {
+		infoWg.Add(1)
+		go func() {
+			defer infoWg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			info, err := client.FetchEventInfo(ctx, id)
+			if err != nil {
+				// One event's metadata failing to load shouldn't take
+				// down the whole list — skip just that event.
+				return
+			}
+			infos[i], ok[i] = info, true
+		}()
+	}
+	infoWg.Wait()
+
+	// Classified in `pending` order, not completion order, so the
+	// response is stable regardless of which fetch finished first.
+	for i := range pending {
+		if !ok[i] {
 			continue
 		}
-		if refresh {
-			client.InvalidateEventInfo(r.EventID)
-		}
-		info, err := client.FetchEventInfo(ctx, r.EventID)
-		if err != nil {
-			// One event's metadata failing to load shouldn't take down
-			// the whole list — skip just that event.
-			continue
-		}
+		info := infos[i]
 		ev := myEvent{EventID: info.ID, EventName: info.Name, StartDate: info.StartDate, EndDate: info.EndDate}
 		switch {
 		case info.Started && !info.Ended && !isStaleEvent(info.EndDate):

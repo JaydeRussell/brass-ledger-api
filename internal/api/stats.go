@@ -123,11 +123,11 @@ func classifyEventCategory(h bcp.PlacingHistoryEntry, teamEvent bool) (category 
 	if teamEvent {
 		return categoryTeams, true
 	}
-	start, startOK := parseBCPDate(h.EventDate)
+	start, startOK := bcp.ParseDate(h.EventDate)
 	if !startOK {
 		return "", false
 	}
-	end, endOK := parseBCPDate(h.EventEndDate)
+	end, endOK := bcp.ParseDate(h.EventEndDate)
 	if !endOK {
 		return categoryRTT, true
 	}
@@ -301,7 +301,7 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 	for _, h := range history {
 		fieldSize := infos[h.EventID].PlayerCount
 
-		t, dateOK := parseBCPDate(h.EventDate)
+		t, dateOK := bcp.ParseDate(h.EventDate)
 
 		if h.Placing != nil {
 			resp.BestPlacing = keepBestWithField(resp.BestPlacing, *h.Placing, fieldSize)

@@ -606,13 +606,16 @@ func TestPrewarmEventInfo_StillBatchesOnceTheInMemoryEntriesGoStale(t *testing.T
 		t.Fatalf("GetMany called %d times on the first prewarm, want 1", fake.getManyCalls)
 	}
 
-	// Age every seeded entry past the cache's TTL, as the clock would.
+	// Age every seeded entry past its own TTL, as the clock would. These
+	// fixtures are ended events, which eventInfoTTL keeps for
+	// eventInfoEndedTTL rather than the default minute — so the offset
+	// has to clear that, not the short default.
 	for _, id := range ids {
 		at, ok := client.eventInfo.FetchedAt(id)
 		if !ok {
 			t.Fatalf("expected %s to be seeded in memory after prewarm", id)
 		}
-		client.eventInfo.Put(id, mustEventInfo(t, client, id), at.Add(-2*minRefetchInterval))
+		client.eventInfo.Put(id, mustEventInfo(t, client, id), at.Add(-2*eventInfoEndedTTL))
 	}
 
 	client.PrewarmEventInfo(context.Background(), ids)

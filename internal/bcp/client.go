@@ -63,6 +63,66 @@ type Client struct {
 	durable DurableCache
 }
 
+// --- How long an event's info is worth keeping -------------------------
+
+const (
+	// An event whose listed start is at least this far off isn't going
+	// to change in the next few hours — the organiser set it up and is
+	// getting on with their life.
+	eventInfoFarOffThreshold = 24 * time.Hour
+
+	// ...so cache it for this long. Deliberately far shorter than the
+	// threshold above, which is what makes this safe: we can never hold
+	// a "hasn't started" answer past the moment it actually starts,
+	// because the entry always expires well before the event is due.
+	eventInfoFarOffTTL = 6 * time.Hour
+
+	// A concluded event is immutable (it's also what the durable cache
+	// stores), so the only reason not to keep it indefinitely is that
+	// this is an in-memory map in a process that gets recycled anyway.
+	eventInfoEndedTTL = 24 * time.Hour
+)
+
+// eventInfoTTL decides how long one event's info stays cached, from the
+// event itself.
+//
+// The default 60 seconds is the right answer for an event being played
+// right now, where the current round changes underneath you. It's the
+// wrong answer for the other two cases, and those turned out to be most
+// of them: "My Events" resolves one FetchEventInfo per registration
+// without a published placing, so for an account with a few of those,
+// a flat 60-second TTL meant re-fetching every one of them from BCP on
+// any visit more than a minute after the last — several sequential
+// round trips, repeatedly, for events that hadn't changed and in most
+// cases couldn't.
+//
+// Keeping the short TTL exactly where it earns its place (in-progress,
+// or about to start) and lengthening it elsewhere also means fewer
+// requests to an API we don't have an agreement with — see CLAUDE.md.
+func eventInfoTTL(info EventInfo) time.Duration {
+	switch {
+	case info.Ended:
+		return eventInfoEndedTTL
+	case info.Started:
+		// Live: the current round and standings move round by round.
+		return minRefetchInterval
+	}
+
+	start, ok := ParseDate(info.StartDate)
+	if !ok {
+		// No usable date — treat it as imminent rather than assume
+		// otherwise, since "unknown" is the one case where being wrong
+		// in the stale direction is visible to someone at an event.
+		return minRefetchInterval
+	}
+	if time.Until(start) >= eventInfoFarOffThreshold {
+		return eventInfoFarOffTTL
+	}
+	// Starting within a day: details firm up, and it's about to flip to
+	// started. Keep checking.
+	return minRefetchInterval
+}
+
 // NewClient builds a ready-to-use Client pointed at the real BCP API.
 func NewClient() *Client {
 	return newClientWithBases(defaultAPIBaseV1, defaultAPIBaseV2, defaultSiteBase)
@@ -88,9 +148,9 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 		siteBase:  siteBase,
 	}
 
-	c.eventInfo = NewCache(func(ctx context.Context, eventID string) (EventInfo, error) {
+	c.eventInfo = NewCacheWithValueTTL(func(ctx context.Context, eventID string) (EventInfo, error) {
 		return c.fetchEventInfoUncached(ctx, eventID)
-	})
+	}, minRefetchInterval, eventInfoTTL)
 	c.players = NewCache(func(ctx context.Context, eventID string) ([]Player, error) {
 		return c.fetchPlayersUncached(ctx, eventID)
 	})
