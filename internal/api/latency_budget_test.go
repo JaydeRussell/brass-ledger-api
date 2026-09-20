@@ -901,3 +901,102 @@ func TestLatencyBudget_EventPageStaysWithinItsUpstreamBudget(t *testing.T) {
 			"if it rose, the per-player cache stopped working.", got, byPath)
 	}
 }
+
+// barrierDurable is countingDurable with a gate on GetMany: every
+// batched read waits until `n` of them have arrived. A sequential
+// implementation can never reach the barrier, so it times out and the
+// concurrency assertion fails with a readable message rather than a
+// goroutine dump.
+type barrierDurable struct {
+	*countingDurable
+	gate *barrier
+
+	mu       sync.Mutex
+	inFlight int
+	peak     int
+}
+
+func (d *barrierDurable) GetMany(ctx context.Context, keys []string, version int) (map[string]bcp.DurableRow, error) {
+	d.mu.Lock()
+	d.inFlight++
+	if d.inFlight > d.peak {
+		d.peak = d.inFlight
+	}
+	d.mu.Unlock()
+
+	d.gate.arrive(barrierTimeout)
+
+	defer func() {
+		d.mu.Lock()
+		d.inFlight--
+		d.mu.Unlock()
+	}()
+	return d.countingDurable.GetMany(ctx, keys, version)
+}
+
+// overlapPeak is the most batched reads seen in flight at once.
+//
+// Counting this rather than asking whether the barrier opened, because
+// the barrier opens either way: a sequential implementation waits out
+// the timeout on the first call, gives up, and then the second call
+// arrives and closes the gate anyway. That reads as success while
+// proving nothing. The first version of this test made exactly that
+// mistake and passed against a deliberately serialised implementation.
+func (d *barrierDurable) overlapPeak() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.peak
+}
+
+// TestLatencyBudget_StatsPrewarmsOverlap pins the two batched durable
+// reads on the stats path to running together.
+//
+// They were sequential, and the second one looked dependent on the
+// first because its ids came from canonicalPlacingPerEvent's output.
+// They aren't: canonical picks one row per event, so it never adds or
+// removes an event id, and both key sets are knowable from the raw
+// history before either query runs. Serialising them costs one Neon
+// round trip — measured at roughly 90ms from the deployed container —
+// on /api/me/stats, /api/players/:id/stats and every public dossier.
+func TestLatencyBudget_StatsPrewarmsOverlap(t *testing.T) {
+	store, cookie := linkedSession(t)
+
+	counts := &countingBCP{watched: map[string]bool{}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/players", func(w http.ResponseWriter, _ *http.Request) {
+		counts.enter("/players")
+		defer counts.leave("/players")
+		_, _ = w.Write([]byte(`{"data": []}`))
+	})
+	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, _ *http.Request) {
+		counts.enter("/eventplacings")
+		defer counts.leave("/eventplacings")
+		_, _ = w.Write([]byte(`{"data": [
+			{"placing": 1, "leagueId": "league-1", "event": {"id": "evt-1", "name": "One", "eventDate": "2024-01-01T00:00:00.000Z"}},
+			{"placing": 2, "leagueId": "league-2", "event": {"id": "evt-2", "name": "Two", "eventDate": "2024-02-01T00:00:00.000Z"}}
+		]}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	durable := &barrierDurable{countingDurable: newCountingDurable(), gate: newBarrier(2)}
+	client := bcp.NewClientWithBaseURL(server.URL)
+	client.SetDurableCache(durable)
+
+	e := newStatsTestEcho(store, client)
+	getWithSession(t, e, "/api/me/stats", cookie)
+
+	_, getManys := durable.snapshot()
+	if getManys != 2 {
+		t.Fatalf("the stats path made %d batched durable reads, want 2 "+
+			"(one for leagues, one for events) — if this dropped to 1 a prewarm stopped running", getManys)
+	}
+	if peak := durable.overlapPeak(); peak < 2 {
+		t.Errorf("peak concurrent batched durable reads was %d, want 2 — these two are independent, "+
+			"and serialising them costs a Neon round trip (~90ms measured) on every stats and dossier request",
+			peak)
+	}
+}
