@@ -47,6 +47,9 @@ func (h *BCPHandler) EventInfo(c echo.Context) error {
 	if err != nil {
 		return bcpError(c, err)
 	}
+	// The one route that knows for free whether its own answer can ever
+	// change again.
+	cacheFor(c, info.Ended)
 	return c.JSON(http.StatusOK, info)
 }
 
@@ -56,6 +59,7 @@ func (h *BCPHandler) Players(c echo.Context) error {
 	if err != nil {
 		return bcpError(c, err)
 	}
+	cacheFor(c, false)
 	return c.JSON(http.StatusOK, players)
 }
 
@@ -87,6 +91,7 @@ func (h *BCPHandler) Pairings(c echo.Context) error {
 	if err != nil {
 		return bcpError(c, err)
 	}
+	cacheFor(c, false)
 	return c.JSON(http.StatusOK, records)
 }
 
@@ -103,6 +108,7 @@ func (h *BCPHandler) Placings(c echo.Context) error {
 	if err != nil {
 		return bcpError(c, err)
 	}
+	cacheFor(c, false)
 	return c.JSON(http.StatusOK, entries)
 }
 
@@ -141,6 +147,12 @@ func (h *BCPHandler) ItcRanking(c echo.Context) error {
 	if err != nil {
 		return bcpError(c, err)
 	}
+	// A season aggregate, held for itcRankingRefetchInterval server-side
+	// (see internal/bcp/client.go). The browser gets the short interval
+	// rather than that full window: these are cheap responses, and the
+	// expensive part — the BCP request — is already avoided by the
+	// durable cache regardless of what the browser does.
+	cacheFor(c, false)
 	if ranking == nil {
 		return c.JSON(http.StatusOK, nil)
 	}

@@ -445,6 +445,7 @@ func (h *StatsHandler) Register(e *echo.Echo) {
 // Stats is GET /api/me/stats: the signed-in account's player-stats
 // summary.
 func (h *StatsHandler) Stats(c echo.Context) error {
+	noCache(c)
 	u, err := requireApprovedUser(c, h.store)
 	if err != nil {
 		return err

@@ -14,6 +14,21 @@ import (
 // rate limit against BCP, instead of each browser tab enforcing its own.
 const minRefetchInterval = 60 * time.Second
 
+// MinRefetchInterval is minRefetchInterval, exported so the HTTP layer
+// can tell a browser how long this service will keep answering a
+// question the same way — see internal/api's cacheFor. Kept as a
+// derived constant rather than making minRefetchInterval itself
+// exported so the package's own code keeps reading the same name it
+// always has.
+const MinRefetchInterval = minRefetchInterval
+
+// EndedEventTTL is how long a response derived entirely from an
+// already-concluded event may be reused. A concluded event's info,
+// roster, pairings and placings are immutable — it is what the durable
+// cache stores permanently — so the only real bound is how long we want
+// to be unable to correct a mistake.
+const EndedEventTTL = 24 * time.Hour
+
 // minManualInvalidateInterval is a much shorter floor than
 // minRefetchInterval, applied only to Invalidate (an explicit "check
 // again now" request, e.g. a user-facing Refresh button) — not to blunt
