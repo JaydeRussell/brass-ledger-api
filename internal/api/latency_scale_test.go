@@ -166,6 +166,16 @@ func scaleAcrossSizes(t *testing.T, path string, build func(userStore, *bcp.Clie
 			client.SetDurableCache(durable)
 			getWithSession(t, build(store, client), path, cookie)
 
+			// Durable writes happen off the request path, and the next
+			// measurement is a fresh process reading exactly what this
+			// one left in Postgres. Without waiting, the warm pass sees
+			// however much of the cold pass's output happened to have
+			// landed — so it falls back to a per-key read for the rest,
+			// and the steady-state cost this test asserts is flat
+			// wobbles with scheduling instead. It passed locally and
+			// failed in CI for precisely that reason.
+			client.FlushDurableWrites()
+
 			calls, concurrency, byPath := counts.snapshot()
 			if concurrency < 1 {
 				concurrency = 1
