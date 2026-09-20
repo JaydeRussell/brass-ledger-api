@@ -79,10 +79,10 @@ func TestSessionCache_SignOutTakesEffectImmediately(t *testing.T) {
 func TestSessionCache_ApprovalIsVisibleImmediately(t *testing.T) {
 	counting, cached, token, userID := newCountingStore(t)
 
-	// Seeded through the inner store on purpose: going via cached would
-	// flush the cache as part of the setup and the test would pass
-	// without proving anything.
-	if err := counting.fakeUserStore.SetStatus(context.Background(), userID, user.StatusPending); err != nil {
+	// Seeded through the store underneath the cache on purpose: going
+	// via cached would flush as part of the setup, and the test would
+	// pass without proving anything.
+	if err := counting.SetStatus(context.Background(), userID, user.StatusPending); err != nil {
 		t.Fatalf("seeding a pending account: %v", err)
 	}
 
