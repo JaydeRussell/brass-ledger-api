@@ -213,7 +213,13 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 	// since api.RequireApproved — gating BCPHandler's routes below —
 	// needs it regardless. It's a thin wrapper around pool, so
 	// constructing it has no cost or side effect on its own.
-	userStore := user.NewStore(pool)
+	// Wrapped in a short-lived session cache: every gated route resolves
+	// the session before doing anything else, which was one Neon round
+	// trip per request — six on a home page load, all asking the same
+	// question microseconds apart. See internal/api's sessionCacheTTL
+	// for why it is seconds rather than minutes, and how sign-out stays
+	// immediate.
+	userStore := api.NewCachedUserStore(user.NewStore(pool))
 	api.NewBCPHandler(bcpClient).Register(e, api.RequireApproved(userStore), api.RequireSession(userStore))
 
 	// A no-op notifier (see internal/notify.ResendNotifier.enabled)
