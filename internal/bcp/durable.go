@@ -91,6 +91,61 @@ func (c *Client) SetDurableCache(d DurableCache) {
 	c.durable = d
 }
 
+// durableWriteTimeout bounds one background write. Generous relative to
+// a measured ~70-90ms round trip to Neon; this exists so a wedged
+// connection can't hold a goroutine open indefinitely, not to enforce
+// anything.
+const durableWriteTimeout = 15 * time.Second
+
+// maxConcurrentDurableWrites bounds how many background writes are in
+// flight at once, so a burst of cache misses can't open more
+// connections against Neon than the request path itself is allowed.
+const maxConcurrentDurableWrites = 4
+
+// storeDurably writes value under key without making the caller wait.
+//
+// These writes used to sit on the request's critical path: a cold
+// fetch paid a BCP round trip and then a Neon write before answering,
+// and /api/me/events does that for every pending event at once. None of
+// it is data the response depends on — the value being written is
+// already in hand and already being returned.
+//
+// Losing one costs exactly one future BCP request, which is the same
+// thing that happens today when the write isn't attempted at all
+// (see eventEndedWithoutFetching). That is the whole risk, and it is
+// why this can be fire-and-forget while a write the user's own data
+// depended on could not be.
+//
+// Detached from the request context on purpose — the caller's request
+// completing is the normal case, not a reason to abandon the write —
+// but bounded, both in concurrency and in time.
+func (c *Client) storeDurably(ctx context.Context, key string, value any) {
+	if c.durable == nil {
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	c.durableWrites.Add(1)
+	go func() {
+		defer c.durableWrites.Done()
+		c.durableWriteSlots <- struct{}{}
+		defer func() { <-c.durableWriteSlots }()
+
+		writeCtx, cancel := context.WithTimeout(detached, durableWriteTimeout)
+		defer cancel()
+		_ = c.durable.Set(writeCtx, key, CacheSchemaVersion, value)
+	}()
+}
+
+// FlushDurableWrites blocks until every background write started so far
+// has finished.
+//
+// Two callers, both legitimate: a graceful shutdown, so a deploy
+// doesn't throw away work already done; and tests, which would
+// otherwise race the very writes they are asserting on.
+func (c *Client) FlushDurableWrites() {
+	c.durableWrites.Wait()
+}
+
 // prewarm loads every key that's in the durable cache but not yet in
 // memory, in one query, and seeds the in-memory cache with what it
 // finds. Keys already in memory are skipped (a live entry is never worse

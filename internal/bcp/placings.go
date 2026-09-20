@@ -129,7 +129,7 @@ func (c *Client) fetchPlacingsUncached(ctx context.Context, eventID string, team
 	// above.
 	if c.durable != nil {
 		if info, err := c.FetchEventInfo(ctx, eventID); err == nil && info.Ended {
-			_ = c.durable.Set(ctx, durableKey, CacheSchemaVersion, entries)
+			c.storeDurably(ctx, durableKey, entries)
 		}
 	}
 

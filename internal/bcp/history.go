@@ -154,7 +154,7 @@ func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID 
 		// A registration list is never "final" — it's stored with its
 		// age instead and read back through GetFresh, which is what the
 		// myEventsRefetchInterval bound on the read side is for.
-		_ = c.durable.Set(ctx, playerEventHistoryDurableKey(bcpUserID), CacheSchemaVersion, records)
+		c.storeDurably(ctx, playerEventHistoryDurableKey(bcpUserID), records)
 	}
 	return records, nil
 }
@@ -338,7 +338,7 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 		// Same reasoning as the registration list above: a player's
 		// placing history gains an entry every time an event they were
 		// in concludes, so it's age-bounded rather than permanent.
-		_ = c.durable.Set(ctx, placingHistoryDurableKey(bcpUserID), CacheSchemaVersion, entries)
+		c.storeDurably(ctx, placingHistoryDurableKey(bcpUserID), entries)
 	}
 	return entries, nil
 }

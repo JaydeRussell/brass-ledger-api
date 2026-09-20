@@ -88,7 +88,7 @@ func (c *Client) fetchLeagueInfoUncached(ctx context.Context, leagueID string) (
 	// effectively permanent reference data the moment it exists — no
 	// "ended" gate needed.
 	if c.durable != nil {
-		_ = c.durable.Set(ctx, leagueInfoDurableKey(leagueID), CacheSchemaVersion, *info)
+		c.storeDurably(ctx, leagueInfoDurableKey(leagueID), *info)
 	}
 
 	return info, nil
@@ -178,7 +178,7 @@ func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserI
 	// behaviour and not worth failing a request over.
 	store := func(r *ItcRanking) {
 		if c.durable != nil {
-			_ = c.durable.Set(ctx, durableKey, CacheSchemaVersion, itcRankingCacheEntry{Ranking: r})
+			c.storeDurably(ctx, durableKey, itcRankingCacheEntry{Ranking: r})
 		}
 	}
 
