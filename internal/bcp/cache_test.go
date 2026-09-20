@@ -444,3 +444,124 @@ func TestCache_DoesNotGrowForever(t *testing.T) {
 		t.Error("eviction emptied the cache entirely")
 	}
 }
+
+// newSWRTestCache is a stale-while-revalidate cache with a short TTL
+// and a fetch that returns a different value each time, so a test can
+// tell which generation it was served.
+func newSWRTestCache(ttl time.Duration, calls *atomic.Int32) *Cache[string] {
+	return NewCacheWithStaleWhileRevalidate(func(_ context.Context, _ string) (string, error) {
+		return fmt.Sprintf("v%d", calls.Add(1)), nil
+	}, ttl, nil)
+}
+
+// TestCache_StaleWhileRevalidate_ServesImmediatelyAndRefreshesBehind is
+// the point of the whole thing: nobody waits on BCP for a value we
+// already have a slightly old copy of.
+func TestCache_StaleWhileRevalidate_ServesImmediatelyAndRefreshesBehind(t *testing.T) {
+	var calls atomic.Int32
+	c := newSWRTestCache(20*time.Millisecond, &calls)
+
+	if got, err := c.Get(context.Background(), "k"); err != nil || got != "v1" {
+		t.Fatalf("first Get = %q, %v; want v1", got, err)
+	}
+	time.Sleep(30 * time.Millisecond) // past the TTL, inside 2x
+
+	// Served from the stale entry, not from a fresh fetch.
+	got, err := c.Get(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("stale Get: %v", err)
+	}
+	if got != "v1" {
+		t.Errorf("stale Get = %q, want the old value v1 — the caller should not have waited "+
+			"for a refetch", got)
+	}
+
+	c.waitForRevalidations()
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("upstream called %d times, want 2 (the original plus one background refresh)", n)
+	}
+	// And the refresh actually landed.
+	if got, _ := c.Get(context.Background(), "k"); got != "v2" {
+		t.Errorf("after revalidation Get = %q, want v2 — the background refresh did not replace "+
+			"the entry", got)
+	}
+}
+
+// TestCache_StaleWhileRevalidate_OnlyOneRefreshPerKey — a burst of
+// callers arriving after a lapse must not each start their own refresh.
+// That would turn one expiry into a stampede against BCP, which is the
+// opposite of the intent.
+func TestCache_StaleWhileRevalidate_OnlyOneRefreshPerKey(t *testing.T) {
+	var calls atomic.Int32
+	c := newSWRTestCache(20*time.Millisecond, &calls)
+
+	if _, err := c.Get(context.Background(), "k"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Get(context.Background(), "k"); err != nil {
+				t.Errorf("concurrent stale Get: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	c.waitForRevalidations()
+
+	if n := calls.Load(); n != 2 {
+		t.Errorf("ten callers arriving after one expiry caused %d upstream calls, want 2", n)
+	}
+}
+
+// TestCache_StaleWhileRevalidate_StopsServingPastTheWindow is the bound
+// that makes this safe. An entry twice its own TTL old isn't slightly
+// out of date, it's a different answer — and the TTLs this applies to
+// are short precisely because the data moves.
+func TestCache_StaleWhileRevalidate_StopsServingPastTheWindow(t *testing.T) {
+	var calls atomic.Int32
+	c := newSWRTestCache(20*time.Millisecond, &calls)
+
+	if _, err := c.Get(context.Background(), "k"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	time.Sleep(60 * time.Millisecond) // past 2x the TTL
+
+	got, err := c.Get(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Get past the window: %v", err)
+	}
+	if got != "v2" {
+		t.Errorf("Get past the stale window = %q, want the freshly fetched v2 — beyond the "+
+			"window a caller must wait for the truth", got)
+	}
+}
+
+// TestCache_WithoutStaleWhileRevalidate_StillBlocks pins the opt-in.
+// Pairings run on a plain cache for a deliberate reason (see
+// NewCacheWithStaleWhileRevalidate's doc comment), so "every cache
+// quietly got this" would be a real regression.
+func TestCache_WithoutStaleWhileRevalidate_StillBlocks(t *testing.T) {
+	var calls atomic.Int32
+	c := NewCacheWithTTL(func(_ context.Context, _ string) (string, error) {
+		return fmt.Sprintf("v%d", calls.Add(1)), nil
+	}, 20*time.Millisecond)
+
+	if _, err := c.Get(context.Background(), "k"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	got, err := c.Get(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "v2" {
+		t.Errorf("a plain cache served %q after its TTL lapsed, want the fresh v2 — "+
+			"stale-while-revalidate is opt-in and pairings rely on not having it", got)
+	}
+}

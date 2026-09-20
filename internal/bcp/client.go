@@ -184,13 +184,23 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 		siteBase:          siteBase,
 	}
 
-	c.eventInfo = NewCacheWithValueTTL(func(ctx context.Context, eventID string) (EventInfo, error) {
+	// Stale-while-revalidate: an event's own metadata is the most
+	// re-read thing on the event page and the least urgent to be
+	// current to the second.
+	c.eventInfo = NewCacheWithStaleWhileRevalidate(func(ctx context.Context, eventID string) (EventInfo, error) {
 		return c.fetchEventInfoUncached(ctx, eventID)
 	}, minRefetchInterval, eventInfoTTL)
 	c.players = NewCache(func(ctx context.Context, eventID string) ([]Player, error) {
 		return c.fetchPlayersUncached(ctx, eventID)
 	})
 	// Keyed by "eventId:pairingType:round" — see FetchRoundPairings.
+	//
+	// Deliberately NOT stale-while-revalidate, unlike its neighbours
+	// above and below. The moment a round's pairings publish is the one
+	// moment in this app where being a minute behind is something a
+	// person standing at a venue notices and minds; it is what they are
+	// refreshing for. Serving a stale board to save someone else a
+	// round trip is the wrong trade here specifically.
 	c.pairings = NewCache(func(ctx context.Context, key string) ([]PairingRecord, error) {
 		eventID, pairingType, round, err := splitPairingsKey(key)
 		if err != nil {
@@ -199,13 +209,18 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 		return c.fetchRoundPairingsUncached(ctx, eventID, pairingType, round)
 	})
 	// Keyed by "eventId:team" or "eventId:individual" — see FetchPlacings.
-	c.placings = NewCache(func(ctx context.Context, key string) ([]PlacingEntry, error) {
+	//
+	// Stale-while-revalidate too: standings move round by round, so a
+	// briefly out-of-date table is a table that was right a moment ago,
+	// and the tab carries its own "check for updated placings" button
+	// for anyone who wants the truth now.
+	c.placings = NewCacheWithStaleWhileRevalidate(func(ctx context.Context, key string) ([]PlacingEntry, error) {
 		eventID, teamEvent, err := splitPlacingsKey(key)
 		if err != nil {
 			return nil, err
 		}
 		return c.fetchPlacingsUncached(ctx, eventID, teamEvent)
-	})
+	}, minRefetchInterval, nil)
 	// Keyed by "leagueId:bcpUserId" — see FetchItcRanking.
 	c.itcRanking = NewCacheWithTTL(func(ctx context.Context, key string) (*ItcRanking, error) {
 		leagueID, bcpUserID, err := splitItcRankingKey(key)

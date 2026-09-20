@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"testing"
 )
 
 // --- shared test helpers -------------------------------------------------
@@ -45,4 +46,28 @@ func itcRankingEqual(a, b *ItcRanking) bool {
 	ab, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)
 	return string(ab) == string(bb)
+}
+
+// TestPairingsCacheDoesNotServeStale guards the one exclusion by name,
+// at the level someone would actually change it.
+//
+// The cache-level test in cache_test.go proves the mechanism is opt-in;
+// this proves the opt-in wasn't applied here. They are different
+// mistakes: enabling it on pairings is a one-word edit in client.go
+// that no cache-level test would notice.
+func TestPairingsCacheDoesNotServeStale(t *testing.T) {
+	c := NewClient()
+
+	if c.pairings.serveStale {
+		t.Error("the pairings cache serves stale entries. The moment a round's pairings publish " +
+			"is the one moment in this app where being a minute behind is something a person " +
+			"standing at a venue notices — see NewCacheWithStaleWhileRevalidate's doc comment.")
+	}
+	// Its neighbours are meant to, so a blanket removal is caught too.
+	if !c.eventInfo.serveStale {
+		t.Error("the event-info cache stopped serving stale entries")
+	}
+	if !c.placings.serveStale {
+		t.Error("the placings cache stopped serving stale entries")
+	}
 }

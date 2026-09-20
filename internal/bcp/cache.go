@@ -158,6 +158,38 @@ type Cache[T any] struct {
 	// Optional. Given a freshly fetched value, returns how long it's
 	// worth keeping; a non-positive result falls back to ttl.
 	ttlFor func(T) time.Duration
+	// See NewCacheWithStaleWhileRevalidate.
+	serveStale bool
+	// Background revalidations in flight, so tests can wait for them
+	// rather than race them.
+	revalidations sync.WaitGroup
+}
+
+// NewCacheWithStaleWhileRevalidate is NewCacheWithValueTTL plus
+// permission to answer from an expired entry while refreshing it behind
+// the response.
+//
+// Only worth it where a TTL actually lapses under traffic, which in this
+// service means the 60-second ones on a live event: the container sleeps
+// after ten minutes idle, so a longer-lived entry is usually taken by a
+// restart before it ever expires in process. There, without this, one
+// caller a minute per key waits on BCP while everyone else is served
+// from memory.
+//
+// NOT for pairings, deliberately. The moment a round's pairings publish
+// is the one moment in this app where being a minute behind is
+// something a person standing at a venue will notice and care about.
+// Standings and event metadata going briefly stale is mild by
+// comparison; a pairing board that hasn't caught up is the thing people
+// are refreshing for. Owner's call, 2026-09-20.
+func NewCacheWithStaleWhileRevalidate[T any](
+	fetch func(ctx context.Context, key string) (T, error),
+	ttl time.Duration,
+	ttlFor func(T) time.Duration,
+) *Cache[T] {
+	c := NewCacheWithValueTTL(fetch, ttl, ttlFor)
+	c.serveStale = true
+	return c
 }
 
 // NewCache builds a Cache backed by fetch, using the default
@@ -240,6 +272,23 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 		var zero T
 		return zero, g.err
 	}
+	// Stale but still servable: hand back what we have and refresh
+	// behind the response, so the one unlucky caller who happens to
+	// arrive after a TTL lapses doesn't pay a BCP round trip on
+	// everyone else's behalf.
+	//
+	// Bounded at twice the TTL, not indefinitely. An entry that old is
+	// no longer "slightly out of date", it's a different answer — and
+	// the whole point of the short TTLs this applies to is that the
+	// underlying data moves. Past the window a caller blocks and waits
+	// for the truth, exactly as before.
+	if e, ok := c.entries[key]; ok && c.serveStale && time.Since(e.fetchedAt) < 2*e.ttl {
+		if _, refreshing := c.inFlight[key]; !refreshing {
+			c.startRevalidationLocked(ctx, key)
+		}
+		c.mu.Unlock()
+		return e.data, nil
+	}
 	if inf, ok := c.inFlight[key]; ok {
 		c.mu.Unlock()
 		<-inf.done
@@ -250,6 +299,14 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	c.inFlight[key] = inf
 	c.mu.Unlock()
 
+	return c.runFetch(ctx, key, inf)
+}
+
+// runFetch performs the real fetch for key, stores the outcome and
+// releases everyone waiting on inf. Shared by the blocking path in Get
+// and by a background revalidation, which differ only in whether anyone
+// is waiting for the answer.
+func (c *Cache[T]) runFetch(ctx context.Context, key string, inf *inflight[T]) (T, error) {
 	// Detached from the caller's context, deliberately.
 	//
 	// This fetch is shared: whoever arrived first starts it and everyone
@@ -258,6 +315,10 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	// constant — cancelled it for every other waiter too. None of those
 	// failures were cached, so all of them retried, and one person
 	// pressing back turned into extra BCP requests for strangers.
+	//
+	// It matters twice over now: a background revalidation outlives the
+	// request that triggered it by design, and that request is normally
+	// finished before the refresh is.
 	//
 	// The timeout is what keeps "not cancellable" from meaning "can
 	// hang forever". Generous on purpose: the slowest fetch function
@@ -336,6 +397,33 @@ func (c *Cache[T]) evictLocked() {
 		}
 		delete(c.entries, oldestKey)
 	}
+}
+
+// startRevalidationLocked kicks off a background refresh for key. The
+// caller holds c.mu and has already checked nothing is in flight.
+//
+// It registers in inFlight like any other fetch, so a caller that
+// arrives while it runs — including one past the stale window, who
+// can't be served from the old entry — waits on this rather than
+// starting a second request to BCP.
+func (c *Cache[T]) startRevalidationLocked(ctx context.Context, key string) {
+	inf := &inflight[T]{done: make(chan struct{})}
+	c.inFlight[key] = inf
+
+	c.revalidations.Add(1)
+	go func() {
+		defer c.revalidations.Done()
+		// Nobody is waiting on the return values; a failure leaves the
+		// stale entry in place until the window closes, at which point
+		// the next caller blocks and sees the real error.
+		_, _ = c.runFetch(ctx, key, inf)
+	}()
+}
+
+// waitForRevalidations blocks until every background refresh started so
+// far has finished. For tests, which would otherwise race them.
+func (c *Cache[T]) waitForRevalidations() {
+	c.revalidations.Wait()
 }
 
 // Invalidate clears key's cached entry (if fetched more than
