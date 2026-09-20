@@ -237,3 +237,101 @@ func TestStore_Delete(t *testing.T) {
 		t.Errorf("Delete of a missing key returned %v, want nil", err)
 	}
 }
+
+// TestStore_PruneKeepsWhatIsPermanent is the test that matters for
+// pruning: everything it deletes is reconstructible from BCP, but
+// deleting something permanent means re-fetching data that can never
+// change — the exact requests the durable cache exists to prevent.
+func TestStore_PruneKeepsWhatIsPermanent(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	suffix := fmt.Sprintf("prune-%d", time.Now().UnixNano())
+	key := func(kind string) string { return kind + suffix }
+
+	// Permanent by construction: an ended event and everything derived
+	// from one, plus a league's classification.
+	permanent := []string{
+		key("players:"), key("pairings:"), key("placings:"), key("league:"),
+	}
+	// Age-bounded: these expire and become dead weight.
+	expiring := []string{
+		key("playerhistory:"), key("placinghistory:"), key("itc:"),
+	}
+
+	for _, k := range append(append([]string{}, permanent...), expiring...) {
+		if err := store.Set(ctx, k, 1, map[string]string{"v": "x"}); err != nil {
+			t.Fatalf("Set %s: %v", k, err)
+		}
+	}
+	// Two event rows: one concluded (permanent), one that never ended.
+	if err := store.Set(ctx, key("event:ended-"), 1, map[string]any{"ended": true}); err != nil {
+		t.Fatalf("Set ended event: %v", err)
+	}
+	if err := store.Set(ctx, key("event:live-"), 1, map[string]any{"ended": false}); err != nil {
+		t.Fatalf("Set live event: %v", err)
+	}
+
+	// Age everything past the cutoff.
+	if _, err := store.pool.Exec(ctx,
+		`UPDATE bcp_durable_cache SET cached_at = now() - interval '30 days' WHERE cache_key LIKE $1`,
+		"%"+suffix); err != nil {
+		t.Fatalf("ageing rows: %v", err)
+	}
+
+	if _, err := store.Prune(ctx, 7*24*time.Hour); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	stillThere := func(k string) bool {
+		var v map[string]any
+		found, err := store.Get(ctx, k, 1, &v)
+		if err != nil {
+			t.Fatalf("Get %s: %v", k, err)
+		}
+		return found
+	}
+
+	for _, k := range append(permanent, key("event:ended-")) {
+		if !stillThere(k) {
+			t.Errorf("%s was pruned, but it can never change — re-fetching it is exactly the "+
+				"BCP request this cache exists to avoid", k)
+		}
+	}
+	for _, k := range append(expiring, key("event:live-")) {
+		if stillThere(k) {
+			t.Errorf("%s survived the prune, but it expired long ago and can never be served again", k)
+		}
+	}
+
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(context.Background(),
+			`DELETE FROM bcp_durable_cache WHERE cache_key LIKE $1`, "%"+suffix)
+	})
+}
+
+// TestStore_PruneLeavesFreshRowsAlone — the cutoff has to be honoured,
+// or the prune is just a cache flush.
+func TestStore_PruneLeavesFreshRowsAlone(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	k := fmt.Sprintf("itc:fresh-%d", time.Now().UnixNano())
+	if err := store.Set(ctx, k, 1, map[string]string{"v": "x"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Delete(context.Background(), k) })
+
+	if _, err := store.Prune(ctx, 7*24*time.Hour); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	var v map[string]string
+	found, err := store.Get(ctx, k, 1, &v)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Error("a row written moments ago was pruned — the age cutoff isn't being applied")
+	}
+}

@@ -146,6 +146,60 @@ func (s *Store) GetMany(ctx context.Context, keys []string, version int) (map[st
 	return found, nil
 }
 
+// prunablePrefixes are the cache_key namespaces whose rows expire.
+//
+// Everything absent from this list is permanent by construction — an
+// already-concluded event's roster, pairings and placings, and a
+// league's classification, none of which can change again — and is
+// meant to stay. See internal/bcp/durable.go for what writes each kind.
+var prunablePrefixes = []string{
+	"playerhistory:", // bounded by myEventsRefetchInterval
+	"placinghistory:",
+	"itc:", // bounded by itcRankingRefetchInterval
+}
+
+// Prune deletes rows that can no longer be served: the age-bounded
+// kinds above, and event info for an event that never ended (stored
+// with a lifetime rather than permanently — see eventInfoTTL).
+//
+// olderThan should be comfortably beyond the longest TTL involved
+// rather than tuned to it. The job here is to stop a table nothing ever
+// deleted from growing without limit, not to reclaim space the moment
+// it goes stale; deleting a row a caller could still have used just
+// buys a needless BCP request.
+//
+// Reports how many rows went, so a caller can log something meaningful
+// rather than guess.
+func (s *Store) Prune(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM bcp_durable_cache
+		WHERE cached_at < $1
+		  AND (
+			cache_key LIKE ANY($2)
+			-- An event that never concluded was stored with a lifetime.
+			-- Readable straight out of the document because this column
+			-- is jsonb; it is the one place anything looks inside it,
+			-- and the reason the column should stay jsonb rather than
+			-- becoming plain text.
+			OR (cache_key LIKE 'event:%' AND COALESCE(data->>'ended', 'false') <> 'true')
+		  )
+	`, cutoff, prunablePatterns())
+	if err != nil {
+		return 0, fmt.Errorf("pruning bcp_durable_cache: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func prunablePatterns() []string {
+	patterns := make([]string, 0, len(prunablePrefixes))
+	for _, p := range prunablePrefixes {
+		patterns = append(patterns, p+"%")
+	}
+	return patterns
+}
+
 // Delete removes a cached row. Used when a user explicitly asks for
 // fresh data (see bcp.Client.InvalidatePlayerEventHistory) — without it,
 // dropping the in-memory entry would just reload the same stale value
