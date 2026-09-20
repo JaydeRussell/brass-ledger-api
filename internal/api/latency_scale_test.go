@@ -118,8 +118,8 @@ func scaleStub(t *testing.T, n int) (*httptest.Server, *countingBCP) {
 		if _, err := fmt.Sscanf(id, "evt-%d", &idx); err == nil && idx >= n-liveEventsPerAccount {
 			ended = false
 		}
-		_, _ = w.Write([]byte(fmt.Sprintf(
-			`{"id": %q, "name": %q, "status": {"started": true, "ended": %t}}`, id, id, ended)))
+		_, _ = fmt.Fprintf(w,
+			`{"id": %q, "name": %q, "status": {"started": true, "ended": %t}}`, id, id, ended)
 	})
 
 	server := httptest.NewServer(mux)

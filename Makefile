@@ -1,4 +1,4 @@
-.PHONY: help build run test test-integration latency latency-gate regress lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
+.PHONY: help build run test test-integration latency latency-gate regress lint-ci lint fmt tidy clean docker-up docker-up-d docker-down docker-down-v docker-build docker-reset logs logs-tail db-shell smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -32,6 +32,9 @@ regress: ## Full local regression pass before a PR: build, vet, fmt, tests, then
 		echo "skipped — the local stack isn't up (make docker-up-d), so there was nothing to measure."; \
 		echo "Run 'make latency' once it is, if this change touches request handling or caching."; \
 	fi
+
+lint-ci: ## Run the exact golangci-lint CI runs (downloads it; needs network)
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
 
 lint: ## Vet the code and fail if anything isn't gofmt-formatted
 	go vet ./...

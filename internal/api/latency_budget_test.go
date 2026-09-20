@@ -169,15 +169,6 @@ func (c *countingBCP) watchedPeak() int {
 	return c.watchedMax
 }
 
-// estimate turns what this stub observed into what it would have cost
-// in production, using the measured constants in internal/bcp. This is
-// the whole point of counting: the counts are deterministic and offline,
-// while the estimate is in the units the rule is written in.
-func (c *countingBCP) estimate(durableReads, durableBatches int) time.Duration {
-	total, maxConcurrent, _ := c.snapshot()
-	return bcp.EstimatedCost(total, maxConcurrent, durableReads, durableBatches)
-}
-
 // reset zeroes the counters, so a test can populate caches with one
 // client and then measure only what a second, freshly started one does.
 func (c *countingBCP) reset() {
