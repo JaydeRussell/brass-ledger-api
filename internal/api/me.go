@@ -294,6 +294,7 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 	// the same event listed twice in Past with two different point
 	// totals — see canonicalPlacingPerEvent's doc comment (stats.go),
 	// which this reuses rather than duplicating.
+	client.PrewarmLeagueInfo(ctx, distinctLeagueIDs(placingHistory))
 	placingHistory = canonicalPlacingPerEvent(ctx, client, placingHistory)
 	registrations, err := client.FetchPlayerEventHistory(ctx, bcpUserID)
 	if err != nil {
@@ -320,6 +321,27 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 	// MeHandler above) — each needs its own FetchEventInfo call to learn
 	// Started/Ended, since the registration list alone doesn't carry
 	// dates.
+	//
+	// Most of these can't be durably cached at all (only ended events
+	// are, see internal/bcp/events.go), so prewarming looks pointless —
+	// except for the one case that isn't upcoming: an event that has
+	// ended but whose placings BCP hasn't published yet, which lands
+	// here rather than in placingHistory and is exactly the kind that
+	// sits around for days. Misses cost nothing beyond the one query the
+	// hits already pay for.
+	pending := make([]string, 0, len(registrations))
+	for _, r := range registrations {
+		if !concluded[r.EventID] {
+			pending = append(pending, r.EventID)
+		}
+	}
+	if !refresh {
+		// A refresh is an explicit "ignore what's cached", and the loop
+		// below invalidates each event as it goes — prewarming would
+		// just be undone.
+		client.PrewarmEventInfo(ctx, pending)
+	}
+
 	for _, r := range registrations {
 		if concluded[r.EventID] {
 			continue

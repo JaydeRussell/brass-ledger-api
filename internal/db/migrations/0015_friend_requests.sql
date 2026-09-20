@@ -1,3 +1,16 @@
+-- Renumbered from 0014_ to 0015_ (it originally collided with
+-- 0014_dossier_public.sql, which shipped from a separate branch).
+--
+-- Safe to renumber precisely because every statement below is
+-- IF NOT EXISTS-guarded: Migrate keys schema_migrations on the file
+-- path, so the rename makes this run once more against every existing
+-- database, where it does nothing at all. Its old version row stays in
+-- schema_migrations, matching no file — which Migrate ignores.
+--
+-- 0014_dossier_public.sql was deliberately left alone: it's a bare
+-- ALTER TABLE ... ADD COLUMN with no IF NOT EXISTS, so renaming *it*
+-- would re-run it, error, and take startup down on every deploy.
+--
 -- Mutual "friending" between two accounts — see internal/api/friends.go.
 -- Deliberately requires acceptance both ways (a request must be
 -- accepted before either side can see the other's data) rather than a

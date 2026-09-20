@@ -127,13 +127,36 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 // user-initiated "check again now" action — e.g. a signed-in account's
 // own event list, which can go stale in ways only they'd know to ask
 // about (registering for something new) — not for routine use.
-func (c *Cache[T]) Invalidate(key string) {
+//
+// Reports whether it actually cleared anything, so a caller backing this
+// cache with a durable one knows whether to drop that copy too — see
+// Client.InvalidatePlayerEventHistory. Dropping the durable row on a
+// throttled call would defeat the throttle, since the next read would go
+// to BCP instead of Postgres. Callers that don't care can ignore it.
+func (c *Cache[T]) Invalidate(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < minManualInvalidateInterval {
-		return
+		return false
 	}
 	delete(c.entries, key)
+	return true
+}
+
+// Put seeds an entry directly, with the time the data was really
+// obtained rather than "now". Used to hand the cache a value loaded from
+// the durable Postgres cache (see history.go) so that, for the rest of
+// this process's life, it behaves exactly like one fetched normally:
+// it ages out of the TTL on schedule, and FetchedAt reports the truth.
+//
+// Seeding with time.Now() instead would restart the clock on data that
+// might be nearly TTL-old already, and would make the "last updated"
+// timestamp surfaced to the user (see internal/api/me.go's
+// UpcomingFetchedAt) claim a fetch that never happened.
+func (c *Cache[T]) Put(key string, data T, fetchedAt time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt}
 }
 
 // FetchedAt reports when key's cached entry was last actually fetched
