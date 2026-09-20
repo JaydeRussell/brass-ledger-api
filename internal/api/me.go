@@ -23,12 +23,32 @@ import (
 // Present/Future registration list itself (bcp.Client's
 // playerEventHistory/placingHistory caches) is cached for up to 48
 // hours — see bcp.myEventsRefetchInterval's doc comment.
-// maxConcurrentEventInfo bounds how many event-info lookups classifyMyEvents
-// has in flight at once. Three is a compromise: enough that a handful of
-// pending registrations resolve in one or two rounds instead of a queue,
-// low enough that no single page load is a burst against an API we have
-// no agreement with.
-const maxConcurrentEventInfo = 3
+// maxConcurrentEventInfo bounds how many event-info lookups one request
+// has in flight at once — classifyMyEvents here, and eventInfoByID in
+// stats.go.
+//
+// Raised from three to six on 2026-09-20. The request count is
+// unchanged either way; this only decides how many of them overlap. Six
+// roughly halves the wait on a first-ever /stats or dossier view for an
+// account with a long history, which the scale test puts in the seconds
+// at 100 events and worse beyond.
+//
+// Two things make that affordable now. Home stopped triggering the
+// per-event pass at all (?summary=true, see stats.go's withEventDetail),
+// so this no longer runs on the landing page — only on a page someone
+// deliberately opened. And every event resolved here is written to the
+// durable cache, which is shared across every account, so each event is
+// paid for once globally rather than once per user.
+//
+// KNOWN GAP, deliberate and the owner's call: this is a PER-REQUEST
+// bound, created fresh inside each call. It says nothing about the
+// process. Six simultaneous users fanning out at six put thirty-six
+// concurrent requests on BCP and nothing anywhere stops them. A
+// process-wide ceiling is the only thing that would actually bound what
+// BCP sees; it is on the backlog, not in this change. Weigh that before
+// raising this number again — past here it multiplies against traffic
+// rather than adding to it.
+const maxConcurrentEventInfo = 6
 
 const staleEventAfter = 24 * time.Hour
 
