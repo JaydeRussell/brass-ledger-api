@@ -65,15 +65,19 @@ func (f *fakeDurableCache) GetFresh(_ context.Context, key string, version int, 
 	return true, entry.cachedAt, json.Unmarshal(entry.raw, dest)
 }
 
-func (f *fakeDurableCache) GetMany(_ context.Context, keys []string, version int) (map[string]json.RawMessage, error) {
+func (f *fakeDurableCache) GetMany(_ context.Context, keys []string, version int) (map[string]DurableRow, error) {
 	f.getManyCalls++
-	found := make(map[string]json.RawMessage, len(keys))
+	found := make(map[string]DurableRow, len(keys))
 	for _, key := range keys {
 		entry, ok := f.data[key]
 		if !ok || entry.version != version {
 			continue
 		}
-		found[key] = json.RawMessage(entry.raw)
+		at := entry.cachedAt
+		if at.IsZero() {
+			at = time.Now()
+		}
+		found[key] = DurableRow{Data: json.RawMessage(entry.raw), CachedAt: at}
 	}
 	return found, nil
 }
@@ -659,5 +663,107 @@ func TestCacheFresh_DistinguishesStaleFromAbsent(t *testing.T) {
 	}
 	if c.Fresh("k") {
 		t.Error("Fresh reported true for an entry past its TTL — this is the bug that made prewarm a no-op")
+	}
+}
+
+// --- Upcoming events now survive a restart -----------------------------
+
+func farOffEventBody(id string) string {
+	start := time.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
+	return `{"id": "` + id + `", "name": "Two Months Away", ` +
+		`"status": {"started": false, "ended": false}, "dates": {"start": "` + start + `"}}`
+}
+
+// The production case this exists for: an account whose only uncached
+// lookup was a single event two months out. Its in-memory TTL is six
+// hours, but the container sleeps after ten minutes — so before this,
+// every cold process re-fetched an event that wasn't happening for two
+// months, forever, because the only cache holding it never lived long
+// enough to be used.
+func TestEventInfo_FarOffEventSurvivesANewClient(t *testing.T) {
+	fake := newFakeDurableCache()
+
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-future", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(farOffEventBody("evt-future")))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	first := NewClientWithBaseURL(server.URL)
+	first.SetDurableCache(fake)
+	if _, err := first.FetchEventInfo(context.Background(), "evt-future"); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d after the first fetch, want 1", calls)
+	}
+	if _, stored := fake.data[eventInfoDurableKey("evt-future")]; !stored {
+		t.Fatal("a far-off event was not persisted — its six-hour TTL is useless in a ten-minute process")
+	}
+
+	// A new process, same Postgres. Its upstream fails every request, so
+	// anything it returns came from the durable cache.
+	second := NewClientWithBaseURL(failingServer(t).URL)
+	second.SetDurableCache(fake)
+	got, err := second.FetchEventInfo(context.Background(), "evt-future")
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if got.ID != "evt-future" || got.Started || got.Ended {
+		t.Errorf("second fetch = %+v, want the durably cached upcoming event", got)
+	}
+}
+
+func TestEventInfo_FarOffEventIsRefetchedOnceItsTTLLapses(t *testing.T) {
+	fake := newFakeDurableCache()
+	fake.data[eventInfoDurableKey("evt-future")] = fakeDurableCacheEntry{
+		raw:      []byte(farOffEventBody("evt-future")),
+		version:  CacheSchemaVersion,
+		cachedAt: time.Now().Add(-2 * eventInfoFarOffTTL),
+	}
+
+	var calls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-future", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(farOffEventBody("evt-future")))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.SetDurableCache(fake)
+	if _, err := client.FetchEventInfo(context.Background(), "evt-future"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 — a stored upcoming event past eventInfoFarOffTTL must be refetched, "+
+			"not trusted indefinitely the way an ended one is", calls)
+	}
+}
+
+// The other half of the rule: an event being played right now must NOT
+// be persisted. Its round and standings move, and a Postgres write per
+// request would buy nothing.
+func TestEventInfo_InProgressEventIsNotPersisted(t *testing.T) {
+	fake := newFakeDurableCache()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-live", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-live", "name": "Happening Now", "status": {"started": true, "ended": false}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.SetDurableCache(fake)
+	if _, err := client.FetchEventInfo(context.Background(), "evt-live"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if _, stored := fake.data[eventInfoDurableKey("evt-live")]; stored {
+		t.Error("an in-progress event was persisted — its current round changes, so a stored copy goes stale immediately")
 	}
 }

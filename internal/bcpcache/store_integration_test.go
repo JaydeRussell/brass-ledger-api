@@ -172,8 +172,14 @@ func TestStore_GetMany(t *testing.T) {
 	if len(found) != 2 {
 		t.Fatalf("GetMany returned %d rows, want 2 (the absent key must simply not appear)", len(found))
 	}
-	if string(found[present]) == "" || string(found[alsoPresent]) == "" {
+	if len(found[present].Data) == 0 || len(found[alsoPresent].Data) == 0 {
 		t.Errorf("GetMany = %v, want raw JSON for both present keys", found)
+	}
+	// Each row carries when it was written — a caller holding values
+	// that expire (see bcp.eventInfoTTL) judges them by that, not just
+	// by the bytes.
+	if found[present].CachedAt.Before(time.Now().Add(-time.Hour)) || found[present].CachedAt.IsZero() {
+		t.Errorf("GetMany row CachedAt = %v, want roughly now", found[present].CachedAt)
 	}
 	if _, ok := found[absent]; ok {
 		t.Error("GetMany included a key that was never written")
