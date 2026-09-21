@@ -48,11 +48,23 @@ const (
 	// What one page's endpoints may be estimated to cost in production.
 	//
 	// The rule is two seconds (CLAUDE.md). This asserts against 1.4s
-	// instead, on purpose: bcp.EstimatedCost models only round trips and
-	// comes out roughly 25% optimistic when things are already fast (see
-	// its calibration table), so it's a lower bound. Asserting at 2s
-	// would let a page that really takes 2.4s pass. The headroom is that
-	// error margin, not slack.
+	// instead, and the headroom is an error margin rather than slack:
+	// bcp.EstimatedCost is a lower bound, so asserting at 2s would let a
+	// page that really takes 2.4s pass.
+	//
+	// The margin used to be justified as "the model runs ~25% optimistic
+	// when things are fast". That was true and the reason was wrong:
+	// OwnOverheadCost modelled the container's own processing (under a
+	// millisecond) rather than the cost of reaching it (~150ms), so
+	// every estimate was low by a flat 149ms — most of a fast request,
+	// noise on a slow one. Fixed 2026-09-21, and the model now lands at
+	// 1.01 against production on both measured cases.
+	//
+	// The budget stays at 1.4s anyway. What the model still cannot see
+	// is a cold container start, which production measured at 4,848ms on
+	// its own and which the owner has accepted rather than fixed — so
+	// there is no version of this estimate that should be asserted at
+	// the real threshold.
 	estimatedPageBudget = 1400 * time.Millisecond
 
 	// What one event-page load may cost upstream.
