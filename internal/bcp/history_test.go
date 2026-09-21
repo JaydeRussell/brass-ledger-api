@@ -332,14 +332,22 @@ func TestHistoryCrawlsStopAtTheCapAndSaySo(t *testing.T) {
 	cases := []struct {
 		name string
 		path string
-		body string
+		// body builds one page. A function rather than a format string
+		// with positional args: the two feeds need different numbers of
+		// substitutions, and passing a fixed arg list to both left the
+		// registration case with a stray %!(EXTRA int) on the end of its
+		// JSON. json.Decoder.Decode stopped at the first value and never
+		// noticed; the switch to json.Unmarshal did.
+		body func(page int) string
 		feed string
 		call func(*Client, context.Context) (int, error)
 	}{
 		{
 			name: "registration feed",
 			path: "/players",
-			body: `{"data": [{"event": {"id": "evt-%d", "name": "Event %d"}}], "nextKey": "cursor-%d"}`,
+			body: func(n int) string {
+				return fmt.Sprintf(`{"data": [{"event": {"id": "evt-%d", "name": "Event %d"}}], "nextKey": "cursor-%d"}`, n, n, n)
+			},
 			feed: "registration",
 			call: func(c *Client, ctx context.Context) (int, error) {
 				got, err := c.FetchPlayerEventHistory(ctx, "user-endless")
@@ -349,7 +357,9 @@ func TestHistoryCrawlsStopAtTheCapAndSaySo(t *testing.T) {
 		{
 			name: "placing feed",
 			path: "/eventplacings",
-			body: `{"data": [{"placing": 1, "event": {"id": "evt-%d", "name": "Event %d", "eventDate": "2024-01-0%d"}}], "nextKey": "cursor-%d"}`,
+			body: func(n int) string {
+				return fmt.Sprintf(`{"data": [{"placing": 1, "event": {"id": "evt-%d", "name": "Event %d", "eventDate": "2024-01-01"}}], "nextKey": "cursor-%d"}`, n, n, n)
+			},
 			feed: "placing",
 			call: func(c *Client, ctx context.Context) (int, error) {
 				got, err := c.FetchPlacingHistory(ctx, "user-endless")
@@ -366,7 +376,7 @@ func TestHistoryCrawlsStopAtTheCapAndSaySo(t *testing.T) {
 			mux := http.NewServeMux()
 			mux.HandleFunc(tc.path, func(w http.ResponseWriter, _ *http.Request) {
 				n := int(pages.Add(1))
-				_, _ = w.Write(fmt.Appendf(nil, tc.body, n, n, n, n))
+				_, _ = w.Write([]byte(tc.body(n)))
 			})
 			server := httptest.NewServer(mux)
 			defer server.Close()
