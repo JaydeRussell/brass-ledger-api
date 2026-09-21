@@ -32,26 +32,57 @@ const (
 	// series — ~327ms each. A rejected request (an unknown event id)
 	// comes back nearer 190ms, so this is deliberately the cost of a
 	// real one carrying real data.
+	//
+	// NOT re-measured on 2026-09-21, deliberately, while the other two
+	// were. Isolating one BCP round trip from outside needs either an
+	// event that is live (so nothing is durably cached) or a stream of
+	// deliberately doomed requests for ids that don't exist — and the
+	// second is the exact pattern CLAUDE.md's respect rule is about. A
+	// constant from a real production observation is worth more than one
+	// from a worse measurement, so this keeps the 2026-09-20 figure.
+	// Measuring it properly wants instrumentation on the inside, timing
+	// the BCP calls real traffic already makes, rather than another
+	// round of synthetic requests from the outside.
 	RoundTripCost = 300 * time.Millisecond
 
 	// DurableReadCost is one read of the durable cache — a single query
 	// against Neon from the container.
 	//
-	// Measured 2026-09-20 from the clearest natural experiment this
-	// project has had: /api/me/stats took 2,880ms while resolving 41
-	// events through the durable cache one at a time (the prewarm had
-	// silently stopped batching). 2,880 / 41 ≈ 70ms.
-	DurableReadCost = 70 * time.Millisecond
-
-	// OwnOverheadCost is everything this service does itself for one
-	// request: routing, the session lookup, serialising the response.
+	// Re-measured 2026-09-21 against production with a real session:
+	// /readyz, which pings the database, ran 228ms p50 against
+	// /healthz's 148ms, which doesn't. The difference is one round trip
+	// to Neon.
 	//
-	// Measured from the access log's own latency_human on requests that
-	// do no upstream work at all — 573µs to 790µs. Rounded up; it is
-	// three orders of magnitude below the others and is included only so
-	// the estimate doesn't read as exactly zero for a request that
-	// touches nothing.
-	OwnOverheadCost = time.Millisecond
+	// The previous 70ms came from a different and cruder experiment
+	// (/api/me/stats resolving 41 events one at a time, 2,880/41), which
+	// is close enough to corroborate rather than contradict this.
+	DurableReadCost = 80 * time.Millisecond
+
+	// OwnOverheadCost is what one request costs before it does any
+	// upstream work at all: reaching this service and answering.
+	//
+	// 150ms, re-measured 2026-09-21: /healthz, which touches neither the
+	// database nor BCP, ran 148ms p50 in production. That is the floor
+	// for any request, and it is almost entirely the hop in front of the
+	// container rather than anything the Go process does.
+	//
+	// It was 1ms until now, and the old figure was not a typo — it was
+	// measured correctly from the wrong place. The access log's
+	// latency_human is what the container spends between receiving a
+	// request and answering it: 573µs to 790µs, quite true. What it
+	// cannot see is everything before that. The Worker forwards to a
+	// Durable Object which forwards to the container, and that hop is
+	// roughly 145ms of the 148.
+	//
+	// The practical effect of the error: every estimate this model
+	// produced was low by a flat ~149ms per request. That never hid a
+	// structural regression — a round-trip count going from 3 to 12 is
+	// just as visible either way — but it did mean the "this would take
+	// 3.1s in production" claim was systematically optimistic by more
+	// than the 25% the calibration table blamed on modelling only round
+	// trips. Corroborated by /api/me/stats warm: predicted ~71ms,
+	// measured 227ms, and the gap is this floor almost exactly.
+	OwnOverheadCost = 150 * time.Millisecond
 )
 
 // EstimatedCost models what a request costs in production, given what a
@@ -70,8 +101,17 @@ const (
 // This is an estimate, not a measurement. Production remains the source
 // of truth.
 //
-// CALIBRATION, against four real production measurements from
-// 2026-09-20 (re-run these whenever the constants change):
+// CALIBRATION.
+//
+// Against production on 2026-09-21, with the constants above:
+//
+//	case                                  estimate  actual  ratio
+//	/healthz (nothing but the floor)         150ms   148ms   1.01
+//	/api/me/stats warm, one batched read     230ms   227ms   1.01
+//
+// Against production on 2026-09-20, with OwnOverheadCost still at 1ms
+// — kept because the slow rows are still the best evidence for
+// RoundTripCost, which has not been re-measured since:
 //
 //	case                                       estimate  actual  ratio
 //	v0.19.2 /api/me/stats, 41 serial reads       2.871s  2.880s   1.00
@@ -80,10 +120,13 @@ const (
 //	v0.19.4 /api/me/stats warm, batched            211ms   279ms   0.76
 //	v0.19.6 /api/me/events warm, 2 dead lookups    371ms   731ms   0.51
 //
-// So it is near-exact on the slow cases — the ones worth catching — and
-// runs roughly 25% optimistic when everything is already fast, because
-// it models only round trips and ignores TLS, the Worker-to-container
-// hop, and serialising a larger response.
+// The 2026-09-20 rows explain themselves once OwnOverheadCost is right.
+// The slow cases came out near-exact because a missing 149ms is noise
+// against three seconds; the fast ones looked "25% optimistic" because
+// 149ms is most of a 500ms request. It was not a modelling subtlety
+// about TLS and response size, as this comment used to claim — it was
+// one constant that measured the container rather than the trip to it.
+// The two rows above, taken after fixing it, sit at 1.01.
 //
 // The last row is the model working as intended and being read wrong by
 // me rather than being wrong: I predicted /api/me/events at ~222ms warm
@@ -95,10 +138,11 @@ const (
 // counts now come from a stub that counts (latency_budget_test.go)
 // rather than from reading the code and reasoning.
 //
-// That makes it a LOWER BOUND, which matters when choosing a budget to
-// assert against: leave headroom below the real threshold rather than
-// asserting at it, or a 1.9s estimate could be a 2.4s page. See
-// estimatedPageBudget in internal/api/latency_budget_test.go.
+// It is still a LOWER BOUND, and still worth leaving headroom below the
+// real threshold rather than asserting at it — but for a smaller reason
+// than before. What it now omits is TLS setup, serialising a large
+// response, and a cold container start, not a flat 149ms on every
+// request. See estimatedPageBudget in internal/api/latency_budget_test.go.
 func EstimatedCost(upstreamCalls, maxConcurrent, durableReads, durableBatches int) time.Duration {
 	concurrency := maxConcurrent
 	if concurrency < 1 {
