@@ -94,7 +94,8 @@ func main() {
 	//
 	// Non-fatal. A cache that failed to shrink is not a reason to refuse
 	// to serve.
-	if removed, err := bcpcache.New(pool).Prune(ctx, durableCacheRetention); err != nil {
+	durableCache := bcpcache.New(pool)
+	if removed, err := durableCache.Prune(ctx, durableCacheRetention); err != nil {
 		log.Printf("pruning the durable BCP cache failed (continuing): %v", err)
 	} else if removed > 0 {
 		log.Printf("pruned %d expired rows from the durable BCP cache", removed)
@@ -106,8 +107,8 @@ func main() {
 	// league metadata) so they're fetched from BCP once, ever, rather
 	// than every 60 seconds by every visitor forever — see
 	// internal/bcp/durable.go and internal/bcpcache.
-	bcpClient.SetDurableCache(bcpcache.New(pool))
-	e := newServer(cfg, pool, bcpClient, logWriter)
+	bcpClient.SetDurableCache(durableCache)
+	e := newServer(cfg, pool, bcpClient, durableCache, logWriter)
 
 	go func() {
 		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
@@ -144,7 +145,11 @@ func main() {
 // standard log package at, so a request and whatever internal/api logs
 // about handling it end up interleaved in one file in the order they
 // actually happened.
-func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, logWriter io.Writer) *echo.Echo {
+// durableCache is passed in rather than built here so the costs
+// endpoint reports timings from the same Store the BCP client actually
+// reads through. A second instance would compile, serve, and report an
+// empty window forever.
+func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, durableCache *bcpcache.Store, logWriter io.Writer) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
 	e.Logger.SetOutput(logWriter)
@@ -331,6 +336,12 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, log
 		// triage — admin-only, same reason it only makes sense once
 		// sign-in itself is enabled.
 		api.NewAdminHandler(userStore, feedbackStore).Register(e)
+		// What the cost model assumes, against what this process has
+		// actually observed. Admin-only, read-only, and it never
+		// measures anything on demand — every figure comes from work
+		// the service was going to do anyway. See internal/api/costs.go
+		// for why it exists at all.
+		api.NewCostsHandler(userStore, bcpClient, durableCache).Register(e)
 		log.Printf("Google sign-in enabled (redirect URL: %s)", cfg.GoogleRedirectURL)
 		if len(cfg.AdminEmails) == 0 {
 			log.Printf("ADMIN_EMAILS is not set — nobody can approve a pending account (see .env.example)")

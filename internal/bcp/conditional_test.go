@@ -145,3 +145,66 @@ func TestConditionalRequest_UnvalidatableResponsesAreNotStored(t *testing.T) {
 		t.Error("stored a body with no ETag — it could never be revalidated, so it is memory held for nothing")
 	}
 }
+
+// TestTimings_SeparatesFetchesFromRevalidations pins the split the
+// costs endpoint reports.
+//
+// Conditional requests mean a growing share of calls to BCP are 304s
+// carrying nothing, and they are much cheaper than a real fetch.
+// Folding both into one figure would quietly drag the observed
+// round-trip cost below what a real fetch costs — which is precisely
+// the number cost.go's RoundTripCost models, so the one measurement
+// meant to keep that constant honest would be the one misleading it.
+func TestTimings_SeparatesFetchesFromRevalidations(t *testing.T) {
+	server, requests, notModified := etagServer(t, `W/"abc123"`, etagEventBody)
+	c := NewClientWithBaseURL(server.URL)
+
+	// fetchEventInfoUncached, not FetchEventInfo: the cache would serve
+	// the second call from memory and no second exchange would happen at
+	// all. Invalidate is no help either — it throttles a repeat inside
+	// minManualInvalidateInterval, which is exactly this window.
+	for range 3 {
+		if _, err := c.fetchEventInfoUncached(context.Background(), "evt-1"); err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+	}
+
+	fetches, revalidations := c.Timings()
+
+	if fetches.Count != 1 {
+		t.Errorf("recorded %d full fetches, want 1 (the first call, before there was a validator)",
+			fetches.Count)
+	}
+	if revalidations.Count != 2 {
+		t.Errorf("recorded %d revalidations, want 2", revalidations.Count)
+	}
+	if total := fetches.Count + revalidations.Count; total != int64(requests.Load()) {
+		t.Errorf("recorded %d exchanges against %d served", total, requests.Load())
+	}
+	if notModified.Load() != 2 {
+		t.Errorf("server answered %d of them 304, want 2", notModified.Load())
+	}
+}
+
+// TestTimings_FailuresAreNotRecorded — a connection refused in a
+// millisecond is not evidence about how long BCP takes to answer, and
+// averaging it in would make things look faster the worse they got.
+func TestTimings_FailuresAreNotRecorded(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewClientWithBaseURL(server.URL)
+	if _, err := c.fetchEventInfoUncached(context.Background(), "evt-1"); err == nil {
+		t.Fatal("expected the 502 to surface as an error")
+	}
+
+	fetches, revalidations := c.Timings()
+	if fetches.Count != 0 || revalidations.Count != 0 {
+		t.Errorf("a failed exchange was recorded (%d fetches, %d revalidations); it says nothing "+
+			"about how long a successful one takes", fetches.Count, revalidations.Count)
+	}
+}

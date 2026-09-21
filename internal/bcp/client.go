@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/JaydeRussell/brass-ledger-api/internal/timing"
 )
 
 const (
@@ -95,6 +97,14 @@ type Client struct {
 	// refetch of something unchanged costs a 304 instead of a payload.
 	conditional *conditionalStore
 
+	// How long BCP actually takes, split by what came back. Kept apart
+	// on purpose: conditional requests mean a growing share of calls are
+	// 304s carrying nothing, and averaging those in with real fetches
+	// would quietly drag the observed round-trip cost below what a real
+	// fetch costs — which is the number cost.go's RoundTripCost models.
+	fetchTimings   *timing.Samples
+	revalidTimings *timing.Samples
+
 	// See durable.go — nil unless SetDurableCache is called.
 	durable DurableCache
 	// Background durable writes: a concurrency bound and a way to wait
@@ -163,6 +173,17 @@ func eventInfoTTL(info EventInfo) time.Duration {
 	return minRefetchInterval
 }
 
+// Timings reports how long BCP has actually been taking, since this
+// process started. Full fetches and revalidations are separate: see the
+// fields' comment above for why averaging them would mislead.
+//
+// For internal/api's observed-costs endpoint, which exists so
+// cost.go's constants can be checked against reality rather than
+// trusted — see internal/timing.
+func (c *Client) Timings() (fetches, revalidations timing.Snapshot) {
+	return c.fetchTimings.Snapshot(), c.revalidTimings.Snapshot()
+}
+
 // NewClient builds a ready-to-use Client pointed at the real BCP API.
 func NewClient() *Client {
 	return newClientWithBases(defaultAPIBaseV1, defaultAPIBaseV2, defaultSiteBase)
@@ -184,6 +205,8 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	c := &Client{
 		http:              &http.Client{Timeout: 15 * time.Second},
 		conditional:       newConditionalStore(),
+		fetchTimings:      timing.New(timing.DefaultWindow),
+		revalidTimings:    timing.New(timing.DefaultWindow),
 		durableWriteSlots: make(chan struct{}, maxConcurrentDurableWrites),
 		apiBaseV1:         apiBaseV1,
 		apiBaseV2:         apiBaseV2,
@@ -265,13 +288,21 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 		req.Header.Set("If-None-Match", etag)
 	}
 
+	started := time.Now()
 	res, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("requesting %s: %w", rawURL, err)
 	}
 	defer res.Body.Close()
+	// Recorded once the status is known, so a revalidation is never
+	// counted as a fetch. A failure is not recorded at all: a connection
+	// refused in a millisecond is not evidence about how long BCP takes
+	// to answer, and averaging it in would make things look faster the
+	// worse they got.
+	elapsed := time.Since(started)
 
 	if isNotModified(res) {
+		c.revalidTimings.Record(elapsed)
 		// No body came back, because we already have it.
 		body, ok := c.conditional.body(rawURL)
 		if !ok {
@@ -297,6 +328,7 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return &StatusError{StatusCode: res.StatusCode, URL: rawURL}
 	}
+	c.fetchTimings.Record(elapsed)
 
 	// Read rather than stream, because the bytes are needed twice: once
 	// to decode now, once to answer a future 304. These are JSON

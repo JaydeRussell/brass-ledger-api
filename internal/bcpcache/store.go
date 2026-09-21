@@ -18,17 +18,35 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/timing"
 )
 
 // Store implements bcp.DurableCache against a single generic
 // key-value table.
 type Store struct {
 	pool *pgxpool.Pool
+	// How long Neon actually takes to answer, so cost.go's
+	// DurableReadCost can be checked rather than trusted — see
+	// internal/timing.
+	readTimings *timing.Samples
 }
 
 // New wraps an existing connection pool (see internal/db) as a Store.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+	return &Store{pool: pool, readTimings: timing.New(timing.DefaultWindow)}
+}
+
+// ReadTimings reports how long durable reads have been taking since
+// this process started.
+func (s *Store) ReadTimings() timing.Snapshot {
+	return s.readTimings.Snapshot()
+}
+
+// recordRead times one read. Reads only, not writes: writes moved off
+// the request path entirely, so how long they take is nobody's latency
+// but their own goroutine's.
+func (s *Store) recordRead(started time.Time) {
+	s.readTimings.Record(time.Since(started))
 }
 
 // Get decodes the stored JSON for key into dest (a pointer) and reports
@@ -37,6 +55,7 @@ func New(pool *pgxpool.Pool) *Store {
 // than version (a row written under an older schema; see
 // bcp.CacheSchemaVersion). A miss either way is not an error.
 func (s *Store) Get(ctx context.Context, key string, version int, dest any) (bool, error) {
+	defer s.recordRead(time.Now())
 	var raw []byte
 	err := s.pool.QueryRow(ctx,
 		`SELECT data FROM bcp_durable_cache WHERE cache_key = $1 AND cache_version = $2`, key, version,
@@ -87,6 +106,7 @@ func (s *Store) Set(ctx context.Context, key string, version int, value any) err
 // overwrites it via Set, and if the refetch fails the stale row is
 // better kept than thrown away.
 func (s *Store) GetFresh(ctx context.Context, key string, version int, maxAge time.Duration, dest any) (bool, time.Time, error) {
+	defer s.recordRead(time.Now())
 	var raw []byte
 	var cachedAt time.Time
 	err := s.pool.QueryRow(ctx,
@@ -117,6 +137,7 @@ func (s *Store) GetFresh(ctx context.Context, key string, version int, maxAge ti
 // This is what keeps a cold stats page from doing one SELECT per event
 // the player has ever attended: see bcp.Client's Prewarm* methods.
 func (s *Store) GetMany(ctx context.Context, keys []string, version int) (map[string]bcp.DurableRow, error) {
+	defer s.recordRead(time.Now())
 	found := make(map[string]bcp.DurableRow, len(keys))
 	if len(keys) == 0 {
 		return found, nil
