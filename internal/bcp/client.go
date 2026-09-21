@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -89,6 +90,10 @@ type Client struct {
 	playerEventHistory *Cache[[]PlayerEventRecord]
 	placingHistory     *Cache[[]PlacingHistoryEntry]
 	leagueInfo         *Cache[*LeagueInfo]
+
+	// See conditional.go — ETags and their response bodies, so a
+	// refetch of something unchanged costs a 304 instead of a payload.
+	conditional *conditionalStore
 
 	// See durable.go — nil unless SetDurableCache is called.
 	durable DurableCache
@@ -178,6 +183,7 @@ func NewClientWithBaseURL(base string) *Client {
 func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	c := &Client{
 		http:              &http.Client{Timeout: 15 * time.Second},
+		conditional:       newConditionalStore(),
 		durableWriteSlots: make(chan struct{}, maxConcurrentDurableWrites),
 		apiBaseV1:         apiBaseV1,
 		apiBaseV2:         apiBaseV2,
@@ -254,6 +260,10 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 		return fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("client-id", clientIDHeader)
+	// "Do you still have the same answer?" — see conditional.go.
+	if etag, ok := c.conditional.validator(rawURL); ok {
+		req.Header.Set("If-None-Match", etag)
+	}
 
 	res, err := c.http.Do(req)
 	if err != nil {
@@ -261,15 +271,48 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	}
 	defer res.Body.Close()
 
+	if isNotModified(res) {
+		// No body came back, because we already have it.
+		body, ok := c.conditional.body(rawURL)
+		if !ok {
+			// Only reachable if the entry was evicted between sending
+			// the validator and reading the reply. Nothing is wrong with
+			// BCP's answer, we just no longer have what it refers to —
+			// so drop the validator and let the next call fetch in full.
+			c.conditional.forget(rawURL)
+			return fmt.Errorf("BCP answered 304 for %s but the stored response is gone", rawURL)
+		}
+		if out == nil {
+			return nil
+		}
+		if err := json.Unmarshal(body, out); err != nil {
+			// A stored body that won't decode would answer every future
+			// 304 for this URL the same way. Drop it.
+			c.conditional.forget(rawURL)
+			return fmt.Errorf("decoding stored response for %s: %w", rawURL, err)
+		}
+		return nil
+	}
+
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return &StatusError{StatusCode: res.StatusCode, URL: rawURL}
 	}
 
-	if out == nil {
-		return nil
+	// Read rather than stream, because the bytes are needed twice: once
+	// to decode now, once to answer a future 304. These are JSON
+	// documents in the kilobytes, not downloads.
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return fmt.Errorf("reading response from %s: %w", rawURL, err)
 	}
-	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
-		return fmt.Errorf("decoding response from %s: %w", rawURL, err)
+
+	if out != nil {
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decoding response from %s: %w", rawURL, err)
+		}
 	}
+	// Stored only after it has decoded cleanly, so a malformed response
+	// is never handed back later as if it were valid.
+	c.conditional.remember(rawURL, res.Header.Get("ETag"), body)
 	return nil
 }
