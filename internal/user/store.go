@@ -392,7 +392,10 @@ func (s *Store) ListUsers(ctx context.Context, opts ListUsersOptions) (ListUsers
 		where = append(where, fmt.Sprintf("status = $%d", len(args)))
 	}
 	if opts.Search != "" {
-		args = append(args, "%"+opts.Search+"%")
+		// Escape LIKE's own wildcards so a search for "a_b" or "50%"
+		// matches those characters literally.
+		escaped := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(opts.Search)
+		args = append(args, "%"+escaped+"%")
 		where = append(where, fmt.Sprintf("(name ILIKE $%d OR email ILIKE $%d)", len(args), len(args)))
 	}
 	whereClause := ""

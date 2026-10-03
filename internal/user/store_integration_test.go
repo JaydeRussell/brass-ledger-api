@@ -517,3 +517,27 @@ func TestStore_CreateSessionPurgesExpired(t *testing.T) {
 		t.Fatalf("expired session still present")
 	}
 }
+
+// A search containing LIKE wildcards matches them literally.
+func TestStore_ListUsersSearchEscapesWildcards(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	if _, _, err := store.UpsertUserFromGoogle(ctx, "sub-lit-"+runID, "lit-"+runID+"@example.com", "Wild_"+runID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.UpsertUserFromGoogle(ctx, "sub-x-"+runID, "x-"+runID+"@example.com", "WildX"+runID, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.ListUsers(ctx, ListUsersOptions{Search: "Wild_" + runID, PageSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Name != "Wild_"+runID {
+		names := []string{}
+		for _, u := range result.Items {
+			names = append(names, u.Name)
+		}
+		t.Fatalf("search %q matched %v, want only the literal name", "Wild_"+runID, names)
+	}
+}
