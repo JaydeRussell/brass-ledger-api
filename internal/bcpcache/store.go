@@ -191,12 +191,16 @@ var prunablePrefixes = []string{
 //
 // Reports how many rows went, so a caller can log something meaningful
 // rather than guess.
-func (s *Store) Prune(ctx context.Context, olderThan time.Duration) (int64, error) {
+//
+// Rows tagged with any version other than currentVersion go too, whatever
+// their age: Get never reads them again.
+func (s *Store) Prune(ctx context.Context, olderThan time.Duration, currentVersion int) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM bcp_durable_cache
-		WHERE cached_at < $1
+		WHERE cache_version <> $3
+		   OR (cached_at < $1
 		  AND (
 			cache_key LIKE ANY($2)
 			-- An event that never concluded was stored with a lifetime.
@@ -205,8 +209,8 @@ func (s *Store) Prune(ctx context.Context, olderThan time.Duration) (int64, erro
 			-- and the reason the column should stay jsonb rather than
 			-- becoming plain text.
 			OR (cache_key LIKE 'event:%' AND COALESCE(data->>'ended', 'false') <> 'true')
-		  )
-	`, cutoff, prunablePatterns())
+		  ))
+	`, cutoff, prunablePatterns(), currentVersion)
 	if err != nil {
 		return 0, fmt.Errorf("pruning bcp_durable_cache: %w", err)
 	}

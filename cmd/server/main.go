@@ -90,7 +90,7 @@ func main() {
 	go func() {
 		pruneCtx, cancelPrune := context.WithTimeout(context.Background(), time.Minute)
 		defer cancelPrune()
-		if removed, err := durableCache.Prune(pruneCtx, durableCacheRetention); err != nil {
+		if removed, err := durableCache.Prune(pruneCtx, durableCacheRetention, bcp.CacheSchemaVersion); err != nil {
 			log.Printf("pruning the durable BCP cache failed (continuing): %v", err)
 		} else if removed > 0 {
 			log.Printf("pruned %d expired rows from the durable BCP cache", removed)
