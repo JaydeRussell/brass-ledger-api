@@ -158,6 +158,9 @@ type UserInfo struct {
 	Email   string `json:"email"`
 	Name    string `json:"name"`
 	Picture string `json:"picture"`
+	// Whether Google has confirmed the account controls Email. Anything
+	// that grants access by matching an email address must require it.
+	EmailVerified bool `json:"email_verified"`
 }
 
 // FetchUserInfo returns the signed-in Google account's profile for a

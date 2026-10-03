@@ -222,7 +222,9 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	// first, so it also covers promoting an account that already existed
 	// before being added to the list. See Config.AdminEmails' doc
 	// comment for why this always wins rather than only applying once.
-	if isAdminEmail(u.Email, h.adminEmails) && (u.Role != user.RoleAdmin || u.Status != user.StatusApproved) {
+	// Only a Google-verified email can claim an ADMIN_EMAILS entry: a
+	// Google account can carry an address it hasn't proven it owns.
+	if info.EmailVerified && isAdminEmail(u.Email, h.adminEmails) && (u.Role != user.RoleAdmin || u.Status != user.StatusApproved) {
 		if err := h.store.SetRole(c.Request().Context(), u.ID, user.RoleAdmin); err != nil {
 			log.Printf("google callback: promoting admin user %d failed: %v", u.ID, err)
 		} else if err := h.store.SetStatus(c.Request().Context(), u.ID, user.StatusApproved); err != nil {
