@@ -55,8 +55,8 @@ func warnIfTruncated(feed, bcpUserID string, records int, nextKey string) {
 	if nextKey == "" {
 		return
 	}
-	log.Printf("bcp: %s history for user %s truncated at %d pages (%d records) — BCP still had more",
-		feed, bcpUserID, maxHistoryPages, records)
+	log.Printf("bcp: a %s history was truncated at %d pages (%d records) — BCP still had more",
+		feed, maxHistoryPages, records)
 }
 
 // decodeNextKey normalizes a paginated response's nextKey field into the

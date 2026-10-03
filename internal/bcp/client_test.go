@@ -71,3 +71,17 @@ func TestPairingsCacheDoesNotServeStale(t *testing.T) {
 		t.Error("the placings cache stopped serving stale entries")
 	}
 }
+
+func TestRedactUserIDs(t *testing.T) {
+	cases := map[string]string{
+		"https://x/v1/players?userId=abc123&limit=100":          "https://x/v1/players?userId=redacted&limit=100",
+		"https://x/v1/placings?leagueId=L1&userId[]=abc123":     "https://x/v1/placings?leagueId=L1&userId[]=redacted",
+		"https://x/v1/eventplacings?userId%5B%5D=abc&nextKey=k": "https://x/v1/eventplacings?userId%5B%5D=redacted&nextKey=k",
+		"https://x/v2/events/evt-1?role=true":                   "https://x/v2/events/evt-1?role=true",
+	}
+	for in, want := range cases {
+		if got := redactUserIDs(in); got != want {
+			t.Errorf("redactUserIDs(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
