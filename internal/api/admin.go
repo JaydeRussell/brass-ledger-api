@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -280,6 +281,9 @@ func (h *AdminHandler) setFeedbackStatus(c echo.Context, status string) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid feedback id"})
 	}
 	if err := h.feedback.SetStatus(c.Request().Context(), id, status); err != nil {
+		if errors.Is(err, feedback.ErrNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "no such feedback report"})
+		}
 		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)

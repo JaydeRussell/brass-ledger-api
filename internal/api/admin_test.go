@@ -428,6 +428,10 @@ func TestAdminHandler_ListFeedbackAndResolve(t *testing.T) {
 		t.Fatalf("open-count = %v (err %v), want {\"count\":1}", countResp, err)
 	}
 
+	if rec := doRequest(e, http.MethodPost, "/api/admin/feedback/999999/resolve", []*http.Cookie{adminCookie}); rec.Code != http.StatusNotFound {
+		t.Errorf("resolve missing id: status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
 	resolvePath := fmt.Sprintf("/api/admin/feedback/%d/resolve", created.ID)
 	if rec := doRequest(e, http.MethodPost, resolvePath, []*http.Cookie{adminCookie}); rec.Code != http.StatusNoContent {
 		t.Fatalf("resolve: status = %d, want %d, body: %s", rec.Code, http.StatusNoContent, rec.Body.String())

@@ -8,10 +8,10 @@ package feedback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -107,6 +107,9 @@ func (s *Store) List(ctx context.Context) ([]Report, error) {
 	return reports, nil
 }
 
+// ErrNotFound is SetStatus's answer for an id with no report.
+var ErrNotFound = errors.New("feedback report not found")
+
 // SetStatus marks a report open or resolved (see StatusOpen/StatusResolved).
 func (s *Store) SetStatus(ctx context.Context, id int64, status string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE feedback SET status = $1 WHERE id = $2`, status, id)
@@ -114,7 +117,7 @@ func (s *Store) SetStatus(ctx context.Context, id int64, status string) error {
 		return fmt.Errorf("setting feedback status: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+		return ErrNotFound
 	}
 	return nil
 }
