@@ -45,8 +45,12 @@ package bcp
 
 // EventInfo is metadata about a BCP event — its display name, whether
 // it's a team event, how many rounds are underway/published, and the
-// event-facts BCP's own Overview tab shows. All of this is metadata BCP
-// already published; nothing here is computed or inferred.
+// event-facts BCP's own Overview tab shows. Every value comes from what
+// BCP published; a few are assembled or given a fallback (see
+// fetchEventInfoFromBCP): Location is BCP's formatted address or, when
+// that's empty, composed from the address parts, Organizer falls back to the event owner when no Tournament Organizer
+// is listed, PlayerCount falls back to the team player count, and an
+// empty Name becomes "Unnamed event".
 type EventInfo struct {
 	ID                string   `json:"id"`
 	Name              string   `json:"name"`
@@ -69,7 +73,7 @@ type EventInfo struct {
 	// League ids this event is scored under (BCP's own "leagues" array on
 	// the event), used to resolve the current flagship ITC league anchored
 	// on this specific event rather than searching BCP's full
-	// game-system-wide leagues list, which no longer reliably surfaces it
+	// game-system-wide leagues list, which doesn't reliably surface it
 	// (see itc.go's FetchCurrentItcLeagueIDForEvent doc comment). It must
 	// serialize: EventInfo round-trips through the durable cache as JSON,
 	// and a dropped field there means no ITC league for any cached event.

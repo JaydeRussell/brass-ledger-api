@@ -98,11 +98,11 @@ func main() {
 	}()
 
 	bcpClient := bcp.NewClient()
-	// Persists the subset of BCP responses that are genuinely immutable
-	// (an already-concluded event's info/roster/pairings/placings, and
-	// league metadata) so they're fetched from BCP once, ever, rather
-	// than every 60 seconds by every visitor forever — see
-	// internal/bcp/durable.go and internal/bcpcache.
+	// Persists BCP responses across processes: immutable ones (an
+	// already-concluded event's info/roster/pairings/placings, and league
+	// metadata) permanently, so they're fetched from BCP once, and the
+	// history feeds, ITC rankings and not-yet-concluded events with a
+	// lifetime — see internal/bcp/durable.go and internal/bcpcache.
 	bcpClient.SetDurableCache(durableCache)
 	e := newServer(cfg, pool, bcpClient, durableCache, logWriter)
 
@@ -150,6 +150,7 @@ func main() {
 // standard log package at, so a request and whatever internal/api logs
 // about handling it end up interleaved in one file in the order they
 // actually happened.
+//
 // durableCache is passed in rather than built here so the costs
 // endpoint reports timings from the same Store the BCP client actually
 // reads through. A second instance would compile, serve, and report an
@@ -158,15 +159,11 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	e := echo.New()
 	e.HideBanner = true
 	e.Logger.SetOutput(logWriter)
-	// middleware.LoggerWithConfig's template-string API is deprecated as of
-	// Echo v4.15 in favor of this callback-based one — same JSON shape as
-	// before (built with encoding/json here instead of raw template
-	// substitution, so field values that happen to contain a `"` no
-	// longer produce invalid JSON, a bug the old template approach had).
-	// HandleError is deliberately left false: the old logger never called
-	// the global error handler itself either, just logged whatever error
-	// came back — Echo's own router already invokes it exactly once after
-	// the full middleware chain returns, same as before this migration.
+	// One JSON line per request, built with encoding/json so a field
+	// value containing a `"` still produces valid JSON. HandleError is
+	// deliberately left false: Echo's router already invokes the global
+	// error handler exactly once after the middleware chain returns, so
+	// this only logs the error that came back.
 	// The access log records the route pattern, not the URI, and no client
 	// IP or user agent: URIs carry BCP player ids and admin search terms
 	// (names, emails), and the log ends up in Cloudflare's. Per the privacy
@@ -184,8 +181,8 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 				errMsg = v.Error.Error()
 			}
 			// v.ContentLength is the raw Content-Length header value
-			// (empty if the request didn't send one) — parsed to a number
-			// to match the old template's `${bytes_in}` output shape.
+			// (empty if the request didn't send one), parsed so bytes_in
+			// is a number.
 			bytesIn, _ := strconv.ParseInt(v.ContentLength, 10, 64)
 			route := c.Path()
 			if route == "" {
@@ -320,8 +317,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		// internal/api/me.go), so there's no point registering them
 		// without sign-in itself also being enabled.
 		api.NewMeHandler(userStore, bcpClient).Register(e)
-		// Cross-device follows/recent-events sync — also session-gated,
-		// so it only makes sense once sign-in itself is enabled.
+		// Cross-device recent-events and round-notes sync — also
+		// session-gated, so it only makes sense once sign-in itself is
+		// enabled.
 		api.NewSyncHandler(userStore).Register(e)
 		// Player stats summary (best placing, faction breakdown) — same
 		// session gating, built on the same BCP data "my events" already
@@ -352,7 +350,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		// against an API we have no agreement with, simply by varying
 		// the id. Six a minute is still far more than reading dossiers
 		// requires (you look at one player at a time), and a repeat view
-		// of the same player is nearly free now that the underlying
+		// of the same player is nearly free because the underlying
 		// lookups are durably cached.
 		api.NewDossierHandler(userStore, bcpClient).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
@@ -365,7 +363,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		// list, and a friend’s own events — same session gating,
 		// account-graph data no less real than the rest of this app.
 		api.NewFriendsHandler(userStore, bcpClient).Register(e)
-		// Access-control management (migration 0007) plus feedback
+		// Access-control management plus feedback
 		// triage — admin-only, same reason it only makes sense once
 		// sign-in itself is enabled.
 		api.NewAdminHandler(userStore, feedbackStore).Register(e)

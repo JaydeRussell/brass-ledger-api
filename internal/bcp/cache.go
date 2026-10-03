@@ -9,17 +9,14 @@ import (
 // minRefetchInterval mirrors the frontend's original client-side cache:
 // see CLAUDE.md's "be respectful of third-party APIs" rule — this is an
 // unofficial endpoint, so a minimum interval is enforced between real
-// network requests per key. Moving this server-side is the actual point
-// of this package: every user of this app now shares one cache and one
-// rate limit against BCP, instead of each browser tab enforcing its own.
+// network requests per key. Enforcing it server-side is the point of
+// this package: every user of this app shares one cache and one rate
+// limit against BCP, instead of each browser tab enforcing its own.
 const minRefetchInterval = 60 * time.Second
 
 // MinRefetchInterval is minRefetchInterval, exported so the HTTP layer
 // can tell a browser how long this service will keep answering a
-// question the same way — see internal/api's cacheFor. Kept as a
-// derived constant rather than making minRefetchInterval itself
-// exported so the package's own code keeps reading the same name it
-// always has.
+// question the same way — see internal/api's cacheFor.
 const MinRefetchInterval = minRefetchInterval
 
 // EndedEventTTL is how long a response derived entirely from an
@@ -54,10 +51,9 @@ var minManualInvalidateInterval = 2 * time.Second
 // event it points at: the organizer deletes the event, the player's
 // registration list still names it. /api/me/events resolves every
 // not-yet-concluded registration through FetchEventInfo, tolerates the
-// failure, and drops the event from the response — so nothing looked
-// broken, and two dead registrations quietly cost one BCP round trip on
-// every single request. Measured 2026-09-20: warm /api/me/events was
-// 731ms in production against /api/me/stats' 231ms, entirely this.
+// failure, and drops the event from the response — so without this,
+// nothing looks broken while each dead registration quietly costs one
+// BCP round trip on every request.
 //
 // An hour, not longer, and deliberately in memory only — never durable.
 // A 404 is the one status that reads as permanent, but "permanent"
@@ -77,14 +73,12 @@ var goneTTL = time.Hour
 // that *might* get better (a 5xx, a 429, a dropped connection) is
 // remembered before anyone tries again.
 //
-// Failures were not cached at all, on the reasoning that being stuck
-// serving an error for a full TTL is worse than retrying. That holds
-// for one caller; it does not hold for a shared service. When BCP has
-// a moment, every page load of every visitor retried immediately, so
-// the traffic we sent them was at its highest exactly while they were
-// least able to serve it. That is the opposite of CLAUDE.md's "be
-// respectful" rule, and it is also useless: the request that just
-// failed a second ago is not going to succeed now.
+// Retrying immediately would be reasonable for one caller, but not for
+// a shared service: when BCP has a moment, every page load of every
+// visitor would retry at once, so the traffic sent them would peak
+// exactly while they were least able to serve it. That is the opposite
+// of CLAUDE.md's "be respectful" rule, and it is also useless: the
+// request that just failed a second ago is not going to succeed now.
 //
 // Ten seconds, not goneTTL's hour. A 404 reads as permanent; a 502
 // reads as "not right now", and the moment BCP recovers we want to
@@ -96,14 +90,10 @@ var upstreamFailureBackoff = 10 * time.Second
 
 // maxCacheEntries bounds how many keys one Cache holds.
 //
-// Nothing ever removed an entry: a stale one was ignored on read and
-// left in the map. That was survivable only because the container
-// sleeps after ten minutes idle and takes the whole map with it —
-// which is a memory leak being papered over by a restart, and the
-// restart is exactly what the durable cache and the longer TTLs have
-// been reducing the frequency of. The pairings cache is keyed by
-// event:type:round and the ITC one by league:user, so both grow with
-// use rather than with the size of the data.
+// A stale entry is ignored on read but not removed, so without a bound
+// the map grows for the life of the process. The pairings cache is
+// keyed by event:type:round and the ITC one by league:user, so both
+// grow with use rather than with the size of the data.
 //
 // Evicting expired entries first, and only then the oldest surviving
 // ones, keeps this from throwing away something still useful while
@@ -258,10 +248,8 @@ func (c *Cache[T]) ttlOf(v T) time.Duration {
 // stale entry inside its window, if there is one) so a struggling BCP
 // isn't asked again on every request. If BCP said the key does not exist
 // (IsGone), that answer is held for goneTTL and replayed without a
-// request. Retrying a 404 every time is
-// not resilience, it's a permanent per-request tax on data that will
-// never arrive; see goneTTL for the bug that made the difference
-// measurable.
+// request. Retrying a 404 every time is not resilience, it's a
+// permanent per-request tax on data that will never arrive; see goneTTL.
 func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	c.mu.Lock()
 	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < e.ttl {
@@ -288,7 +276,7 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	// no longer "slightly out of date", it's a different answer — and
 	// the whole point of the short TTLs this applies to is that the
 	// underlying data moves. Past the window a caller blocks and waits
-	// for the truth, exactly as before.
+	// for a real fetch.
 	if e, ok := c.entries[key]; ok && c.serveStale && time.Since(e.fetchedAt) < 2*e.ttl {
 		if _, refreshing := c.inFlight[key]; !refreshing {
 			c.startRevalidationLocked(ctx, key)
@@ -331,14 +319,9 @@ func (c *Cache[T]) runFetch(ctx context.Context, key string, inf *inflight[T]) (
 	//
 	// This fetch is shared: whoever arrived first starts it and everyone
 	// else waits on the result. Running it on that first caller's
-	// context meant their navigating away — which on venue wifi is
-	// constant — cancelled it for every other waiter too. None of those
-	// failures were cached, so all of them retried, and one person
-	// pressing back turned into extra BCP requests for strangers.
-	//
-	// It matters twice over now: a background revalidation outlives the
-	// request that triggered it by design, and that request is normally
-	// finished before the refresh is.
+	// context would let their navigating away — constant on venue wifi —
+	// cancel it for every other waiter too. A background revalidation
+	// also outlives the request that triggered it by design.
 	//
 	// The timeout is what keeps "not cancellable" from meaning "can
 	// hang forever". Generous on purpose: the slowest fetch function
@@ -468,9 +451,11 @@ func (c *Cache[T]) startRevalidationLocked(ctx context.Context, key string) {
 	c.revalidations.Add(1)
 	go func() {
 		defer c.revalidations.Done()
-		// Nobody is waiting on the return values; a failure leaves the
-		// stale entry in place until the window closes, at which point
-		// the next caller blocks and sees the real error.
+		// Nobody is waiting on the return values. A failure is held for
+		// upstreamFailureBackoff, during which Get keeps serving the
+		// stale entry without retrying; once the backoff lapses, a
+		// caller still inside the stale window starts another refresh,
+		// and past the window callers block on a real fetch.
 		_, _ = c.runFetch(ctx, key, inf)
 	}()
 }

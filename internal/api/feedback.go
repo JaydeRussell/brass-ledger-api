@@ -40,9 +40,9 @@ type feedbackStore interface {
 // submitted through the frontend's floating feedback widget. Public —
 // no session required, see Register — since a visitor can hit a bug
 // before ever signing in (or without an account at all); if a valid
-// session cookie IS present, the account's name/email is attached to
-// the stored report and the alert for triage context, but its absence
-// never blocks the submission. Admin-facing listing/resolving of what
+// session cookie IS present, the account's id is stored with the report
+// and the alert names it as "account #N" for triage context, but its
+// absence never blocks the submission. Admin-facing listing/resolving of what
 // gets stored here lives on AdminHandler instead (admin.go) — this
 // handler's own routes stay the one thing an anonymous caller can hit.
 type FeedbackHandler struct {

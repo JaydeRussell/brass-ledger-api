@@ -8,25 +8,24 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
-// Response caching for the BCP proxy routes.
-//
-// Until this existed, nothing in this service set a Cache-Control header
-// at all, so every navigation re-asked for everything over the network —
+// Response caching for the BCP proxy routes. Without a Cache-Control
+// header every navigation re-asks for everything over the network,
 // including an already-concluded event's roster, which cannot change and
-// which this service will happily serve from Postgres forever. The
-// browser was the one cache in the chain doing no work.
+// which this service serves from Postgres indefinitely.
 //
 // Two rules, and the second is the one that needs justifying:
 //
 //   - Data from a concluded event is immutable, so it gets a real
 //     lifetime (EndedEventTTL).
-//   - Everything else gets exactly the interval this service would have
-//     answered identically over anyway (bcp.MinRefetchInterval). That is
-//     not a guess about staleness: within that window a second request
-//     is served from the in-memory cache without touching BCP, so
-//     letting the browser skip the request entirely produces the same
-//     bytes with none of the cost. Nothing is served staler than it
-//     already was.
+//   - Everything else gets the interval this service itself reuses an
+//     answer for (bcp.MinRefetchInterval). Within that window a repeat
+//     request would mostly be served from the in-memory cache anyway, so
+//     letting the browser skip it saves the trip for little extra
+//     staleness. It does add some: the browser's max-age counts from
+//     when it received the response, and the server's copy may already
+//     have been up to one interval old then (or up to two, when served
+//     stale while revalidating). So a browser can show data up to about
+//     two intervals old, three in the stale-served case.
 //
 // Always `private`, never `public`. These responses are per-session and
 // reached with credentials; a shared cache must never hold one.

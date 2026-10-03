@@ -5,10 +5,10 @@
   "main": "src/worker.ts",
 
   // Non-secret config — same env vars internal/config reads locally
-  // (see .env.example). DATABASE_URL, GOOGLE_CLIENT_ID and
-  // GOOGLE_CLIENT_SECRET are set as Worker secrets instead
-  // (`wrangler secret put <NAME>`), never here, since this file is
-  // git-tracked.
+  // (see .env.example). DATABASE_URL, GOOGLE_CLIENT_ID,
+  // GOOGLE_CLIENT_SECRET, ADMIN_EMAILS and RESEND_API_KEY are set as
+  // Worker secrets instead (`wrangler secret put <NAME>`), never here,
+  // since this file is git-tracked.
   "vars": {
     "PORT": "8080",
     "GOOGLE_REDIRECT_URL": "https://api.brass-ledger.app/auth/google/callback",

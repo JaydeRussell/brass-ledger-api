@@ -412,13 +412,9 @@ func TestCache_OneCallerLeavingDoesNotFailTheOthers(t *testing.T) {
 
 // TestCache_DoesNotGrowForever bounds the maps.
 //
-// Nothing ever removed an entry: a stale one was ignored on read and
-// left in place. That only survived because the container sleeps after
-// ten minutes idle and takes the whole map with it — a leak papered
-// over by a restart, and the restart is exactly what the durable cache
-// and longer TTLs have been making rarer. The pairings cache is keyed
-// by event:type:round and the ITC one by league:user, so both grow with
-// use rather than with the size of the data.
+// A stale entry is ignored on read but not removed, and the pairings and
+// ITC caches are keyed by use (event:type:round, league:user), so
+// without a bound the maps grow for the life of the process.
 func TestCache_DoesNotGrowForever(t *testing.T) {
 	c := NewCache(func(_ context.Context, key string) (string, error) {
 		return key, nil

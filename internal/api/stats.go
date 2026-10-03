@@ -127,15 +127,15 @@ const (
 // eventInfoByID) — PlacingHistoryEntry's own Team field is NOT a
 // reliable signal here despite how it looks: it's the player's
 // club/roster affiliation (e.g. "Springs Thundercluckers"), populated
-// for that player's events regardless of whether any given one was
-// actually run in team format. Confirmed against real data: two solo
-// RTTs (10 and 12 players, EventInfo.TeamEvent = false) both still
-// carried a non-empty Team name. teamEvent checked first, since it needs
-// no date parsing. Otherwise, falls back to the event's day span: two or
-// more calendar days is a GT, one is an RTT. A missing or unparseable
-// end date is treated as a single day (ok=true, rtt): BCP simply not
-// publishing an end date is far more often a one-day event that never
-// had one than a multi-day one.
+// for that player's events whether or not a given one was run in team
+// format, solo RTTs included. teamEvent is checked first, since it needs
+// no date parsing. Otherwise the event's span decides: two or more
+// whole 24-hour periods from start to end is a GT, less is an RTT.
+// Counting 24-hour periods rather than calendar days is deliberate: BCP
+// stores UTC timestamps, so a one-day event can cross UTC midnight and
+// would read as two calendar days. A missing or unparseable end date is
+// treated as a single day (ok=true, rtt): an event with no published end
+// date is far more often a one-day event than a multi-day one.
 func classifyEventCategory(h bcp.PlacingHistoryEntry, teamEvent bool) (category string, ok bool) {
 	if teamEvent {
 		return categoryTeams, true
@@ -445,14 +445,15 @@ func computePlayerStats(history []bcp.PlacingHistoryEntry, infos map[string]bcp.
 // distinct league encountered (see canonicalPlacingPerEvent) and one
 // FetchEventInfo call per distinct event (see eventInfoByID, needed for
 // an accurate Team/GT/RTT split — PlacingHistoryEntry's own Team field
-// isn't reliable enough on its own). Both are small, cached, mostly-
-// shared-across-users lookups, not per-round or per-user fan-out. See
+// isn't reliable enough on its own). League lookups are a small set
+// shared across every account and nearly always cached; event lookups
+// scale with the player's history, one per distinct event, which is why
+// ?summary=true skips them (see withEventDetail). See
 // playerStatsResponse's doc comment for why win/loss isn't part of
 // this: reconstructing it would mean fetching every past event's full
-// pairings board round by round, which for a long history is on the
-// order of hundreds of extra BCP requests just for one stat — decided
-// against, in keeping with this service's "fetch only what's needed"
-// rule.
+// pairings board round by round, on the order of hundreds of extra BCP
+// requests for a long history, against this service's "fetch only
+// what's needed" rule.
 type StatsHandler struct {
 	store  userStore
 	client bcpClient
@@ -463,6 +464,17 @@ func NewStatsHandler(store userStore, client bcpClient) *StatsHandler {
 	return &StatsHandler{store: store, client: client}
 }
 
+// requestedEventDetail reads ?summary=true, the opt-out from the
+// per-event pass.
+//
+// Opt-out rather than opt-in on purpose: a client that forgets the
+// param gets correct-but-slower rather than quietly-incomplete. The
+// three callers that pass it — Home's stat strip, and both sides of a
+// head-to-head lookup — read only fields the feed already carries.
+func requestedEventDetail(c echo.Context) bool {
+	return c.QueryParam("summary") != "true"
+}
+
 // Register wires this handler's routes onto e. PlayerStats sits behind
 // the same requireApprovedUser gate as Stats (this whole service is
 // meant to be behind sign-in *and* approval — see BCPHandler.Register)
@@ -471,18 +483,7 @@ func NewStatsHandler(store userStore, client bcpClient) *StatsHandler {
 // some other player (roster, pairings, placings — anywhere a name
 // already carries a bcpUserId) and looks up that player's own summary
 // instead of the caller's.
-// requestedEventDetail reads ?summary=true, the opt-out from the
-// per-event pass.
 //
-// Opt-out rather than opt-in on purpose: the full response is what
-// every existing caller already expects, and a client that forgets the
-// param gets correct-but-slower rather than quietly-incomplete. The
-// three callers that pass it — Home's stat strip, and both sides of a
-// head-to-head lookup — read only fields the feed already carries.
-func requestedEventDetail(c echo.Context) bool {
-	return c.QueryParam("summary") != "true"
-}
-
 // playerStatsLimit, when given, guards /api/players/:bcpUserId/stats:
 // unlike the caller's own stats, its id is free-form, and a player
 // nothing has cached yet costs a crawl of that player's BCP history.
@@ -529,14 +530,6 @@ func (h *StatsHandler) PlayerStats(c echo.Context) error {
 	return c.JSON(http.StatusOK, resp)
 }
 
-// statsForBcpUser fetches and aggregates one BCP account's placing
-// history into a playerStatsResponse — the shared body of StatsHandler's
-// Stats and PlayerStats above, which differ only in where bcpUserID
-// comes from (the caller's own linked profile vs. a path param), and of
-// DossierHandler (dossier.go), which wraps this same summary with the
-// linked Brass Ledger account's own name for the public dossier page. A
-// package-level function rather than a method so DossierHandler doesn't
-// need a *StatsHandler dependency just to reuse this one computation.
 // withEventDetail decides whether statsForBcpUser resolves every event
 // in the history, which is the difference between a handful of upstream
 // requests and one per event the player has ever attended.
@@ -547,15 +540,23 @@ func (h *StatsHandler) PlayerStats(c echo.Context) error {
 // breakdown, competing-since, the whole history series — comes out of
 // the placing-history feed and costs nothing extra.
 //
-// That ratio is the point. Measured by the scale test, a 500-event
-// account costs 399 upstream requests with detail and 4 without: 99% of
-// this endpoint's traffic to BCP exists to serve three stat tiles and a
-// suffix. Home renders none of them.
+// That ratio is the point. A 500-event account costs about 399
+// upstream requests with detail and 4 without: 99% of this endpoint's
+// traffic to BCP serves three stat tiles and a suffix. Home renders
+// none of them.
 const (
 	withEventDetail    = true
 	withoutEventDetail = false
 )
 
+// statsForBcpUser fetches and aggregates one BCP account's placing
+// history into a playerStatsResponse — the shared body of StatsHandler's
+// Stats and PlayerStats above, which differ only in where bcpUserID
+// comes from (the caller's own linked profile vs. a path param), and of
+// DossierHandler (dossier.go), which wraps this same summary with the
+// linked Brass Ledger account's own name for the public dossier page. A
+// package-level function rather than a method so DossierHandler doesn't
+// need a *StatsHandler dependency just to reuse this one computation.
 func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string, eventDetail bool) (playerStatsResponse, error) {
 	rawHistory, err := client.FetchPlacingHistory(ctx, bcpUserID)
 	if err != nil {
@@ -569,13 +570,11 @@ func statsForBcpUser(ctx context.Context, client bcpClient, bcpUserID string, ev
 	// sleeps after ten minutes idle) this is the difference between two
 	// queries and one per event the player has ever attended.
 	//
-	// Overlapped when both run, because they were sequential and had no
-	// reason to be: the event prewarm took its ids from
-	// canonicalPlacingPerEvent's output, which made it look dependent on
-	// that step, but canonical never adds or removes an event id so
-	// distinctEventIDs(rawHistory) is the identical set. Worth one Neon
-	// round trip, measured ~90ms from the deployed container on
-	// 2026-09-20 (/readyz against /healthz). See bcp/cost.go.
+	// The two prewarms run concurrently, saving one Neon round trip
+	// (bcp.DurableReadCost). The event prewarm can take its ids from
+	// rawHistory rather than waiting for canonicalPlacingPerEvent, which
+	// never adds or removes an event id.
+	//
 	// League info is resolved in BOTH modes, and that is deliberate.
 	// canonicalPlacingPerEvent needs it to pick which row wins when BCP
 	// scored one event under several leagues, and that choice decides

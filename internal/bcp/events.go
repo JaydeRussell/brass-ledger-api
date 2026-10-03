@@ -209,11 +209,10 @@ func (c *Client) fetchEventInfoFromBCP(ctx context.Context, eventID string) (Eve
 	// where Started/CurrentRound move and a Postgres write per request
 	// would buy nothing.
 	//
-	// Storing the far-off ones is what makes the policy actually work.
-	// Their in-memory TTL is six hours, but the container sleeps after
-	// ten minutes — so before this, an event two months away was
-	// re-fetched from BCP by every cold process, forever, because the
-	// only cache that held it never lived long enough to be used.
+	// Storing the far-off ones is what makes the policy work. Their
+	// in-memory TTL is six hours, but the container sleeps after ten
+	// minutes, so without a durable row every cold process would
+	// re-fetch them from BCP.
 	//
 	// A failed write just means this gets asked of BCP again next time;
 	// not worth failing the request over.

@@ -12,17 +12,15 @@ import (
 // asking Postgres again.
 //
 // Every gated route resolves the session before doing anything else, so
-// this was one Neon round trip per request — six on a home page load,
-// before any handler did work. None of those six can disagree with each
-// other; they are the same query, same answer, microseconds apart.
+// without this each request costs a Neon round trip — six on a home page
+// load, before any handler does work. Those six are the same query with
+// the same answer, microseconds apart.
 //
-// Deliberately seconds, not minutes. Sessions are opaque server-side
-// tokens specifically so signing out can revoke one immediately rather
-// than leaving it valid until its own expiry (see internal/user), and a
-// generous TTL here would quietly convert them into JWTs with a 30-
-// second grace period. Sign-out doesn't rely on that grace at all —
-// DeleteSession drops the entry — but an admin approving an account,
-// or any other change to the row, is only guaranteed visible this fast.
+// Deliberately seconds, not minutes. Sign-out drops the entry
+// (DeleteSession) and every users-row write through this store flushes
+// the cache, so those take effect on the next request. The TTL only
+// bounds how long an edit made outside this process, such as a direct
+// database change, takes to be seen.
 const sessionCacheTTL = 30 * time.Second
 
 type sessionCacheEntry struct {
