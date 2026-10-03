@@ -16,6 +16,7 @@ import (
 // automatically; no change needed in internal/bcp.
 type bcpClient interface {
 	FetchEventInfo(ctx context.Context, eventID string) (bcp.EventInfo, error)
+	FetchEventLeagueIDs(ctx context.Context, eventID string) ([]string, error)
 	FetchPlayers(ctx context.Context, eventID string) ([]bcp.Player, error)
 	FetchRoundPairings(ctx context.Context, eventID, pairingType string, round int) ([]bcp.PairingRecord, error)
 	FetchPlacings(ctx context.Context, eventID string, teamEvent bool) ([]bcp.PlacingEntry, error)

@@ -230,13 +230,14 @@ func (h *BCPHandler) Placings(c echo.Context) error {
 // leagues (EventInfo.LeagueIDs), not a game-system-wide search — see
 // FetchCurrentItcLeagueIDForEvent's doc comment for why that search
 // stopped being reliable. Costs no extra BCP request beyond the
-// already-cached FetchEventInfo lookup every event page already makes.
+// already-cached FetchEventInfo lookup every event page already makes
+// (see FetchEventLeagueIDs for the one exception).
 func (h *BCPHandler) ItcLeagueID(c echo.Context) error {
-	info, err := h.client.FetchEventInfo(c.Request().Context(), c.Param("eventId"))
+	leagueIDs, err := h.client.FetchEventLeagueIDs(c.Request().Context(), c.Param("eventId"))
 	if err != nil {
 		return bcpError(c, err)
 	}
-	leagueID, err := h.client.FetchCurrentItcLeagueIDForEvent(c.Request().Context(), info.LeagueIDs)
+	leagueID, err := h.client.FetchCurrentItcLeagueIDForEvent(c.Request().Context(), leagueIDs)
 	if err != nil {
 		return bcpError(c, err)
 	}

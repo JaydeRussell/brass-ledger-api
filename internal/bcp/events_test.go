@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNonEmpty(t *testing.T) {
@@ -312,5 +313,33 @@ func TestEventInfoLeagueIDsSurviveJSONRoundTrip(t *testing.T) {
 	}
 	if len(out.LeagueIDs) != 2 || out.LeagueIDs[0] != "BYaaUfKum7z0" {
 		t.Fatalf("LeagueIDs after round trip = %v", out.LeagueIDs)
+	}
+}
+
+// An event cached without leagues (a durable row written before LeagueIDs
+// was serialized) is asked of BCP once, then answered from cache.
+func TestFetchEventLeagueIDsHealsLeaguelessCacheEntry(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"evt-1","name":"RMO","status":{"ended":true},"leagues":[{"id":"lg-1","name":"WGR"}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(server)
+	client.eventInfo.Put("evt-1", EventInfo{ID: "evt-1", Name: "RMO", Ended: true}, time.Now())
+
+	ids, err := client.FetchEventLeagueIDs(context.Background(), "evt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "lg-1" {
+		t.Fatalf("league ids = %v, want [lg-1]", ids)
+	}
+	if _, err := client.FetchEventLeagueIDs(context.Background(), "evt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("BCP requests = %d, want 1", got)
 	}
 }

@@ -129,7 +129,12 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 			return cached, nil
 		}
 	}
+	return c.fetchEventInfoFromBCP(ctx, eventID)
+}
 
+// fetchEventInfoFromBCP always asks BCP, and stores the result durably
+// when eventInfoTTL says it's worth keeping.
+func (c *Client) fetchEventInfoFromBCP(ctx context.Context, eventID string) (EventInfo, error) {
 	var body bcpEventInfoResponse
 	rawURL := fmt.Sprintf("%s/events/%s?role=true", c.apiBaseV2, url.PathEscape(eventID))
 	if err := c.get(ctx, rawURL, &body); err != nil {
@@ -219,6 +224,30 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 // FetchEventInfo returns cached, rate-limited event metadata.
 func (c *Client) FetchEventInfo(ctx context.Context, eventID string) (EventInfo, error) {
 	return c.eventInfo.Get(ctx, eventID)
+}
+
+// FetchEventLeagueIDs returns the leagues an event is scored under.
+//
+// Durable rows written before EventInfo.LeagueIDs was serialized carry
+// none, so an event with no leagues is asked of BCP once more; that
+// rewrites the durable row and replaces the in-memory entry, so the next
+// call is answered from cache. This is narrower than bumping
+// CacheSchemaVersion, which would refetch every durable row of every
+// type at once (12s for one My Events load when measured locally).
+func (c *Client) FetchEventLeagueIDs(ctx context.Context, eventID string) ([]string, error) {
+	info, err := c.FetchEventInfo(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	if len(info.LeagueIDs) > 0 {
+		return info.LeagueIDs, nil
+	}
+	fresh, err := c.fetchEventInfoFromBCP(ctx, eventID)
+	if err != nil {
+		return nil, err
+	}
+	c.eventInfo.Put(eventID, fresh, time.Now())
+	return fresh.LeagueIDs, nil
 }
 
 // InvalidateEventInfo forces the next FetchEventInfo call for this event

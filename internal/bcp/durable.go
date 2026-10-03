@@ -82,7 +82,7 @@ type DurableCache interface {
 // b6b26da) being permanently absent from any event durably cached
 // before that change shipped — see that incident's write-up before
 // assuming a durable row is safe to read as-is after any schema change.
-const CacheSchemaVersion = 2
+const CacheSchemaVersion = 1
 
 // SetDurableCache installs c's durable cache. Call once, right after
 // NewClient/NewClientWithBaseURL, before any fetches happen — it's not
