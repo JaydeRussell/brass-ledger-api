@@ -254,10 +254,11 @@ func (c *Cache[T]) ttlOf(v T) time.Duration {
 // Get returns the cached value for key, fetching (or joining an
 // in-progress fetch) if it's missing or stale.
 //
-// A failed fetch is not cached — the next call tries again rather than
-// being stuck serving an error for a full TTL — with one exception: if
-// BCP said the key does not exist (IsGone), that answer is held for
-// goneTTL and replayed without a request. Retrying a 404 every time is
+// A failed fetch is held for upstreamFailureBackoff (still serving a
+// stale entry inside its window, if there is one) so a struggling BCP
+// isn't asked again on every request. If BCP said the key does not exist
+// (IsGone), that answer is held for goneTTL and replayed without a
+// request. Retrying a 404 every time is
 // not resilience, it's a permanent per-request tax on data that will
 // never arrive; see goneTTL for the bug that made the difference
 // measurable.
@@ -268,6 +269,12 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 		return e.data, nil
 	}
 	if g, ok := c.gone[key]; ok && time.Since(g.recordedA) < g.ttl {
+		// A transient failure (a failed background refresh) leaves a
+		// stale-but-servable entry usable; only a gone answer hides it.
+		if e, ok := c.entries[key]; ok && !IsGone(g.err) && c.serveStale && time.Since(e.fetchedAt) < 2*e.ttl {
+			c.mu.Unlock()
+			return e.data, nil
+		}
 		c.mu.Unlock()
 		var zero T
 		return zero, g.err

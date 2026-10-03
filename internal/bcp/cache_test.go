@@ -541,6 +541,36 @@ func TestCache_StaleWhileRevalidate_StopsServingPastTheWindow(t *testing.T) {
 	}
 }
 
+// TestCache_StaleWhileRevalidate_FailedRefreshKeepsServingStale: a
+// background refresh that fails records a backoff marker, and that marker
+// must not turn the still-servable stale value into an error.
+func TestCache_StaleWhileRevalidate_FailedRefreshKeepsServingStale(t *testing.T) {
+	var calls atomic.Int32
+	c := NewCacheWithStaleWhileRevalidate(func(_ context.Context, _ string) (string, error) {
+		if calls.Add(1) == 1 {
+			return "v1", nil
+		}
+		return "", errors.New("bcp unavailable")
+	}, 20*time.Millisecond, nil)
+
+	if _, err := c.Get(context.Background(), "k"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond) // past the TTL, inside 2x
+	if got, err := c.Get(context.Background(), "k"); err != nil || got != "v1" {
+		t.Fatalf("stale Get = %q, %v; want v1", got, err)
+	}
+	c.waitForRevalidations() // the refresh fails and records a backoff
+
+	got, err := c.Get(context.Background(), "k")
+	if err != nil || got != "v1" {
+		t.Errorf("Get after a failed refresh = %q, %v; want the stale v1", got, err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("upstream called %d times, want 2: no new refresh during the backoff", n)
+	}
+}
+
 // TestCache_WithoutStaleWhileRevalidate_StillBlocks pins the opt-in.
 // Pairings run on a plain cache for a deliberate reason (see
 // NewCacheWithStaleWhileRevalidate's doc comment), so "every cache
