@@ -319,7 +319,18 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		// Player stats summary (best placing, faction breakdown) — same
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
-		api.NewStatsHandler(userStore, bcpClient).Register(e)
+		// Player stats run the same crawl as a dossier for any id, so they
+		// get a limit too: looser than the dossier's, since it's
+		// signed-in only and a player view makes two calls (summary, then
+		// full) and head-to-head two more, but enough to stop a script
+		// walking a roster's worth of uncached players through BCP.
+		api.NewStatsHandler(userStore, bcpClient).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+				Rate:      30.0 / 60, // ~30 requests/minute, refilled continuously
+				Burst:     15,
+				ExpiresIn: 3 * time.Minute,
+			}),
+		}))
 		// Public player dossiers — deliberately NOT session-gated (see
 		// dossier.go), but only registered once accounts can exist at all
 		// to link a dossier to in the first place. Same rate-limit shape
