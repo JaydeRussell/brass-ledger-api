@@ -32,12 +32,11 @@ const migrateLockID int64 = 8064213 // "brass-ledger migrations"
 //
 // The set of already-applied versions is read in one query rather than
 // one "has this run yet?" round trip per file. On a warm database every
-// migration is a no-op, so that per-file check was the entire cost of
-// this function: 15 sequential round trips to Postgres, on every single
-// process start, to learn that there was nothing to do. This runs before
-// the HTTP listener starts (see cmd/server/main.go), and the container
-// this deploys to sleeps after ten minutes idle, so "every process
-// start" means most real visits — it was pure cold-start latency.
+// migration is a no-op, so a per-file check would be the entire cost of
+// this function, one sequential round trip per migration on every
+// process start. This runs before the HTTP listener starts (see
+// cmd/server/main.go), and the container this deploys to sleeps after
+// ten minutes idle, so "every process start" means most real visits.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	// Everything below runs on one connection, holding an advisory lock,
 	// because migrating is not safe to do concurrently: CREATE TABLE IF

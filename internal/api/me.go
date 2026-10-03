@@ -12,6 +12,20 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// maxConcurrentEventInfo bounds how many event-info lookups one request
+// has in flight at once — classifyMyEvents here, and eventInfoByID in
+// stats.go. It only decides how many of a request's lookups overlap, not
+// how many are made; overlapping six shortens the wait on a first-ever
+// /stats or dossier view for an account with a long history. Home skips the
+// per-event pass (?summary=true, see stats.go's withEventDetail), and
+// every event resolved here is written to the shared durable cache, so
+// each event is paid for once globally rather than once per user.
+//
+// This is a per-request bound, not a process-wide one: six simultaneous
+// users fanning out at six put thirty-six concurrent requests on BCP.
+// Past this value it multiplies against traffic rather than adding to it.
+const maxConcurrentEventInfo = 6
+
 // staleEventAfter is how long past its listed end date an event that BCP
 // still shows as "started, not ended" gets reclassified from Present to
 // Past anyway. Some organizers never flip the "ended" switch on their own
@@ -19,45 +33,10 @@ import (
 // stuck in "Ongoing" on the frontend's My Events page forever. A day's
 // grace avoids misclassifying an event that's still legitimately running
 // a little long (finals dragging on, a rescheduled last round), while
-// keeping the Ongoing tag from lingering too long now that the
-// Present/Future registration list itself (bcp.Client's
-// playerEventHistory/placingHistory caches) is cached for up to 48
-// hours — see bcp.myEventsRefetchInterval's doc comment.
-// maxConcurrentEventInfo bounds how many event-info lookups one request
-// has in flight at once — classifyMyEvents here, and eventInfoByID in
-// stats.go.
-//
-// Raised from three to six on 2026-09-20. The request count is
-// unchanged either way; this only decides how many of them overlap. Six
-// roughly halves the wait on a first-ever /stats or dossier view for an
-// account with a long history, which the scale test puts in the seconds
-// at 100 events and worse beyond.
-//
-// Two things make that affordable now. Home stopped triggering the
-// per-event pass at all (?summary=true, see stats.go's withEventDetail),
-// so this no longer runs on the landing page — only on a page someone
-// deliberately opened. And every event resolved here is written to the
-// durable cache, which is shared across every account, so each event is
-// paid for once globally rather than once per user.
-//
-// KNOWN GAP, deliberate and the owner's call: this is a PER-REQUEST
-// bound, created fresh inside each call. It says nothing about the
-// process. Six simultaneous users fanning out at six put thirty-six
-// concurrent requests on BCP and nothing anywhere stops them. A
-// process-wide ceiling is the only thing that would actually bound what
-// BCP sees; it is on the backlog, not in this change. Weigh that before
-// raising this number again — past here it multiplies against traffic
-// rather than adding to it.
-const maxConcurrentEventInfo = 6
-
+// keeping the Ongoing tag from lingering, since the registration list
+// itself (bcp.Client's playerEventHistory/placingHistory caches) is
+// cached for up to 48 hours — see bcp.myEventsRefetchInterval.
 const staleEventAfter = 24 * time.Hour
-
-// bcpDateLayouts are the two date shapes this service has actually seen
-// from BCP: FetchEventInfo's Dates.Start/End come back as a bare date
-// ("2026-01-01"), while FetchPlacingHistory's EventDate/EventEndDate come
-// back full RFC3339 ("2024-01-01T00:00:00.000Z") — see internal/bcp's
-// events_test.go and history_test.go fixtures for both. Tried in order;
-// the first that parses wins.
 
 // isStaleEvent reports whether an event's listed end date is far enough
 // in the past that it should be treated as concluded regardless of what

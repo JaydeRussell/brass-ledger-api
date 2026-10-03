@@ -70,7 +70,6 @@ docker-build: ## Build every image in the stack without starting them
 	docker compose build
 
 docker-reset: ## Rebuild images from your latest code changes and restart the stack (detached)
-	@mkdir -p logs ../brass-ledger-web/logs && chmod 777 logs ../brass-ledger-web/logs
 	docker compose down
 	docker compose up --build --force-recreate -d
 

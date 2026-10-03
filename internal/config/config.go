@@ -30,11 +30,10 @@ type Config struct {
 
 	// GoogleClientID and GoogleClientSecret come from a Google Cloud
 	// Console OAuth client (see the README's "Running locally" section).
-	// Deliberately NOT required: leaving them unset
-	// lets the rest of the service run — the BCP proxy, health checks —
-	// before Google sign-in is set up, rather than refusing to start at
-	// all. main.go only registers the /auth/* and /api/me routes when
-	// both are present.
+	// Not required: the service still starts without them, but
+	// main.go only registers the sign-in and account routes when both
+	// are present, and with no way to get a session every route except
+	// /healthz, /readyz and /api/feedback returns 401.
 	GoogleClientID     string
 	GoogleClientSecret string
 
@@ -81,11 +80,10 @@ type Config struct {
 	// ResendAPIKey and EmailFromAddress enable emailing every AdminEmails
 	// address when a brand-new account signs up pending approval (see
 	// internal/notify and internal/api/auth.go's Callback). Both
-	// optional, same "leaving it unset just disables the feature"
-	// contract as GoogleClientID/GoogleClientSecret above — main.go only
-	// builds a working notifier when both are set; a deployment without
-	// Resend configured still starts and runs fine, admins just have to
-	// keep checking /admin manually.
+	// optional: main.go always builds the notifier, and it does nothing
+	// unless both are set. A deployment without Resend configured still
+	// starts and runs fine; admins just have to keep checking /admin
+	// manually.
 	ResendAPIKey     string
 	EmailFromAddress string
 }

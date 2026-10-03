@@ -209,11 +209,12 @@ func prewarm[T any](
 // time. internal/api/stats.go's eventInfoByID does exactly that, once
 // per distinct event in a player's whole placing history — with a cold
 // in-memory cache (which, given the container sleeps after ten minutes,
-// is most page loads) that was one sequential Postgres round trip per
-// event the player had ever attended.
+// is most page loads) each would otherwise be its own sequential
+// Postgres round trip.
 //
-// Only ended events are ever written durably (see events.go), so
-// anything this finds is by definition an event whose info can't change.
+// Ended events and far-off upcoming ones are written durably (see
+// events.go's use of eventInfoTTL); a row for an event that hasn't
+// ended is only used while it's younger than eventInfoTTL.
 func (c *Client) PrewarmEventInfo(ctx context.Context, eventIDs []string) {
 	prewarm(ctx, c.durable, c.eventInfo, eventIDs, eventInfoDurableKey, func(row DurableRow) (EventInfo, bool) {
 		var info EventInfo

@@ -255,9 +255,9 @@ func (c *Client) FetchEventLeagueIDs(ctx context.Context, eventID string) ([]str
 // present/future event's own status (e.g. one that just started, or
 // just concluded) is also rechecked on a manual "refresh my events"
 // request, not just whether new registrations appeared. A no-op for an
-// event whose info is already durably cached (an already-concluded
-// event never needs rechecking at all) since fetchEventInfoUncached
-// checks the durable cache before ever reaching this in-memory one.
+// event with a usable durable row — an ended event, or a far-off one
+// still within its eventInfoTTL — since fetchEventInfoUncached checks
+// the durable cache before ever reaching BCP.
 func (c *Client) InvalidateEventInfo(eventID string) {
 	c.eventInfo.Invalidate(eventID)
 }
