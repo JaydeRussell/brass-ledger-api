@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
 )
 
@@ -265,10 +266,13 @@ func TestStore_PruneKeepsWhatIsPermanent(t *testing.T) {
 		}
 	}
 	// Two event rows: one concluded (permanent), one that never ended.
-	if err := store.Set(ctx, key("event:ended-"), 1, map[string]any{"ended": true}); err != nil {
+	// Stored as the real bcp.EventInfo, because the prune reads its
+	// "ended" json tag; a renamed tag must fail here, not delete ended
+	// events in production.
+	if err := store.Set(ctx, key("event:ended-"), 1, bcp.EventInfo{Ended: true}); err != nil {
 		t.Fatalf("Set ended event: %v", err)
 	}
-	if err := store.Set(ctx, key("event:live-"), 1, map[string]any{"ended": false}); err != nil {
+	if err := store.Set(ctx, key("event:live-"), 1, bcp.EventInfo{Ended: false}); err != nil {
 		t.Fatalf("Set live event: %v", err)
 	}
 	// A permanent kind of row, but at a superseded version: unreadable.
