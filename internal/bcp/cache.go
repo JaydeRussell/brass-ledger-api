@@ -340,10 +340,12 @@ func (c *Cache[T]) runFetch(ctx context.Context, key string, inf *inflight[T]) (
 		c.evictLocked()
 	case IsGone(err):
 		c.gone[key] = goneEntry{err: err, recordedA: time.Now(), ttl: goneTTL}
+		c.evictGoneLocked()
 	default:
 		// Might get better, but not in the next few seconds — see
 		// upstreamFailureBackoff.
 		c.gone[key] = goneEntry{err: err, recordedA: time.Now(), ttl: upstreamFailureBackoff}
+		c.evictGoneLocked()
 	}
 	delete(c.inFlight, key)
 	c.mu.Unlock()
@@ -357,6 +359,33 @@ func (c *Cache[T]) runFetch(ctx context.Context, key string, inf *inflight[T]) (
 // fetchTimeout bounds one shared fetch. See Cache.Get for why the fetch
 // can't simply inherit the caller's deadline, and why this is generous.
 const fetchTimeout = 60 * time.Second
+
+// evictGoneLocked keeps the negative markers under maxCacheEntries on
+// their own. evictLocked only runs as positive entries grow, so requests
+// for ids that keep failing (random ids that 404) would otherwise grow
+// this map without bound. Expired markers go first, then the oldest.
+// The caller holds c.mu.
+func (c *Cache[T]) evictGoneLocked() {
+	if len(c.gone) <= maxCacheEntries {
+		return
+	}
+	for key, g := range c.gone {
+		if time.Since(g.recordedA) >= g.ttl {
+			delete(c.gone, key)
+		}
+	}
+	for len(c.gone) > maxCacheEntries {
+		var oldestKey string
+		var oldestAt time.Time
+		first := true
+		for key, g := range c.gone {
+			if first || g.recordedA.Before(oldestAt) {
+				oldestKey, oldestAt, first = key, g.recordedA, false
+			}
+		}
+		delete(c.gone, oldestKey)
+	}
+}
 
 // evictLocked keeps entries under maxCacheEntries. The caller holds
 // c.mu.
@@ -445,12 +474,17 @@ func (c *Cache[T]) Invalidate(key string) bool {
 	if e, ok := c.entries[key]; ok && time.Since(e.fetchedAt) < minManualInvalidateInterval {
 		return false
 	}
+	// A failing key has a gone or backoff marker and no entry, so the
+	// check above can't gate it: without this, every ?refresh=true for a
+	// key BCP is failing on went straight to BCP, outage or not.
+	if g, ok := c.gone[key]; ok && time.Since(g.recordedA) < minManualInvalidateInterval {
+		return false
+	}
 	delete(c.entries, key)
 	// An explicit "check again now" drops the gone marker as well: the
 	// whole point of the button is that the user knows something we
 	// inferred is out of date, and a resurrected event is precisely
-	// that. Not throttled separately — the entries check above already
-	// gates the request rate, and a gone key has no entry to gate.
+	// that.
 	delete(c.gone, key)
 	return true
 }
