@@ -1,10 +1,9 @@
 // Command server is the entry point for the brass-ledger backend
 // API. Health checks, a database connection, the BCP proxy/cache
-// (internal/bcp) that used to live entirely in the frontend, and now
-// Google sign-in + server-side sessions (internal/auth, internal/user) —
-// every browser shares this one server-side cache/rate limit against
-// BCP, and every user's account lives here instead of per-browser
-// localStorage.
+// (internal/bcp), and Google sign-in + server-side sessions
+// (internal/auth, internal/user) — every browser shares this one
+// server-side cache/rate limit against BCP, and every user's account
+// lives here instead of per-browser localStorage.
 package main
 
 import (
@@ -63,12 +62,9 @@ func main() {
 	// access log, so one stream has the full startup + request + error
 	// history in the order it happened.
 	//
-	// Stdout only, deliberately: this used to also append to a LOG_FILE
-	// on disk, from a time when reading a file was easier than reading a
-	// container's output. It isn't any more — `docker compose logs
-	// backend` locally, and Cloudflare's own log tooling in production,
-	// where the file was already disabled because a container's
-	// filesystem isn't durable storage.
+	// Stdout only, deliberately: it is read with `docker compose logs
+	// backend` locally and Cloudflare's log tooling in production, and a
+	// container's filesystem isn't durable storage for a log file.
 	logWriter := io.Writer(os.Stdout)
 	log.SetOutput(logWriter)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -265,9 +261,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	// needs it regardless. It's a thin wrapper around pool, so
 	// constructing it has no cost or side effect on its own.
 	// Wrapped in a short-lived session cache: every gated route resolves
-	// the session before doing anything else, which was one Neon round
-	// trip per request — six on a home page load, all asking the same
-	// question microseconds apart. See internal/api's sessionCacheTTL
+	// the session before doing anything else, so without it each request
+	// is a database round trip — six on a home page load, all asking the
+	// same question microseconds apart. See internal/api's sessionCacheTTL
 	// for why it is seconds rather than minutes, and how sign-out stays
 	// immediate.
 	userStore := api.NewCachedUserStore(user.NewStore(pool))
@@ -302,8 +298,8 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	}))
 
 	// Google sign-in is opt-in: only registered once real credentials
-	// are configured. Note that means this whole app — not just the
-	// account-specific features below — is unreachable without it now:
+	// are configured. Without it this whole app — not just the
+	// account-specific features below — is unreachable:
 	// BCPHandler's routes above require an approved session, and without
 	// Google sign-in registered there's no way to ever get one. See the
 	// README's "Running locally" section for how to set it up.
