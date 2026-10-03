@@ -425,114 +425,12 @@ func (s *Store) ListUsers(ctx context.Context, opts ListUsersOptions) (ListUsers
 // regardless of which client wrote to it.
 const MaxRecentEvents = 8
 
-// Follow is one followed team/player within one event — see the
-// migration 0003 comment for how this mirrors the frontend's Followed
-// union.
-type Follow struct {
-	Kind  string // "team" or "player"
-	RefID string
-	Label string
-}
-
 // RecentEvent is one entry in a user's recently-viewed-events list.
 type RecentEvent struct {
 	EventID      string
 	EventName    string
 	TeamEvent    bool
 	LastViewedAt time.Time
-}
-
-// ListFollows returns everything a user follows within one event, in no
-// particular guaranteed order (the frontend re-sorts/displays as needed).
-func (s *Store) ListFollows(ctx context.Context, userID int64, eventID string) ([]Follow, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT kind, ref_id, label FROM user_follows WHERE user_id = $1 AND event_id = $2`,
-		userID, eventID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("listing follows: %w", err)
-	}
-	defer rows.Close()
-
-	follows := []Follow{}
-	for rows.Next() {
-		var f Follow
-		if err := rows.Scan(&f.Kind, &f.RefID, &f.Label); err != nil {
-			return nil, fmt.Errorf("scanning follow: %w", err)
-		}
-		follows = append(follows, f)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing follows: %w", err)
-	}
-	return follows, nil
-}
-
-// AddFollow records that a user follows a team/player within an event.
-// Idempotent — following something already followed just refreshes its
-// label (e.g. if BCP's own display name for it changed since).
-func (s *Store) AddFollow(ctx context.Context, userID int64, eventID, kind, refID, label string) error {
-	if _, err := s.pool.Exec(ctx, `
-		INSERT INTO user_follows (user_id, event_id, kind, ref_id, label)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (user_id, event_id, kind, ref_id) DO UPDATE SET label = EXCLUDED.label
-	`, userID, eventID, kind, refID, label); err != nil {
-		return fmt.Errorf("adding follow: %w", err)
-	}
-	return nil
-}
-
-// RemoveFollow un-follows a team/player within an event. Removing
-// something not currently followed isn't an error — same rationale as
-// DeleteSession.
-func (s *Store) RemoveFollow(ctx context.Context, userID int64, eventID, kind, refID string) error {
-	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM user_follows WHERE user_id = $1 AND event_id = $2 AND kind = $3 AND ref_id = $4`,
-		userID, eventID, kind, refID,
-	); err != nil {
-		return fmt.Errorf("removing follow: %w", err)
-	}
-	return nil
-}
-
-// FollowCount is how many distinct accounts follow one team/player
-// within one event — an aggregate, not tied to any particular follower's
-// identity (see CountFollows).
-type FollowCount struct {
-	Kind  string
-	RefID string
-	Count int
-}
-
-// CountFollows returns, for every team/player anyone follows within one
-// event, how many distinct accounts follow it — the "N people tracking
-// this" social-proof feature (internal/api/sync.go's FollowCounts). Pure
-// aggregation over user_follows; never exposes *which* accounts, just a
-// count, the same way a public vote/like count would.
-func (s *Store) CountFollows(ctx context.Context, eventID string) ([]FollowCount, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT kind, ref_id, count(*)
-		FROM user_follows
-		WHERE event_id = $1
-		GROUP BY kind, ref_id
-	`, eventID)
-	if err != nil {
-		return nil, fmt.Errorf("counting follows: %w", err)
-	}
-	defer rows.Close()
-
-	counts := []FollowCount{}
-	for rows.Next() {
-		var c FollowCount
-		if err := rows.Scan(&c.Kind, &c.RefID, &c.Count); err != nil {
-			return nil, fmt.Errorf("scanning follow count: %w", err)
-		}
-		counts = append(counts, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("counting follows: %w", err)
-	}
-	return counts, nil
 }
 
 // ListRecentEvents returns a user's recently-viewed events, most recent

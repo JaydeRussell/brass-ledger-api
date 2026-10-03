@@ -14,8 +14,8 @@ in `internal/api/bcp.go`) — so every user of this app shares one
 server-side cache and rate limit against BCP instead of each browser
 hitting it independently. It also handles Google sign-in with
 server-side sessions (`internal/auth`, `internal/user`), and the
-account-backed features that build on that (cross-device follows,
-recent events, player stats).
+account-backed features that build on that (cross-device recent
+events, round notes, player stats).
 
 Same scope limit as the frontend: this only ever retrieves data BCP
 already publishes. It never computes, ranks, or suggests a pairing/matchup

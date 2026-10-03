@@ -33,10 +33,6 @@ type fakeUserStore struct {
 	createSessionErr error
 	getUserErr       error
 
-	// follows is keyed by userID, then by event+kind+refId (matching the
-	// real store's composite primary key) so AddFollow's "update the
-	// label if already followed" semantics are easy to reproduce.
-	follows      map[int64]map[string]user.Follow
 	recentEvents map[int64][]user.RecentEvent
 	// roundNotes is keyed by userID, then by "eventId:round" — mirrors
 	// the real store's (user_id, event_id, round) composite key.
@@ -53,7 +49,7 @@ type fakeUserStore struct {
 	// friendRequests and nextFriendRequestID back the friend-request
 	// fake methods (friends_test.go) — a plain slice rather than a map,
 	// since friend_requests' real primary key is a synthetic bigserial
-	// id, not any natural composite key the way follows/roundNotes are.
+	// id, not any natural composite key the way roundNotes' is.
 	friendRequests      []user.FriendRequest
 	nextFriendRequestID int64
 }
@@ -62,7 +58,6 @@ func newFakeUserStore() *fakeUserStore {
 	return &fakeUserStore{
 		byGoogle:     make(map[string]user.User),
 		sessions:     make(map[string]int64),
-		follows:      make(map[int64]map[string]user.Follow),
 		recentEvents: make(map[int64][]user.RecentEvent),
 		roundNotes:   make(map[int64]map[string]string),
 	}
@@ -81,7 +76,7 @@ func (f *fakeUserStore) UpsertUserFromGoogle(_ context.Context, googleSub, email
 		// Unlike the real Store (migration 0007 defaults a brand-new
 		// row to RoleUser/StatusPending), the fake defaults straight to
 		// RoleUser/StatusApproved — most of this package's existing
-		// tests are about follows/recent-events/stats logic that has
+		// tests are about recent-events/stats logic that has
 		// nothing to do with approval gating, and forcing every one of
 		// them to also simulate an admin approving the fake user first
 		// would be unrelated churn. The approval-gating behavior itself
@@ -140,40 +135,6 @@ func (f *fakeUserStore) DeleteSession(_ context.Context, token string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.sessions, token)
-	return nil
-}
-
-func followFakeKey(eventID, kind, refID string) string {
-	return eventID + "|" + kind + "|" + refID
-}
-
-func (f *fakeUserStore) ListFollows(_ context.Context, userID int64, eventID string) ([]user.Follow, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	prefix := eventID + "|"
-	follows := []user.Follow{}
-	for key, follow := range f.follows[userID] {
-		if strings.HasPrefix(key, prefix) {
-			follows = append(follows, follow)
-		}
-	}
-	return follows, nil
-}
-
-func (f *fakeUserStore) AddFollow(_ context.Context, userID int64, eventID, kind, refID, label string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.follows[userID] == nil {
-		f.follows[userID] = make(map[string]user.Follow)
-	}
-	f.follows[userID][followFakeKey(eventID, kind, refID)] = user.Follow{Kind: kind, RefID: refID, Label: label}
-	return nil
-}
-
-func (f *fakeUserStore) RemoveFollow(_ context.Context, userID int64, eventID, kind, refID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.follows[userID], followFakeKey(eventID, kind, refID))
 	return nil
 }
 
