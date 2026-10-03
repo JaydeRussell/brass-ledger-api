@@ -151,3 +151,46 @@ func TestSessionCache_FailedLookupsAreNotCached(t *testing.T) {
 		t.Errorf("three unknown-token lookups cost %d queries, want 3 — a failure must not be cached", counting.lookups)
 	}
 }
+
+// pausingUserStore runs a hook in the middle of a session lookup, after
+// the row has been read but before the cache stores it.
+type pausingUserStore struct {
+	*fakeUserStore
+	duringLookup func()
+}
+
+func (p *pausingUserStore) GetUserBySession(ctx context.Context, token string) (user.User, error) {
+	u, err := p.fakeUserStore.GetUserBySession(ctx, token)
+	if p.duringLookup != nil {
+		hook := p.duringLookup
+		p.duringLookup = nil
+		hook()
+	}
+	return u, err
+}
+
+// A lookup that read the row before an admin's write, and finished after
+// the write flushed the cache, must not put the old row back for 30s.
+func TestSessionCache_LookupRacingAWriteDoesNotStoreTheOldRow(t *testing.T) {
+	fake := newFakeUserStore()
+	cookie, userID := signedInSession(t, fake)
+	pausing := &pausingUserStore{fakeUserStore: fake}
+	cached := NewCachedUserStore(pausing)
+
+	pausing.duringLookup = func() {
+		if err := cached.SetStatus(context.Background(), userID, user.StatusRejected); err != nil {
+			t.Fatalf("SetStatus: %v", err)
+		}
+	}
+	if _, err := cached.GetUserBySession(context.Background(), cookie.Value); err != nil {
+		t.Fatalf("first lookup: %v", err)
+	}
+
+	u, err := cached.GetUserBySession(context.Background(), cookie.Value)
+	if err != nil {
+		t.Fatalf("second lookup: %v", err)
+	}
+	if u.Status != user.StatusRejected {
+		t.Errorf("status after the write = %q, want %q (the racing lookup's stale row was cached)", u.Status, user.StatusRejected)
+	}
+}

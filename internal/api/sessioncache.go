@@ -50,7 +50,15 @@ type CachedUserStore struct {
 
 	mu      sync.Mutex
 	entries map[string]sessionCacheEntry
+	// generation goes up on every flush. A lookup that started before a
+	// flush doesn't store its result, since it may have read the row
+	// before the write that caused the flush.
+	generation uint64
 }
+
+// maxSessionCacheEntries is when inserting also sweeps expired entries,
+// so tokens seen once don't accumulate for the life of the process.
+const maxSessionCacheEntries = 1000
 
 // NewCachedUserStore wraps store with a short-lived session cache.
 func NewCachedUserStore(store userStore) *CachedUserStore {
@@ -69,6 +77,7 @@ func NewCachedUserStore(store userStore) *CachedUserStore {
 func (s *CachedUserStore) GetUserBySession(ctx context.Context, token string) (user.User, error) {
 	s.mu.Lock()
 	entry, ok := s.entries[token]
+	gen := s.generation
 	s.mu.Unlock()
 	if ok && time.Since(entry.resolved) < sessionCacheTTL {
 		return entry.u, nil
@@ -80,7 +89,16 @@ func (s *CachedUserStore) GetUserBySession(ctx context.Context, token string) (u
 	}
 
 	s.mu.Lock()
-	s.entries[token] = sessionCacheEntry{u: u, resolved: time.Now()}
+	if s.generation == gen {
+		if len(s.entries) >= maxSessionCacheEntries {
+			for k, e := range s.entries {
+				if time.Since(e.resolved) >= sessionCacheTTL {
+					delete(s.entries, k)
+				}
+			}
+		}
+		s.entries[token] = sessionCacheEntry{u: u, resolved: time.Now()}
+	}
 	s.mu.Unlock()
 	return u, nil
 }
@@ -97,11 +115,12 @@ func (s *CachedUserStore) DeleteSession(ctx context.Context, token string) error
 }
 
 // flush empties the cache. Called after any write that changes a users
-// row — after, not before, so a read racing the write can't repopulate
-// the stale value and survive the flush.
+// row. Bumping generation stops a lookup that was already in flight
+// (and may have read the old row) from storing it afterwards.
 func (s *CachedUserStore) flush() {
 	s.mu.Lock()
 	s.entries = make(map[string]sessionCacheEntry)
+	s.generation++
 	s.mu.Unlock()
 }
 
