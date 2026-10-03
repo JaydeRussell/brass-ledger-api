@@ -150,13 +150,17 @@ func TestFeedbackHandler_Submit_AttachesSignedInSubmitter(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
-	want := "User feedback-submitter <feedback-submitter@example.com>"
-	if notifier.got[0].SubmittedBy != want {
-		t.Errorf("SubmittedBy = %q, want %q", notifier.got[0].SubmittedBy, want)
+	// The alert email names the account by id only, and the stored report
+	// keeps the id without copying the name or email.
+	if got := notifier.got[0].SubmittedBy; !strings.HasPrefix(got, "account #") || strings.Contains(got, "@") {
+		t.Errorf("SubmittedBy = %q, want an account id with no email", got)
 	}
 	stored, _ := reports.List(context.Background())
-	if len(stored) != 1 || stored[0].SubmittedByName != "User feedback-submitter" {
-		t.Fatalf("expected stored report to carry the submitter's name, got %+v", stored)
+	if len(stored) != 1 || stored[0].SubmittedByUserID == 0 {
+		t.Fatalf("expected stored report to carry the submitter's id, got %+v", stored)
+	}
+	if stored[0].SubmittedByName != "" || stored[0].SubmittedByEmail != "" {
+		t.Errorf("stored report copied the submitter's name/email: %+v", stored[0])
 	}
 }
 

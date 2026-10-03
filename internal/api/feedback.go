@@ -96,7 +96,7 @@ func (h *FeedbackHandler) Submit(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "contact email is too long"})
 	}
 
-	submitterID, submitterName, submitterEmail := h.submitterInfo(c)
+	submitterID := h.submitterID(c)
 
 	// Persisted first — unlike the alert email below, this is the actual
 	// record an admin will triage later (see AdminHandler's feedback
@@ -108,16 +108,14 @@ func (h *FeedbackHandler) Submit(c echo.Context) error {
 		Page:              req.Page,
 		ContactEmail:      req.ContactEmail,
 		SubmittedByUserID: submitterID,
-		SubmittedByName:   submitterName,
-		SubmittedByEmail:  submitterEmail,
 	}); err != nil {
 		log.Printf("feedback: storing submission failed: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "couldn't save feedback"})
 	}
 
 	submittedBy := ""
-	if submitterName != "" {
-		submittedBy = fmt.Sprintf("%s <%s>", submitterName, submitterEmail)
+	if submitterID != 0 {
+		submittedBy = fmt.Sprintf("account #%d", submitterID)
 	}
 	report := notify.FeedbackReport{
 		Kind:         req.Kind,
@@ -138,14 +136,15 @@ func (h *FeedbackHandler) Submit(c echo.Context) error {
 	return c.NoContent(http.StatusAccepted)
 }
 
-// submitterInfo best-effort identifies the caller from a session cookie,
-// if one's present and valid — never required (see Submit), just extra
-// triage context attached for free when it's there. Returns zero values
-// for an anonymous or invalid-session submitter.
-func (h *FeedbackHandler) submitterInfo(c echo.Context) (userID int64, name, email string) {
+// submitterID best-effort identifies the caller from a session cookie,
+// if one's present and valid — never required (see Submit). Only the id
+// is kept: the admin list reads the name from the account, and the alert
+// email (sent through Resend) carries no personal data beyond what the
+// submitter typed. 0 for an anonymous or invalid-session submitter.
+func (h *FeedbackHandler) submitterID(c echo.Context) int64 {
 	u, ok := resolveSession(c, h.store)
 	if !ok {
-		return 0, "", ""
+		return 0
 	}
-	return u.ID, u.Name, u.Email
+	return u.ID
 }

@@ -78,11 +78,13 @@ func (n *ResendNotifier) NotifyNewSignup(ctx context.Context, u user.User) error
 	if !n.enabled() {
 		return nil
 	}
+	// Account id only: the email goes through Resend, a third party, and
+	// the admin page shows who it is.
 	return n.send(ctx,
-		fmt.Sprintf("New Brass Ledger sign-up pending approval: %s", u.Name),
+		"New Brass Ledger sign-up pending approval",
 		fmt.Sprintf(
-			"%s (%s) just signed up and is waiting on approval.\n\nReview it here: %s",
-			u.Name, u.Email, n.adminURL,
+			"Account #%d just signed up and is waiting on approval.\n\nReview it here: %s",
+			u.ID, n.adminURL,
 		),
 	)
 }
@@ -100,9 +102,8 @@ type FeedbackReport struct {
 	// An email the submitter volunteered for follow-up — "" if they
 	// left it blank.
 	ContactEmail string
-	// "Name <email>" if a valid session cookie was present, "" for an
-	// anonymous/signed-out submitter — see feedback.go's
-	// submitterFromSession. Never required.
+	// "account #<id>" if a valid session cookie was present, "" for an
+	// anonymous/signed-out submitter — see feedback.go's submitterID.
 	SubmittedBy string
 }
 
