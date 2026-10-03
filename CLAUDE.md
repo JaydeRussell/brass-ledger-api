@@ -239,51 +239,17 @@ stale, rather than appending to it forever.
     moved this onto its own `/my-events` route and added a left-hand nav
     drawer — see that repo's `CLAUDE.md` for the current layout; nothing
     here changed for that move.
-- **Cross-device sync for follows + recent events** — the two pieces of
-  state that used to live only in the frontend's per-browser
-  `localStorage` (see the frontend's `app/page.tsx`/`app/lib/
-  recentEvents.ts`) now persist to a signed-in account, following it
-  across devices — the actual point of having accounts, and the last
-  item on the old TODO list below:
-  - `internal/db/migrations/0003_follows_recent_events.sql` — two new
-    tables, both scoped by `user_id`: `user_follows` (one row per
-    followed team/player within one event — composite primary key
-    `user_id, event_id, kind, ref_id`) and `user_recent_events` (one row
-    per event a user has viewed, primary key `user_id, event_id`, with a
-    `(user_id, last_viewed_at DESC)` index for the common "most recent
-    first" query).
-  - `internal/user/store.go` — `Follow`/`RecentEvent` types and
-    `MaxRecentEvents = 8` (mirrors the frontend's own trim limit), plus
-    `ListFollows`/`AddFollow` (upsert, idempotent)/`RemoveFollow` and
-    `ListRecentEvents`/`RecordRecentEvent` (upserts, bumps
-    `last_viewed_at`, then trims anything past `MaxRecentEvents` in the
-    same call so the cap holds regardless of which device wrote most
-    recently).
-  - `internal/api/sync.go` — `SyncHandler`, all session-gated the
-    same way `me.go`'s routes are (`requireUser` factors out the
-    cookie-then-store-lookup check both files' routes need):
-    `GET`/`POST /api/me/events/:eventId/follows`,
-    `DELETE /api/me/events/:eventId/follows/:kind/:refId`, and
-    `GET`/`POST /api/me/recent-events`. Deliberately action-shaped (add
-    one follow, remove one follow) rather than "replace the whole list"
-    — see the doc comment on `SyncHandler` for why a
-    replace-the-whole-array approach is a bad fit for a server multiple
-    devices can hit concurrently.
-  - `internal/api/auth.go`'s `userStore` interface grew the five new
-    methods above (same pattern as `SetBcpUserID` before it).
-  - Full test coverage: `internal/api/sync_test.go` (auth gating, add/
-    list/remove idempotency, per-event isolation, recent-events ordering
-    and validation) against `fakeUserStore` (extended in
-    `internal/api/auth_test.go` with in-memory follows/recent-events
-    maps) — passing via `go test` on the stdlib-only subset this
-    environment can actually run (see "Environment quirks" below); not
-    yet exercised against a real Postgres or clicked through live.
-  - Frontend: `app/lib/follows.ts` (new) + `app/lib/recentEvents.ts`
-    (extended, not replaced — the original localStorage-only functions
-    are still there and still used for a signed-out/guest visitor) +
-    `app/page.tsx` (branches on `useCurrentUser()`'s signed-in state to
-    decide which backing store following/recent-events use). See the
-    frontend's `CLAUDE.md` for the fuller writeup.
+- **Cross-device sync for recent events and round notes** — persisted
+  to a signed-in account so they follow it across devices:
+  - `user_recent_events` (migration 0003; one row per event a user has
+    viewed, primary key `user_id, event_id`, trimmed to
+    `MaxRecentEvents = 8` on write in `internal/user/store.go`'s
+    `RecordRecentEvent`) and per-round notes.
+  - `internal/api/sync.go` — `SyncHandler`, session-gated the same way
+    `me.go`'s routes are: `GET`/`POST /api/me/recent-events` and the
+    round-note routes.
+  - Following teams/players was removed on 2026-10-02: its routes, store
+    methods and tests are gone, and migration 0018 drops `user_follows`.
 - **Stale-event reclassification for "My events"** — some organizers
   never flip BCP's own "ended" switch even once an event is clearly over,
   which used to leave it stuck in the "Ongoing"/Present bucket forever.
@@ -340,16 +306,6 @@ stale, rather than appending to it forever.
   credentials) and `make smoke` (`scripts/smoke-test.sh` — a fast
   healthz/readyz/auth/frontend check after a rebuild, before digging in
   further by hand).
-- ~~Cross-device follows/notes (the actual feature accounts unlock) — not
-  started.~~ Follows + recent events are now synced (see above); a
-  "notes" feature was never actually specced beyond that TODO-list
-  mention, so there's nothing further planned there unless the user
-  raises it again.
-- The new sync routes/migration are verified only via `go test` against
-  an in-memory fake store and `npx tsc`/`npm run lint`/`npm test` on the
-  frontend side — nobody has run this against a real Postgres or clicked
-  through a real follow/unfollow or event-revisit in the browser yet.
-  Worth a real pass before trusting it the way "my events" now is.
 - ~~No CI yet.~~ **Stale as of 2026-09-12** — GitHub Actions CI/CD has
   existed since early this session (`.github/workflows/ci.yml`): build/
   vet/test/golangci-lint/govulncheck on every push and PR, a separate

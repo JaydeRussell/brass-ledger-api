@@ -70,8 +70,8 @@ func (c *Client) fetchRoundPairingsUncached(ctx context.Context, eventID, pairin
 // FetchRoundPairings returns every pairing BCP has published for one
 // round of one event — cached and rate-limited per
 // (event, pairingType, round) triple, and reused across every different
-// shape the frontend derives from it (the full board, "my pairings" for
-// whoever's followed, and a team pairing's individual boards), so
+// shape the frontend derives from it (the full board, "Your round", and
+// a team pairing's individual boards), so
 // browsing a round costs at most one real request to BCP no matter how
 // many of those views ask for it.
 func (c *Client) FetchRoundPairings(ctx context.Context, eventID, pairingType string, round int) ([]PairingRecord, error) {

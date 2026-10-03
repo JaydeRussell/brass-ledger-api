@@ -152,11 +152,7 @@ func newFriendsTestEcho(store userStore, client *bcp.Client) *echo.Echo {
 
 // secondSignedInSessionWithUserID signs in a *different* fake account
 // than signedInSession's fixed "sub-1" — needed throughout this file to
-// exercise two-sided flows (send/accept, friend-gated events). Distinct
-// from sync_test.go's own secondSignedInSession (same "sub-2"/"Bea
-// Brooks" fake account, added independently for that file's own
-// two-account follow-count tests) since this one also needs the new
-// account's user id back, which that one's callers never did.
+// exercise two-sided flows (send/accept, friend-gated events).
 func secondSignedInSessionWithUserID(t *testing.T, store *fakeUserStore) (*http.Cookie, int64) {
 	t.Helper()
 	u, _, err := store.UpsertUserFromGoogle(context.Background(), "sub-2", "b@example.com", "Bea Brooks", "")

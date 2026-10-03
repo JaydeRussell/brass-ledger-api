@@ -200,7 +200,7 @@ func (s *Store) AreFriends(ctx context.Context, userID, otherUserID int64) (bool
 // RemoveFriend deletes the accepted friendship between userID and
 // friendUserID, in whichever direction it exists. Removing a
 // friendship that doesn't exist isn't an error — same rationale as
-// RemoveFollow/DeleteSession.
+// DeleteSession.
 func (s *Store) RemoveFriend(ctx context.Context, userID, friendUserID int64) error {
 	if _, err := s.pool.Exec(ctx, `
 		DELETE FROM friend_requests
