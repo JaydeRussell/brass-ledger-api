@@ -464,3 +464,32 @@ func TestHistoryCrawlThatFinishesSaysNothing(t *testing.T) {
 			"The cursor from the second-to-last page is being mistaken for 'there is more'.", logs.String())
 	}
 }
+
+// BCP keeps offering a nextKey after the last real page, and those pages
+// are empty. The crawl must stop at the first empty page, not follow the
+// cursor to maxHistoryPages.
+func TestFetchPlacingHistory_StopsAtFirstEmptyPage(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"data": [{"placing": 1, "event": {"id": "evt-a", "name": "A", "eventDate": "2024-01-01T00:00:00.000Z"}}], "nextKey": "cursor-1"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data": [], "nextKey": "cursor-again"}`))
+	}))
+	defer server.Close()
+	client := newTestClient(server)
+
+	entries, err := client.FetchPlacingHistory(context.Background(), "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if got := hits.Load(); got != 2 {
+		t.Errorf("BCP requests = %d, want 2 (page 1, then the empty page that ends it)", got)
+	}
+}
