@@ -341,3 +341,20 @@ func TestFetchItcRanking_StaleDurableRowIsRefetched(t *testing.T) {
 			"or a player's own new result never shows up", *calls, itcRankingRefetchInterval)
 	}
 }
+
+// With no flagship found, a transient lookup failure is an error (so the
+// caller says "try again"), while a league that 404s just doesn't match.
+func TestFetchCurrentItcLeagueIDForEvent_FailuresWithNoMatch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/leagues/flaky", jsonHandler(http.StatusBadGateway, `{}`))
+	server := httptest.NewServer(mux) // "gone" has no handler, so it 404s
+	defer server.Close()
+	client := newTestClient(server)
+
+	if got, err := client.FetchCurrentItcLeagueIDForEvent(context.Background(), []string{"flaky"}); err == nil {
+		t.Errorf("transient failure: got %q, nil; want an error", got)
+	}
+	if got, err := client.FetchCurrentItcLeagueIDForEvent(context.Background(), []string{"gone"}); err != nil || got != "" {
+		t.Errorf("gone league: got %q, %v; want \"\", nil", got, err)
+	}
+}
