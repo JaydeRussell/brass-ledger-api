@@ -234,9 +234,10 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	// wildcard (`AllowOrigins: []string{"*"}` and AllowCredentials can't
 	// be used together — browsers reject that combination outright).
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins:     []string{cfg.FrontendBaseURL},
+		AllowOrigins:     []string{strings.TrimSuffix(cfg.FrontendBaseURL, "/")},
 		AllowCredentials: true,
 	}))
+	e.Use(api.RejectForeignOrigin(cfg.FrontendBaseURL))
 
 	e.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
