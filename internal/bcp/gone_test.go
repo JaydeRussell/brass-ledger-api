@@ -171,10 +171,15 @@ func TestCache_Gone(t *testing.T) {
 			// The escape hatch that makes the backoff acceptable: a
 			// person who just watched something fail and pressed the
 			// refresh button gets a real request, not a replayed error.
-			// Same rule as everywhere else here — automatic traffic is
-			// rate-limited, an explicit user action never is.
+			// It still waits out the same short manual-refresh floor as a
+			// cached key, so repeated refreshes can't hammer BCP mid-outage.
 			name: "an explicit refresh bypasses the failure backoff",
 			run: func(t *testing.T) {
+				// Past the manual-refresh floor, which throttles failing
+				// keys the same as cached ones.
+				orig := minManualInvalidateInterval
+				minManualInvalidateInterval = 0
+				defer func() { minManualInvalidateInterval = orig }()
 				var calls int32
 				c := NewCache(func(ctx context.Context, key string) (string, error) {
 					n := atomic.AddInt32(&calls, 1)
@@ -302,6 +307,11 @@ func TestCache_Gone(t *testing.T) {
 		{
 			name: "Invalidate clears the marker",
 			run: func(t *testing.T) {
+				// Past the manual-refresh floor, which throttles failing
+				// keys the same as cached ones.
+				orig := minManualInvalidateInterval
+				minManualInvalidateInterval = 0
+				defer func() { minManualInvalidateInterval = orig }()
 				var calls int32
 				c := NewCache(func(ctx context.Context, key string) (string, error) {
 					atomic.AddInt32(&calls, 1)
@@ -364,5 +374,20 @@ func TestCache_Gone(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t) })
+	}
+}
+
+func TestCache_GoneMarkersAreBounded(t *testing.T) {
+	c := NewCache(func(ctx context.Context, key string) (string, error) {
+		return "", &StatusError{StatusCode: http.StatusNotFound, URL: key}
+	})
+	for i := 0; i < maxCacheEntries+100; i++ {
+		_, _ = c.Get(context.Background(), fmt.Sprintf("missing-%d", i))
+	}
+	c.mu.Lock()
+	n := len(c.gone)
+	c.mu.Unlock()
+	if n > maxCacheEntries {
+		t.Errorf("gone markers = %d, want at most %d", n, maxCacheEntries)
 	}
 }

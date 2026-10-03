@@ -41,7 +41,7 @@
 #      VALUES ('latency-probe-sub','latency-probe@example.com','Latency Probe','admin','approved')
 #      ON CONFLICT (google_sub) DO UPDATE SET status='approved', role='admin';
 #      INSERT INTO sessions (token, user_id, expires_at)
-#      SELECT 'latency-probe-token', id, now() + interval '2 hours'
+#      SELECT encode(sha256('latency-probe-token'), 'hex'), id, now() + interval '2 hours'
 #      FROM users WHERE google_sub='latency-probe-sub'
 #      ON CONFLICT (token) DO UPDATE SET expires_at = now() + interval '2 hours';"
 #

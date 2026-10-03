@@ -565,3 +565,24 @@ func TestCache_WithoutStaleWhileRevalidate_StillBlocks(t *testing.T) {
 			"stale-while-revalidate is opt-in and pairings rely on not having it", got)
 	}
 }
+
+// A key BCP is failing on has a backoff marker and no entry; an
+// immediate Invalidate (a user's refresh) must not let the next Get
+// through to the fetch.
+func TestCache_InvalidateThrottlesFailingKeys(t *testing.T) {
+	var calls int32
+	c := NewCache(func(ctx context.Context, key string) (int, error) {
+		atomic.AddInt32(&calls, 1)
+		return 0, errors.New("upstream down")
+	})
+	if _, err := c.Get(context.Background(), "k1"); err == nil {
+		t.Fatal("first Get: want error")
+	}
+	if c.Invalidate("k1") {
+		t.Error("Invalidate right after a failure reported clearing; want throttled")
+	}
+	_, _ = c.Get(context.Background(), "k1")
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("fetch calls = %d, want 1 (backoff should still hold)", got)
+	}
+}

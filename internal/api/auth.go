@@ -14,6 +14,11 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
+// signInFailedMessage is all a failed sign-in tells the browser; the
+// underlying error (which can carry database or Google response details)
+// goes to the log instead. Logs identify accounts by id, never by email.
+const signInFailedMessage = "Sign-in failed. Please try again."
+
 const (
 	sessionCookieName  = "session"
 	stateCookieName    = "oauth_state"
@@ -148,7 +153,7 @@ func (h *AuthHandler) Register(e *echo.Echo) {
 func (h *AuthHandler) Login(c echo.Context) error {
 	state, err := auth.NewState()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	setCookie(c, stateCookieName, state, stateCookieMaxAge, h.cookieSecure)
 
@@ -199,18 +204,18 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	accessToken, err := h.google.Exchange(c.Request().Context(), code)
 	if err != nil {
 		log.Printf("google callback: token exchange failed: %v", err)
-		return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
+		return c.String(http.StatusBadGateway, signInFailedMessage)
 	}
 	info, err := h.google.FetchUserInfo(c.Request().Context(), accessToken)
 	if err != nil {
 		log.Printf("google callback: fetching user info failed: %v", err)
-		return c.String(http.StatusBadGateway, "Google sign-in failed: "+err.Error())
+		return c.String(http.StatusBadGateway, signInFailedMessage)
 	}
 
 	u, inserted, err := h.store.UpsertUserFromGoogle(c.Request().Context(), info.Sub, info.Email, info.Name, info.Picture)
 	if err != nil {
-		log.Printf("google callback: upserting user %s failed: %v", info.Email, err)
-		return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
+		log.Printf("google callback: upserting user failed: %v", err)
+		return c.String(http.StatusInternalServerError, signInFailedMessage)
 	}
 
 	// ADMIN_EMAILS bootstrap — applied on every sign-in, not just the
@@ -219,11 +224,11 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	// comment for why this always wins rather than only applying once.
 	if isAdminEmail(u.Email, h.adminEmails) && (u.Role != user.RoleAdmin || u.Status != user.StatusApproved) {
 		if err := h.store.SetRole(c.Request().Context(), u.ID, user.RoleAdmin); err != nil {
-			log.Printf("google callback: promoting admin %s failed: %v", u.Email, err)
+			log.Printf("google callback: promoting admin user %d failed: %v", u.ID, err)
 		} else if err := h.store.SetStatus(c.Request().Context(), u.ID, user.StatusApproved); err != nil {
-			log.Printf("google callback: approving admin %s failed: %v", u.Email, err)
+			log.Printf("google callback: approving admin user %d failed: %v", u.ID, err)
 		} else {
-			log.Printf("google callback: %s matched ADMIN_EMAILS, promoted to admin+approved", u.Email)
+			log.Printf("google callback: user %d matched ADMIN_EMAILS, promoted to admin+approved", u.ID)
 			u.Role, u.Status = user.RoleAdmin, user.StatusApproved
 		}
 	}
@@ -238,17 +243,17 @@ func (h *AuthHandler) Callback(c echo.Context) error {
 	// isn't configured (see internal/notify.ResendNotifier).
 	if inserted && u.Status == user.StatusPending {
 		if err := h.notifier.NotifyNewSignup(c.Request().Context(), u); err != nil {
-			log.Printf("google callback: notifying admins of new pending signup %s failed (continuing): %v", u.Email, err)
+			log.Printf("google callback: notifying admins of new pending signup %d failed (continuing): %v", u.ID, err)
 		}
 	}
 
 	sessionToken, err := h.store.CreateSession(c.Request().Context(), u.ID)
 	if err != nil {
 		log.Printf("google callback: creating session for user %d failed: %v", u.ID, err)
-		return c.String(http.StatusInternalServerError, "sign-in failed: "+err.Error())
+		return c.String(http.StatusInternalServerError, signInFailedMessage)
 	}
 
-	log.Printf("google callback: signed in user %d (%s)", u.ID, u.Email)
+	log.Printf("google callback: signed in user %d", u.ID)
 	setSessionCookie(c, sessionToken, user.SessionDuration, h.cookieSecure, h.sessionCookieDomain)
 
 	redirectTo := h.frontendURL

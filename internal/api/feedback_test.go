@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,10 +75,8 @@ func (f *fakeFeedbackStore) SetStatus(_ context.Context, id int64, status string
 			return nil
 		}
 	}
-	return errNotFound
+	return feedback.ErrNotFound
 }
-
-var errNotFound = errors.New("feedback not found")
 
 func (f *fakeFeedbackStore) CountOpen(_ context.Context) (int, error) {
 	f.mu.Lock()

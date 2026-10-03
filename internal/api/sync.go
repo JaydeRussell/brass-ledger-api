@@ -35,6 +35,13 @@ type setRoundNoteRequest struct {
 	Note string `json:"note"`
 }
 
+// Upper bounds on stored user text, in bytes. A round note is a few
+// lines of reminders; an event name comes from BCP and is short.
+const (
+	roundNoteMaxLen       = 4000
+	recentEventNameMaxLen = 300
+)
+
 // SyncHandler wires up cross-device sync for the recently-viewed-events
 // list (app/lib/recentEvents.ts) and per-round notes. Every route here is
 // session-gated the same way MeHandler's routes are — a signed-out
@@ -65,7 +72,7 @@ func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
 
 	events, err := h.store.ListRecentEvents(c.Request().Context(), u.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	resp := make([]recentEventResponse, len(events))
 	for i, ev := range events {
@@ -95,8 +102,11 @@ func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "eventId is required"})
 	}
 
+	if len(req.EventName) > recentEventNameMaxLen {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "event name too long"})
+	}
 	if err := h.store.RecordRecentEvent(c.Request().Context(), u.ID, eventID, req.EventName, req.TeamEvent); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -126,7 +136,7 @@ func (h *SyncHandler) GetRoundNote(c echo.Context) error {
 
 	note, err := h.store.GetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.JSON(http.StatusOK, roundNoteResponse{Note: note})
 }
@@ -149,8 +159,11 @@ func (h *SyncHandler) SetRoundNote(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 	}
 
+	if len(req.Note) > roundNoteMaxLen {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "That note is too long. Keep it under 4,000 characters."})
+	}
 	if err := h.store.SetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round, req.Note); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

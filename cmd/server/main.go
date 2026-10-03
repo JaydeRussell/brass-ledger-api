@@ -213,7 +213,23 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 			return err
 		},
 	}))
+	// Client IP for the per-IP rate limiters and the access log. Every
+	// request reaches the container through Cloudflare, which sets
+	// CF-Connecting-IP from the real connection and overwrites any value a
+	// client sends. Echo's default instead trusts the first
+	// X-Forwarded-For entry, which a client controls. Without the header
+	// (local development) the direct peer address is used.
+	direct := echo.ExtractIPDirect()
+	e.IPExtractor = func(r *http.Request) string {
+		if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+			return ip
+		}
+		return direct(r)
+	}
 	e.Use(middleware.Recover())
+	// No request this API accepts is anywhere near this size; the cap stops
+	// an oversized body being read into memory before handlers validate it.
+	e.Use(middleware.BodyLimit("64K"))
 	// Scoped to the actual frontend origin, with credentials allowed —
 	// required for the session cookie Google sign-in sets to actually
 	// reach this API from the browser at all: a cookie's "same-site"
@@ -236,10 +252,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
 		defer cancel()
 		if err := pool.Ping(ctx); err != nil {
-			return c.JSON(http.StatusServiceUnavailable, map[string]string{
-				"status": "unavailable",
-				"error":  err.Error(),
-			})
+			// Public route: the reason goes to the log, not the response.
+			log.Printf("readyz: database ping failed: %v", err)
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})

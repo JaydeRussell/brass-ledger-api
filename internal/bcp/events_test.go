@@ -2,10 +2,12 @@ package bcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNonEmpty(t *testing.T) {
@@ -294,5 +296,50 @@ func TestInvalidateEventInfo(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("calls = %d after an immediate Invalidate, want 1 (should have been throttled)", calls)
+	}
+}
+
+// EventInfo is stored in the durable cache as JSON, so every field the
+// backend relies on after a cache read has to survive a round trip.
+func TestEventInfoLeagueIDsSurviveJSONRoundTrip(t *testing.T) {
+	in := EventInfo{Name: "RMO", LeagueIDs: []string{"BYaaUfKum7z0", "hobby1"}}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out EventInfo
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.LeagueIDs) != 2 || out.LeagueIDs[0] != "BYaaUfKum7z0" {
+		t.Fatalf("LeagueIDs after round trip = %v", out.LeagueIDs)
+	}
+}
+
+// An event cached without leagues (a durable row written before LeagueIDs
+// was serialized) is asked of BCP once, then answered from cache.
+func TestFetchEventLeagueIDsHealsLeaguelessCacheEntry(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"evt-1","name":"RMO","status":{"ended":true},"leagues":[{"id":"lg-1","name":"WGR"}]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(server)
+	client.eventInfo.Put("evt-1", EventInfo{ID: "evt-1", Name: "RMO", Ended: true}, time.Now())
+
+	ids, err := client.FetchEventLeagueIDs(context.Background(), "evt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "lg-1" {
+		t.Fatalf("league ids = %v, want [lg-1]", ids)
+	}
+	if _, err := client.FetchEventLeagueIDs(context.Background(), "evt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("BCP requests = %d, want 1", got)
 	}
 }

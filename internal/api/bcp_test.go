@@ -206,6 +206,9 @@ func TestBCPHandler_Refresh(t *testing.T) {
 		atomic.AddInt32(&placingsCalls, 1)
 		_, _ = w.Write([]byte(`{"active": []}`))
 	})
+	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Test"}`))
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := bcp.NewClientWithBaseURL(server.URL)
@@ -225,6 +228,15 @@ func TestBCPHandler_Refresh(t *testing.T) {
 	doBCPRequest(e, http.MethodGet, "/api/events/evt-1/placings?team=false&refresh=true")
 	if placingsCalls != 1 {
 		t.Errorf("placings upstream calls = %d, want 1 (immediate refresh should be throttled)", placingsCalls)
+	}
+
+	// Event info and players accept ?refresh=true too, and answer it
+	// no-store so the browser doesn't cache a forced check.
+	for _, path := range []string{"/api/events/evt-1?refresh=true", "/api/events/evt-1/players?refresh=true"} {
+		rec := doBCPRequest(e, http.MethodGet, path)
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s: Cache-Control = %q, want no-store", path, got)
+		}
 	}
 }
 
@@ -352,12 +364,12 @@ func TestBCPHandler_ItcRankingNotFound(t *testing.T) {
 // upstream error becomes a 502 with its message under an "error" key.
 func TestBcpError(t *testing.T) {
 	cases := []struct {
-		name    string
-		errText string
+		name string
+		err  error
+		want string
 	}{
-		{"simple message", "boom"},
-		{"message with quotes", `upstream said "no"`},
-		{"empty message", ""},
+		{"upstream failure", errorString(`BCP request to https://example/v1/placings?userId[]=u1 failed: HTTP 500`), bcpUnavailableMessage},
+		{"not found", &bcp.StatusError{StatusCode: http.StatusNotFound, URL: "https://example/v1/events/x"}, bcpGoneMessage},
 	}
 
 	for _, tc := range cases {
@@ -367,7 +379,7 @@ func TestBcpError(t *testing.T) {
 			rec := httptest.NewRecorder()
 			c := e.NewContext(req, rec)
 
-			if err := bcpError(c, errorString(tc.errText)); err != nil {
+			if err := bcpError(c, tc.err); err != nil {
 				t.Fatalf("bcpError returned an error itself: %v", err)
 			}
 			if rec.Code != http.StatusBadGateway {
@@ -377,8 +389,11 @@ func TestBcpError(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("response body isn't the expected {error} shape: %v", err)
 			}
-			if body["error"] != tc.errText {
-				t.Errorf(`body["error"] = %q, want %q`, body["error"], tc.errText)
+			if body["error"] != tc.want {
+				t.Errorf(`body["error"] = %q, want %q`, body["error"], tc.want)
+			}
+			if strings.Contains(rec.Body.String(), "userId") || strings.Contains(rec.Body.String(), "https://") {
+				t.Errorf("response leaks the upstream URL: %s", rec.Body.String())
 			}
 		})
 	}

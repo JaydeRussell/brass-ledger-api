@@ -170,7 +170,7 @@ func (h *MeHandler) SetBcpProfile(c echo.Context) error {
 	bcpUserID := strings.TrimSpace(req.BcpUserID)
 
 	if err := h.store.SetBcpUserID(c.Request().Context(), u.ID, bcpUserID); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{"bcpUserId": bcpUserID})
@@ -200,7 +200,7 @@ func (h *MeHandler) SetAccentTheme(c echo.Context) error {
 	}
 
 	if err := h.store.SetAccentTheme(c.Request().Context(), u.ID, req.AccentTheme); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -232,7 +232,7 @@ func (h *MeHandler) SetDossierVisibility(c echo.Context) error {
 	}
 
 	if err := h.store.SetDossierPublic(c.Request().Context(), u.ID, req.Public); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 
 	return c.NoContent(http.StatusNoContent)

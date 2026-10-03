@@ -138,6 +138,15 @@ func (c *Client) fetchPlayerEventHistoryUncached(ctx context.Context, bcpUserID 
 				Dropped:   r.Dropped,
 			})
 		}
+		// BCP keeps handing out a nextKey after the last real page, and the
+		// pages it leads to are empty: measured 2026-10-03, a 88-record
+		// history came back whole on page 1, then nine empty pages followed
+		// until maxHistoryPages stopped the crawl and logged a false
+		// "truncated". An empty page is the end.
+		if len(body.Data) == 0 {
+			nextKey = ""
+			break
+		}
 		next, err := decodeNextKey(body.NextKey)
 		if err != nil {
 			return nil, fmt.Errorf("decoding nextKey from %s: %w", rawURL, err)
@@ -318,6 +327,15 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 				Team:         r.Team.Name,
 				LeagueID:     r.LeagueID,
 			})
+		}
+		// BCP keeps handing out a nextKey after the last real page, and the
+		// pages it leads to are empty: measured 2026-10-03, a 88-record
+		// history came back whole on page 1, then nine empty pages followed
+		// until maxHistoryPages stopped the crawl and logged a false
+		// "truncated". An empty page is the end.
+		if len(body.Data) == 0 {
+			nextKey = ""
+			break
 		}
 		next, err := decodeNextKey(body.NextKey)
 		if err != nil {

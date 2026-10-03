@@ -350,6 +350,12 @@ func TestAdminHandler_SetRole(t *testing.T) {
 	if rec := doJSONRequest(e, http.MethodPost, selfDemotePath, `{"role":"user"}`, []*http.Cookie{adminCookie}); rec.Code != http.StatusBadRequest {
 		t.Errorf("self-demote: status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
+
+	// Nor reject it.
+	selfRejectPath := fmt.Sprintf("/api/admin/users/%d/reject", adminID)
+	if rec := doRequest(e, http.MethodPost, selfRejectPath, []*http.Cookie{adminCookie}); rec.Code != http.StatusBadRequest {
+		t.Errorf("self-reject: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
 }
 
 // mustSessionFor issues a fresh session for an existing fake user id, so
@@ -420,6 +426,10 @@ func TestAdminHandler_ListFeedbackAndResolve(t *testing.T) {
 	var countResp map[string]int
 	if err := json.Unmarshal(countRec.Body.Bytes(), &countResp); err != nil || countResp["count"] != 1 {
 		t.Fatalf("open-count = %v (err %v), want {\"count\":1}", countResp, err)
+	}
+
+	if rec := doRequest(e, http.MethodPost, "/api/admin/feedback/999999/resolve", []*http.Cookie{adminCookie}); rec.Code != http.StatusNotFound {
+		t.Errorf("resolve missing id: status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 
 	resolvePath := fmt.Sprintf("/api/admin/feedback/%d/resolve", created.ID)

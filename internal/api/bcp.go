@@ -48,7 +48,11 @@ func (h *BCPHandler) Register(e *echo.Echo, requireApproved, requireSession echo
 }
 
 // EventInfo is GET /api/events/:id.
+// ?refresh=true forces a real BCP check, same convention as Pairings.
 func (h *BCPHandler) EventInfo(c echo.Context) error {
+	if c.QueryParam("refresh") == "true" {
+		h.client.InvalidateEventInfo(c.Param("id"))
+	}
 	info, err := h.client.FetchEventInfo(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return bcpError(c, err)
@@ -59,8 +63,12 @@ func (h *BCPHandler) EventInfo(c echo.Context) error {
 	return c.JSON(http.StatusOK, info)
 }
 
-// Players is GET /api/events/:id/players.
+// Players is GET /api/events/:id/players. ?refresh=true forces a real
+// BCP check, same convention as Pairings.
 func (h *BCPHandler) Players(c echo.Context) error {
+	if c.QueryParam("refresh") == "true" {
+		h.client.InvalidatePlayers(c.Param("id"))
+	}
 	players, err := h.client.FetchPlayers(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return bcpError(c, err)
@@ -230,13 +238,14 @@ func (h *BCPHandler) Placings(c echo.Context) error {
 // leagues (EventInfo.LeagueIDs), not a game-system-wide search — see
 // FetchCurrentItcLeagueIDForEvent's doc comment for why that search
 // stopped being reliable. Costs no extra BCP request beyond the
-// already-cached FetchEventInfo lookup every event page already makes.
+// already-cached FetchEventInfo lookup every event page already makes
+// (see FetchEventLeagueIDs for the one exception).
 func (h *BCPHandler) ItcLeagueID(c echo.Context) error {
-	info, err := h.client.FetchEventInfo(c.Request().Context(), c.Param("eventId"))
+	leagueIDs, err := h.client.FetchEventLeagueIDs(c.Request().Context(), c.Param("eventId"))
 	if err != nil {
 		return bcpError(c, err)
 	}
-	leagueID, err := h.client.FetchCurrentItcLeagueIDForEvent(c.Request().Context(), info.LeagueIDs)
+	leagueID, err := h.client.FetchCurrentItcLeagueIDForEvent(c.Request().Context(), leagueIDs)
 	if err != nil {
 		return bcpError(c, err)
 	}
@@ -275,6 +284,3 @@ func (h *BCPHandler) ItcRanking(c echo.Context) error {
 // bcpError maps an upstream BCP failure to a 502 (this service is a
 // working proxy, but the thing it depends on failed) rather than a 500
 // (which would suggest a bug in this service itself).
-func bcpError(c echo.Context, err error) error {
-	return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
-}
