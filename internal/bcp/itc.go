@@ -36,20 +36,25 @@ import (
 // !hobby) — e.g. a local RTT scored under only a store/hobby league.
 // Each lookup is a small, already-cached FetchLeagueInfo call; one
 // failed lookup doesn't abort the search, since a transient error on
-// one of an event's leagues shouldn't hide a working one. Failures are
-// skipped rather than returned, so the error is always nil and "" can
-// also mean every lookup failed.
+// one of an event's leagues shouldn't hide a working one. If none
+// matched and a lookup failed, that failure is returned, so a transient
+// error reads as "try again" rather than "no ITC league".
 func (c *Client) FetchCurrentItcLeagueIDForEvent(ctx context.Context, leagueIDs []string) (string, error) {
+	var lookupErr error
 	for _, id := range leagueIDs {
 		info, err := c.FetchLeagueInfo(ctx, id)
-		if err != nil || info == nil {
+		if err != nil {
+			// A league BCP says doesn't exist simply isn't the flagship.
+			if !IsGone(err) {
+				lookupErr = err
+			}
 			continue
 		}
-		if info.GwItc && !info.Hobby {
+		if info != nil && info.GwItc && !info.Hobby {
 			return id, nil
 		}
 	}
-	return "", nil
+	return "", lookupErr
 }
 
 type bcpLeagueInfoResponse struct {
