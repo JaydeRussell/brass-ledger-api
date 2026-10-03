@@ -153,8 +153,9 @@ func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserI
 	durableKey := itcRankingDurableKey(leagueID, bcpUserID)
 	if c.durable != nil {
 		var stored itcRankingCacheEntry
-		found, _, err := c.durable.GetFresh(ctx, durableKey, CacheSchemaVersion, itcRankingRefetchInterval, &stored)
+		found, cachedAt, err := c.durable.GetFresh(ctx, durableKey, CacheSchemaVersion, itcRankingRefetchInterval, &stored)
 		if err == nil && found {
+			noteStoredAt(ctx, cachedAt)
 			return stored.Ranking, nil
 		}
 	}

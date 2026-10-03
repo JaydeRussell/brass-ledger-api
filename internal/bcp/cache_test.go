@@ -616,3 +616,24 @@ func TestCache_InvalidateThrottlesFailingKeys(t *testing.T) {
 		t.Errorf("fetch calls = %d, want 1 (backoff should still hold)", got)
 	}
 }
+
+// A fetch answered from a stored row reports the row's age, and the entry
+// expires on that age instead of starting a full TTL from now.
+func TestCache_NoteStoredAtShortensExpiry(t *testing.T) {
+	var calls atomic.Int32
+	c := NewCacheWithTTL(func(ctx context.Context, _ string) (string, error) {
+		if calls.Add(1) == 1 {
+			noteStoredAt(ctx, time.Now().Add(-45*time.Millisecond))
+			return "stored", nil
+		}
+		return "fresh", nil
+	}, 50*time.Millisecond)
+
+	if got, _ := c.Get(context.Background(), "k"); got != "stored" {
+		t.Fatalf("first Get = %q, want stored", got)
+	}
+	time.Sleep(15 * time.Millisecond) // past the row's real age, well inside a fresh TTL
+	if got, _ := c.Get(context.Background(), "k"); got != "fresh" {
+		t.Errorf("Get after the stored row expired = %q, want fresh", got)
+	}
+}

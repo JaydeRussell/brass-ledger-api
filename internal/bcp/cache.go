@@ -309,6 +309,19 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, error) {
 	return c.runFetch(ctx, key, inf)
 }
 
+type storedAtKey struct{}
+
+type storedAtHolder struct{ at time.Time }
+
+// noteStoredAt lets a fetch function that answered from the durable cache
+// report when that row was stored, so the in-memory entry expires on the
+// row's real age rather than getting a fresh TTL on top of it.
+func noteStoredAt(ctx context.Context, at time.Time) {
+	if h, ok := ctx.Value(storedAtKey{}).(*storedAtHolder); ok {
+		h.at = at
+	}
+}
+
 // runFetch performs the real fetch for key, stores the outcome and
 // releases everyone waiting on inf. Shared by the blocking path in Get
 // and by a background revalidation, which differ only in whether anyone
@@ -334,13 +347,19 @@ func (c *Cache[T]) runFetch(ctx context.Context, key string, inf *inflight[T]) (
 	// a large slowdown before it breaks something that would have
 	// worked.
 	fetchCtx, cancelFetch := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
-	data, err := c.fetch(fetchCtx, key)
+	storedAt := &storedAtHolder{}
+	data, err := c.fetch(context.WithValue(fetchCtx, storedAtKey{}, storedAt), key)
 	cancelFetch()
+
+	fetchedAt := time.Now()
+	if !storedAt.at.IsZero() {
+		fetchedAt = storedAt.at
+	}
 
 	c.mu.Lock()
 	switch {
 	case err == nil:
-		c.entries[key] = cacheEntry[T]{data: data, fetchedAt: time.Now(), ttl: c.ttlOf(data)}
+		c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt, ttl: c.ttlOf(data)}
 		// A key that resolves is no longer gone — covers an event that
 		// 404s while an organizer is mid-edit and comes back.
 		delete(c.gone, key)

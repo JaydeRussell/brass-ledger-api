@@ -126,6 +126,9 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 		var cached EventInfo
 		found, cachedAt, err := c.durable.GetFresh(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, 0, &cached)
 		if err == nil && found && (cached.Ended || time.Since(cachedAt) < eventInfoTTL(cached)) {
+			if !cached.Ended {
+				noteStoredAt(ctx, cachedAt)
+			}
 			return cached, nil
 		}
 	}
