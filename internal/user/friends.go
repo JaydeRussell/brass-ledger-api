@@ -10,14 +10,14 @@ import (
 )
 
 // FriendRequestPending/Accepted/Declined are FriendRequest.Status's three
-// valid values (also enforced by migration 0014's CHECK constraint).
+// valid values (also enforced by a CHECK constraint on the column).
 const (
 	FriendRequestPending  = "pending"
 	FriendRequestAccepted = "accepted"
 	FriendRequestDeclined = "declined"
 )
 
-// FriendRequest is one row of migration 0014's friend_requests table,
+// FriendRequest is one row of the friend_requests table,
 // with the other side's display name joined in — every real caller
 // wants a name to show, not just an id.
 type FriendRequest struct {
@@ -40,8 +40,9 @@ type Friend struct {
 }
 
 // ErrFriendRequestAlreadyExists is returned by SendFriendRequest when a
-// pending or already-accepted request exists between these two accounts
-// in either direction — see migration 0014's partial unique index.
+// pending or already-accepted request already exists from the same
+// requester to the same recipient — the partial unique index on
+// (requester_id, recipient_id) is per direction.
 var ErrFriendRequestAlreadyExists = errors.New("a friend request already exists between these accounts")
 
 // ErrFriendRequestNotFound is returned by AcceptFriendRequest/
@@ -53,14 +54,15 @@ var ErrFriendRequestNotFound = errors.New("friend request not found")
 
 // SendFriendRequest creates a pending request from requesterID to
 // recipientID. Returns ErrFriendRequestAlreadyExists if a pending or
-// accepted request already exists between them in either direction —
-// migration 0014's own CHECK constraint separately rejects
+// accepted request from requesterID to recipientID already exists; a
+// request in the opposite direction doesn't block it. A table CHECK
+// constraint separately rejects
 // requesterID == recipientID (an accidental self-friend), which the
 // caller (internal/api/friends.go) already guards against before this
 // is ever reached, so that case isn't specially handled here.
 //
-// Known gap, accepted rather than engineered around for now: if both
-// accounts send each other a request before either accepts, both rows
+// Known gap, accepted rather than engineered around: if both accounts
+// send each other a request before either accepts, both rows
 // exist as two independent pending requests (the partial unique index
 // only blocks a *second* request in the *same* direction). Accepting
 // either one still creates the friendship correctly; the other simply

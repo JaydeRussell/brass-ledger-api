@@ -22,13 +22,13 @@ type dossierResponse struct {
 	playerStatsResponse
 }
 
-// DossierHandler serves a public, opt-out player dossier page: whatever
+// DossierHandler serves a public, opt-in player dossier page: whatever
 // GET /api/players/:bcpUserId/stats already computes for a signed-in
 // caller, made reachable by anyone (signed in or not) for an account
-// that hasn't turned it off — see migration 0014 and
-// User.DossierPublic's doc comment. A thin wrapper around statsForBcpUser
-// (stats.go) plus one store lookup; no BCP data here that a signed-in
-// user couldn't already see per-player via the existing stats route.
+// that has turned it on — see User.DossierPublic's doc comment. A thin
+// wrapper around statsForBcpUser (stats.go) plus one store lookup; no
+// BCP data here that a signed-in user couldn't already see per-player
+// via the stats route.
 type DossierHandler struct {
 	store  userStore
 	client bcpClient
@@ -50,11 +50,10 @@ func (h *DossierHandler) Register(e *echo.Echo, rateLimit echo.MiddlewareFunc) {
 }
 
 // Dossier is GET /api/players/:bcpUserId/dossier. Returns 404 for a
-// bcpUserId with no linked account, an unapproved account, or one that's
-// turned dossierPublic off — deliberately the same 404 for all three
-// rather than distinguishing "doesn't exist" from "exists but private",
-// so a visitor can't use this route to enumerate who has or hasn't opted
-// out.
+// bcpUserId with no linked account, an unapproved account, or one with
+// dossierPublic off — deliberately the same 404 for all three rather
+// than distinguishing "doesn't exist" from "exists but private", so a
+// visitor can't use this route to enumerate who has or hasn't opted in.
 func (h *DossierHandler) Dossier(c echo.Context) error {
 	bcpUserID := c.Param("bcpUserId")
 	if bcpUserID == "" {

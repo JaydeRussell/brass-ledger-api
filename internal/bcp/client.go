@@ -3,9 +3,12 @@ package bcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"sync"
 	"time"
 
@@ -278,6 +281,7 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 }
 
 func (c *Client) get(ctx context.Context, rawURL string, out any) error {
+	logURL := redactUserIDs(rawURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
@@ -291,7 +295,11 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	started := time.Now()
 	res, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("requesting %s: %w", rawURL, err)
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return fmt.Errorf("requesting %s: %w", logURL, err)
 	}
 	defer res.Body.Close()
 	// Recorded once the status is known, so a revalidation is never
@@ -311,7 +319,7 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 			// BCP's answer, we just no longer have what it refers to —
 			// so drop the validator and let the next call fetch in full.
 			c.conditional.forget(rawURL)
-			return fmt.Errorf("BCP answered 304 for %s but the stored response is gone", rawURL)
+			return fmt.Errorf("BCP answered 304 for %s but the stored response is gone", logURL)
 		}
 		if out == nil {
 			return nil
@@ -320,13 +328,13 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 			// A stored body that won't decode would answer every future
 			// 304 for this URL the same way. Drop it.
 			c.conditional.forget(rawURL)
-			return fmt.Errorf("decoding stored response for %s: %w", rawURL, err)
+			return fmt.Errorf("decoding stored response for %s: %w", logURL, err)
 		}
 		return nil
 	}
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return &StatusError{StatusCode: res.StatusCode, URL: rawURL}
+		return &StatusError{StatusCode: res.StatusCode, URL: logURL}
 	}
 	c.fetchTimings.Record(elapsed)
 
@@ -335,16 +343,24 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	// documents in the kilobytes, not downloads.
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		return fmt.Errorf("reading response from %s: %w", rawURL, err)
+		return fmt.Errorf("reading response from %s: %w", logURL, err)
 	}
 
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
-			return fmt.Errorf("decoding response from %s: %w", rawURL, err)
+			return fmt.Errorf("decoding response from %s: %w", logURL, err)
 		}
 	}
 	// Stored only after it has decoded cleanly, so a malformed response
 	// is never handed back later as if it were valid.
 	c.conditional.remember(rawURL, res.Header.Get("ETag"), body)
 	return nil
+}
+
+var userIDParam = regexp.MustCompile(`(userId(?:\[\]|%5B%5D)?=)[^&]*`)
+
+// redactUserIDs blanks BCP user ids in a request URL before it goes into
+// an error message, since those messages end up in the logs.
+func redactUserIDs(rawURL string) string {
+	return userIDParam.ReplaceAllString(rawURL, "${1}redacted")
 }

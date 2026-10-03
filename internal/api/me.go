@@ -191,12 +191,11 @@ type dossierVisibilityRequest struct {
 }
 
 // SetDossierVisibility is POST /api/me/dossier-visibility: turns the
-// signed-in account's public player dossier (migration 0014, see
-// dossier.go) on or off. Deliberately requireUser, not
-// requireApprovedUser — same reasoning as SetAccentTheme above: a
-// personal privacy preference, not BCP data access, so a pending account
-// isn't blocked from turning this off before an admin's even looked at
-// them. (GET /api/players/:bcpUserId/dossier itself additionally
+// signed-in account's public player dossier (see dossier.go) on or off;
+// it starts off. Deliberately requireUser, not requireApprovedUser —
+// same reasoning as SetAccentTheme above: a personal privacy preference,
+// not BCP data access, so a pending account can set it before an admin
+// has looked at them. (GET /api/players/:bcpUserId/dossier itself additionally
 // requires the account be approved before showing anything, regardless
 // of this flag — see dossier.go.)
 func (h *MeHandler) SetDossierVisibility(c echo.Context) error {

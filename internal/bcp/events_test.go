@@ -150,7 +150,7 @@ func TestFetchEventInfo(t *testing.T) {
 				GameSystem: "Warhammer 40,000", GameSystemID: "gs-1",
 				StartDate: "2026-01-01", EndDate: "2026-01-02",
 				Location: "Somewhere, USA", Organizer: "Jane TO",
-				PlayerCount: new(64), Circuits: []string{"ITC"},
+				PlayerCount: new(64), Circuits: []string{"ITC"}, LeagueIDs: []string{},
 			},
 		},
 		{
@@ -165,7 +165,7 @@ func TestFetchEventInfo(t *testing.T) {
 			name:       "a stray top-level teamEvent (the v1 shape) is ignored — only format.teamEvent counts",
 			respStatus: http.StatusOK,
 			respBody:   `{"id": "evt-3", "name": "Ignore Top-Level", "teamEvent": true, "format": {"teamEvent": false}}`,
-			want:       EventInfo{ID: "evt-3", Name: "Ignore Top-Level", TeamEvent: false, Circuits: []string{}},
+			want:       EventInfo{ID: "evt-3", Name: "Ignore Top-Level", TeamEvent: false, Circuits: []string{}, LeagueIDs: []string{}},
 		},
 		{
 			name:       "falls back to the event owner when no Tournament Organizer role is present",
@@ -173,14 +173,15 @@ func TestFetchEventInfo(t *testing.T) {
 			respBody:   `{"id": "evt-2", "name": "Local RTT", "owner": {"firstName": "Owner", "lastName": "Only"}}`,
 			want: EventInfo{
 				ID: "evt-2", Name: "Local RTT", Organizer: "Owner Only",
-				Circuits: []string{},
+				Circuits:  []string{},
+				LeagueIDs: []string{},
 			},
 		},
 		{
 			name:       "missing id/name fall back to the requested id and a placeholder name",
 			respStatus: http.StatusOK,
 			respBody:   `{}`,
-			want:       EventInfo{ID: "requested-id", Name: "Unnamed event", Circuits: []string{}},
+			want:       EventInfo{ID: "requested-id", Name: "Unnamed event", Circuits: []string{}, LeagueIDs: []string{}},
 		},
 		{
 			name:       "non-2xx upstream status is an error",
@@ -338,6 +339,33 @@ func TestFetchEventLeagueIDsHealsLeaguelessCacheEntry(t *testing.T) {
 	}
 	if _, err := client.FetchEventLeagueIDs(context.Background(), "evt-1"); err != nil {
 		t.Fatal(err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("BCP requests = %d, want 1", got)
+	}
+}
+
+// An event BCP scores under no league is asked once to heal a legacy row,
+// then answered from cache rather than refetched on every call.
+func TestFetchEventLeagueIDsLeaguelessEventAskedOnce(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"evt-2","name":"Local RTT","status":{"ended":true},"leagues":[]}`))
+	}))
+	defer server.Close()
+	client := newTestClient(server)
+	client.eventInfo.Put("evt-2", EventInfo{ID: "evt-2", Name: "Local RTT", Ended: true}, time.Now())
+
+	for i := 0; i < 3; i++ {
+		ids, err := client.FetchEventLeagueIDs(context.Background(), "evt-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("league ids = %v, want none", ids)
+		}
 	}
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("BCP requests = %d, want 1", got)

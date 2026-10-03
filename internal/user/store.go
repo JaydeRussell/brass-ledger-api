@@ -34,13 +34,13 @@ type User struct {
 	// profile URL/id.
 	BcpUserID string
 
-	// Role is "user" or "admin" — see migration 0007. An admin can
+	// Role is "user" or "admin". An admin can
 	// approve/reject other accounts and promote/demote roles (see
 	// internal/api/admin.go); a plain "user" can't, regardless of
 	// Status below.
 	Role string
 
-	// Status is "pending", "approved", or "rejected" (migration 0007).
+	// Status is "pending", "approved", or "rejected".
 	// A valid session alone (RoleUser or RoleAdmin, any status) is
 	// enough to authenticate — e.g. to see your own /api/me — but
 	// api.RequireApproved additionally requires Status == "approved"
@@ -50,21 +50,21 @@ type User struct {
 	// just its first).
 	Status string
 
-	// AccentTheme is one of ValidAccentThemes (migration 0009) — the
+	// AccentTheme is one of ValidAccentThemes — the
 	// frontend's accent-color theme choice (see brass-ledger-web's
 	// app/lib/theme.ts's AccentTheme type, which this mirrors exactly).
 	// Defaults to "brass" for every account.
 	AccentTheme string
 
-	// DossierPublic is whether this account's player dossier (migration
-	// 0014) is reachable by anyone at GET /api/players/:bcpUserId/dossier
-	// — see internal/api/dossier.go. Defaults to true; SetDossierPublic
-	// is the only way to turn it off.
+	// DossierPublic is whether this account's player dossier is
+	// reachable by anyone at GET /api/players/:bcpUserId/dossier — see
+	// internal/api/dossier.go. New accounts start with it off (private);
+	// SetDossierPublic is the only way to change it.
 	DossierPublic bool
 }
 
 // RoleAdmin and RoleUser are Role's two valid values (also enforced by
-// migration 0007's CHECK constraint). StatusPending/StatusApproved/
+// a CHECK constraint on users.role). StatusPending/StatusApproved/
 // StatusRejected are Status's three.
 const (
 	RoleAdmin = "admin"
@@ -76,7 +76,7 @@ const (
 )
 
 // ValidAccentThemes are AccentTheme's valid values (also enforced by
-// migration 0009's CHECK constraint) — a slice rather than 12 named
+// a CHECK constraint on users.accent_theme) — a slice rather than 12 named
 // constants like RoleAdmin/RoleUser above, since there are too many of
 // these for that to stay readable; IsValidAccentTheme below is the
 // actual validation entry point callers use.
@@ -88,8 +88,8 @@ var ValidAccentThemes = []string{
 
 // IsValidAccentTheme reports whether theme is one of ValidAccentThemes —
 // used by internal/api/me.go's SetAccentTheme to reject a bad value
-// before it reaches the database (migration 0009's CHECK constraint is
-// the actual backstop, same division of labor as SetStatus/SetRole).
+// before it reaches the database (the column's CHECK constraint is the
+// actual backstop, same division of labor as SetStatus/SetRole).
 func IsValidAccentTheme(theme string) bool {
 	for _, v := range ValidAccentThemes {
 		if v == theme {
@@ -128,7 +128,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // Google specifically — internal/api's routes are what translate one
 // into the other.
 // Deliberately never touches role/status on conflict — those default
-// to RoleUser/StatusPending on the *first* insert (migration 0007) and
+// to RoleUser/StatusPending on the *first* insert and
 // stay whatever they were set to (by an admin, or by ADMIN_EMAILS
 // auto-approval — see internal/api/auth.go's Callback) on every
 // subsequent sign-in. A profile refresh should never silently reset
@@ -232,8 +232,8 @@ func (s *Store) SetBcpUserID(ctx context.Context, userID int64, bcpUserID string
 // SetStatus approves/rejects/re-pends an account — see internal/api/
 // admin.go, the only caller. The value itself is validated there (an
 // admin-only route with a fixed set of accepted actions), not here —
-// migration 0007's CHECK constraint is the actual backstop against a
-// bad value ever reaching the database.
+// the column's CHECK constraint is the actual backstop against a bad
+// value ever reaching the database.
 func (s *Store) SetStatus(ctx context.Context, userID int64, status string) error {
 	if _, err := s.pool.Exec(ctx,
 		`UPDATE users SET status = $1 WHERE id = $2`,
@@ -259,7 +259,7 @@ func (s *Store) SetRole(ctx context.Context, userID int64, role string) error {
 // SetAccentTheme updates a signed-in account's saved accent-color theme
 // — see internal/api/me.go, the only caller. Like SetStatus/SetRole
 // above, the value itself is validated by the caller (IsValidAccentTheme);
-// migration 0009's CHECK constraint is the actual backstop against a bad
+// the column's CHECK constraint is the actual backstop against a bad
 // value ever reaching the database.
 func (s *Store) SetAccentTheme(ctx context.Context, userID int64, accentTheme string) error {
 	if _, err := s.pool.Exec(ctx,
@@ -292,13 +292,14 @@ var ErrUserNotFound = errors.New("user not found")
 // Coast Pairings user id — the reverse of the manual link SetBcpUserID
 // records. Used wherever a caller has a bcpUserId in hand (a roster
 // entry, a pairing, a dossier link) and needs to know whether it maps
-// to a Brass Ledger account at all: today, GET /api/players/:bcpUserId/
+// to a Brass Ledger account at all: GET /api/players/:bcpUserId/
 // dossier (internal/api/dossier.go) and FriendsHandler.SendRequest/
 // Events (internal/api/friends.go) — resolving who to send a friend
 // request to, and whose events a friendship unlocks. bcp_user_id is
 // unique per account in practice (each is set by that account's own
-// owner pasting their own profile), though nothing in the schema
-// enforces that today, so this returns whichever row matches first.
+// owner pasting their own profile), though the schema doesn't enforce
+// it (its index isn't unique), so this returns whichever row matches
+// first.
 func (s *Store) GetUserByBcpUserID(ctx context.Context, bcpUserID string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `

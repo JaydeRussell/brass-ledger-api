@@ -575,6 +575,9 @@ func TestIsSafeReturnPath(t *testing.T) {
 		{"stats", false},                    // not even a rooted path
 		{"//evil.example.com", false},       // protocol-relative
 		{"https://evil.example.com", false}, // absolute URL
+		{"/\\evil.example.com", false},      // backslash reads as a slash
+		{"/\t/evil.example.com", false},     // tab is dropped
+		{"/\n/evil.example.com", false},     // newline is dropped
 		// Rejected too, even though the "://" is only inside the query
 		// string rather than making this path itself redirect anywhere —
 		// erring toward the safe failure mode (blocking a legitimate

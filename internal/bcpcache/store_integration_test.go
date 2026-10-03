@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
 )
 
@@ -265,11 +266,18 @@ func TestStore_PruneKeepsWhatIsPermanent(t *testing.T) {
 		}
 	}
 	// Two event rows: one concluded (permanent), one that never ended.
-	if err := store.Set(ctx, key("event:ended-"), 1, map[string]any{"ended": true}); err != nil {
+	// Stored as the real bcp.EventInfo, because the prune reads its
+	// "ended" json tag; a renamed tag must fail here, not delete ended
+	// events in production.
+	if err := store.Set(ctx, key("event:ended-"), 1, bcp.EventInfo{Ended: true}); err != nil {
 		t.Fatalf("Set ended event: %v", err)
 	}
-	if err := store.Set(ctx, key("event:live-"), 1, map[string]any{"ended": false}); err != nil {
+	if err := store.Set(ctx, key("event:live-"), 1, bcp.EventInfo{Ended: false}); err != nil {
 		t.Fatalf("Set live event: %v", err)
+	}
+	// A permanent kind of row, but at a superseded version: unreadable.
+	if err := store.Set(ctx, key("players:oldversion-"), 0, map[string]string{"v": "x"}); err != nil {
+		t.Fatalf("Set old-version row: %v", err)
 	}
 
 	// Age everything past the cutoff.
@@ -279,7 +287,7 @@ func TestStore_PruneKeepsWhatIsPermanent(t *testing.T) {
 		t.Fatalf("ageing rows: %v", err)
 	}
 
-	if _, err := store.Prune(ctx, 7*24*time.Hour); err != nil {
+	if _, err := store.Prune(ctx, 7*24*time.Hour, 1); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 
@@ -303,6 +311,14 @@ func TestStore_PruneKeepsWhatIsPermanent(t *testing.T) {
 			t.Errorf("%s survived the prune, but it expired long ago and can never be served again", k)
 		}
 	}
+	var oldVersionRows int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM bcp_durable_cache WHERE cache_key = $1`,
+		key("players:oldversion-")).Scan(&oldVersionRows); err != nil {
+		t.Fatalf("counting old-version row: %v", err)
+	}
+	if oldVersionRows != 0 {
+		t.Errorf("a row at a superseded cache_version survived the prune")
+	}
 
 	t.Cleanup(func() {
 		_, _ = store.pool.Exec(context.Background(),
@@ -322,7 +338,7 @@ func TestStore_PruneLeavesFreshRowsAlone(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Delete(context.Background(), k) })
 
-	if _, err := store.Prune(ctx, 7*24*time.Hour); err != nil {
+	if _, err := store.Prune(ctx, 7*24*time.Hour, 1); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 

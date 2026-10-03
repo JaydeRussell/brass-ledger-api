@@ -44,18 +44,14 @@ type bcpTeamPlayersResponse struct {
 	Active []bcpTeamPlayerRecord `json:"active"`
 }
 
-// fetchPlayersUncached mirrors the frontend's original fetchBcpPlayersUncached:
-// every entry in BCP's own `active` list is a real registrant — confirmed
-// live against an event with zero submitted lists yet, where BCP's own
-// roster page still lists all of them (as "not checked in") — so this no
-// longer gates on having a submitted list (a previous version of this
-// code did; that hid a real, still-forming roster for as long as no one
-// had submitted a list yet, which is exactly the state a newly-opened
-// event's Roster tab is in for a while). Each player's actual per-event
-// tournament team name is resolved via teamPlayerId against the separate
-// /teamplayers collection.
 func playersDurableKey(eventID string) string { return "players:" + eventID }
 
+// fetchPlayersUncached returns every entry in BCP's `active` list: each
+// is a real registrant, listed on BCP's own roster page (as "not checked
+// in") even before submitting a list. It doesn't require a submitted
+// list, since that would hide a newly-opened event's still-forming
+// roster. Each player's per-event tournament team name is resolved via
+// teamPlayerId against the separate /teamplayers collection.
 func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Player, error) {
 	if c.durable != nil {
 		var cached []Player

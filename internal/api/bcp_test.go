@@ -150,6 +150,11 @@ func TestBCPHandler_Players_OnlyRequiresSession(t *testing.T) {
 	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1", []*http.Cookie{pendingCookie}); rec.Code != http.StatusForbidden {
 		t.Errorf("pending session on EventInfo: status = %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
+	// A rejected account has nothing to onboard into.
+	rejectedCookie, _ := newSignedInUser(t, store, "players-rejected", user.RoleUser, user.StatusRejected)
+	if rec := doRequest(e, http.MethodGet, "/api/events/evt-1/players", []*http.Cookie{rejectedCookie}); rec.Code != http.StatusForbidden {
+		t.Errorf("rejected session on Players: status = %d, want %d, body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
 }
 
 // TestBCPHandler_Success checks every route's happy path: status

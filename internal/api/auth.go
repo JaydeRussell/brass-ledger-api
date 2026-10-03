@@ -32,9 +32,15 @@ const (
 // open-redirect vector: rejects an empty path, anything not starting
 // with "/", a protocol-relative path ("//evil.com" — browsers treat that
 // as a same-scheme link to a different host), and anything containing
-// "://" (a full absolute URL to somewhere else entirely).
+// "://" (a full absolute URL to somewhere else entirely), and any
+// backslash or control character, since browsers read a backslash as "/"
+// and drop tabs and newlines (a slash then a backslash then "evil.com"
+// would become "//evil.com").
 func isSafeReturnPath(path string) bool {
 	if path == "" || path[0] != '/' || strings.HasPrefix(path, "//") {
+		return false
+	}
+	if strings.ContainsFunc(path, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f }) {
 		return false
 	}
 	return !strings.Contains(path, "://")
@@ -327,9 +333,10 @@ func (h *AuthHandler) Me(c echo.Context) error {
 }
 
 // RequireSession is Echo middleware gating a route behind a valid
-// session cookie alone — authentication, not authorization (see
+// session cookie from an account that hasn't been rejected (see
 // RequireApproved below for the stricter, "and approved" version most
-// routes actually want). Applied at the routing layer so it can cover
+// routes actually want). A pending account passes, so it can link its
+// BCP profile while it waits. Applied at the routing layer so it can cover
 // routes whose handlers were never written to know about sessions at
 // all. The one current use: BCPHandler's Players route, which
 // deliberately stays at this weaker bar — see its Register call in
@@ -344,6 +351,12 @@ func RequireSession(store userStore) echo.MiddlewareFunc {
 			u, ok := resolveSession(c, store)
 			if !ok {
 				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "not signed in"})
+			}
+			if u.Status == user.StatusRejected {
+				return c.JSON(http.StatusForbidden, map[string]string{
+					"error":  "account not approved",
+					"status": u.Status,
+				})
 			}
 			c.Set(contextKeyUser, u)
 			return next(c)

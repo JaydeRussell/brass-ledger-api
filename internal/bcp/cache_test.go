@@ -412,13 +412,9 @@ func TestCache_OneCallerLeavingDoesNotFailTheOthers(t *testing.T) {
 
 // TestCache_DoesNotGrowForever bounds the maps.
 //
-// Nothing ever removed an entry: a stale one was ignored on read and
-// left in place. That only survived because the container sleeps after
-// ten minutes idle and takes the whole map with it — a leak papered
-// over by a restart, and the restart is exactly what the durable cache
-// and longer TTLs have been making rarer. The pairings cache is keyed
-// by event:type:round and the ITC one by league:user, so both grow with
-// use rather than with the size of the data.
+// A stale entry is ignored on read but not removed, and the pairings and
+// ITC caches are keyed by use (event:type:round, league:user), so
+// without a bound the maps grow for the life of the process.
 func TestCache_DoesNotGrowForever(t *testing.T) {
 	c := NewCache(func(_ context.Context, key string) (string, error) {
 		return key, nil
@@ -541,6 +537,36 @@ func TestCache_StaleWhileRevalidate_StopsServingPastTheWindow(t *testing.T) {
 	}
 }
 
+// TestCache_StaleWhileRevalidate_FailedRefreshKeepsServingStale: a
+// background refresh that fails records a backoff marker, and that marker
+// must not turn the still-servable stale value into an error.
+func TestCache_StaleWhileRevalidate_FailedRefreshKeepsServingStale(t *testing.T) {
+	var calls atomic.Int32
+	c := NewCacheWithStaleWhileRevalidate(func(_ context.Context, _ string) (string, error) {
+		if calls.Add(1) == 1 {
+			return "v1", nil
+		}
+		return "", errors.New("bcp unavailable")
+	}, 20*time.Millisecond, nil)
+
+	if _, err := c.Get(context.Background(), "k"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond) // past the TTL, inside 2x
+	if got, err := c.Get(context.Background(), "k"); err != nil || got != "v1" {
+		t.Fatalf("stale Get = %q, %v; want v1", got, err)
+	}
+	c.waitForRevalidations() // the refresh fails and records a backoff
+
+	got, err := c.Get(context.Background(), "k")
+	if err != nil || got != "v1" {
+		t.Errorf("Get after a failed refresh = %q, %v; want the stale v1", got, err)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("upstream called %d times, want 2: no new refresh during the backoff", n)
+	}
+}
+
 // TestCache_WithoutStaleWhileRevalidate_StillBlocks pins the opt-in.
 // Pairings run on a plain cache for a deliberate reason (see
 // NewCacheWithStaleWhileRevalidate's doc comment), so "every cache
@@ -584,5 +610,41 @@ func TestCache_InvalidateThrottlesFailingKeys(t *testing.T) {
 	_, _ = c.Get(context.Background(), "k1")
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Errorf("fetch calls = %d, want 1 (backoff should still hold)", got)
+	}
+}
+
+// A fetch answered from a stored row reports the row's age, and the entry
+// expires on that age instead of starting a full TTL from now.
+func TestCache_NoteStoredAtShortensExpiry(t *testing.T) {
+	var calls atomic.Int32
+	c := NewCacheWithTTL(func(ctx context.Context, _ string) (string, error) {
+		if calls.Add(1) == 1 {
+			noteStoredAt(ctx, time.Now().Add(-45*time.Millisecond))
+			return "stored", nil
+		}
+		return "fresh", nil
+	}, 50*time.Millisecond)
+
+	if got, _ := c.Get(context.Background(), "k"); got != "stored" {
+		t.Fatalf("first Get = %q, want stored", got)
+	}
+	time.Sleep(15 * time.Millisecond) // past the row's real age, well inside a fresh TTL
+	if got, _ := c.Get(context.Background(), "k"); got != "fresh" {
+		t.Errorf("Get after the stored row expired = %q, want fresh", got)
+	}
+}
+
+// Seeding through Put (prewarm, durable reads) is held to the same cap as
+// fetched entries.
+func TestCache_PutRespectsTheCap(t *testing.T) {
+	c := NewCache(func(_ context.Context, key string) (string, error) { return key, nil })
+	for i := 0; i < maxCacheEntries+50; i++ {
+		c.Put(fmt.Sprintf("k%d", i), "v", time.Now())
+	}
+	c.mu.Lock()
+	n := len(c.entries)
+	c.mu.Unlock()
+	if n > maxCacheEntries {
+		t.Errorf("entries = %d after Put, want at most %d", n, maxCacheEntries)
 	}
 }

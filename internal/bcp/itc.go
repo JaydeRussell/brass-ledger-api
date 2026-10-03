@@ -17,29 +17,17 @@ import (
 // per-player lookup possible without ever pulling the full
 // (multi-thousand-row) leaderboard.
 //
-// Finding *which* league id is the current flagship one used to mean
-// searching BCP's game-system-wide `/v1/leagues` list for the newest
-// entry flagged `gw_itc` (BCP's marker for its flagship ranking league)
-// that isn't the hobby-track variant. That stopped working — confirmed
-// live against BCP's real API: the list endpoint no longer returns a
-// `gw_itc` field on any record at all (every league comes back with an
-// unrelated `itc` boolean instead, always false for the real flagship
-// league), and even correcting the field name wouldn't be enough on its
-// own — the real current flagship league doesn't sort into the newest
-// 99 by startDate either (BCP hard-caps `limit` at 99), buried under a
-// large and constantly-growing pool of local/store leagues with newer
-// dates. A search-and-sort-and-take-first strategy over that whole pool
-// can no longer reliably find it, regardless of field name.
+// The flagship league can't be found by searching BCP's game-system-wide
+// `/v1/leagues` list: that endpoint returns no `gw_itc` field (only an
+// unrelated `itc` boolean, false for the real flagship league), and the
+// flagship league doesn't sort into the newest 99 by startDate (BCP caps
+// `limit` at 99) under a large, growing pool of local/store leagues.
 //
-// The reliable signal instead: an *event's own* info response already
-// lists which league(s) it's scored under (see EventInfo.LeagueIDs,
-// populated from BCP's `leagues` array on the event). Fetching each of
-// those by id via FetchLeagueInfo (below) still correctly returns
-// `gw_itc` — confirmed live: the single-league-by-id endpoint kept the
-// field even though the list endpoint dropped it. So resolution is now
-// anchored on one specific event's own known leagues (a handful of
-// already-cached per-league lookups) rather than a blind search over an
-// entire game system's leagues.
+// Instead, resolution is anchored on one event: its info response lists
+// the league(s) it's scored under (see EventInfo.LeagueIDs, from BCP's
+// `leagues` array), and fetching each by id via FetchLeagueInfo (below)
+// does return `gw_itc`. That is a handful of cached per-league lookups
+// rather than a blind search over a whole game system's leagues.
 
 // FetchCurrentItcLeagueIDForEvent returns the current flagship ITC
 // league id among the given league ids (an event's own EventInfo.
@@ -47,7 +35,9 @@ import (
 // !hobby) — e.g. a local RTT scored under only a store/hobby league.
 // Each lookup is a small, already-cached FetchLeagueInfo call; one
 // failed lookup doesn't abort the search, since a transient error on
-// one of an event's leagues shouldn't hide a working one.
+// one of an event's leagues shouldn't hide a working one. Failures are
+// skipped rather than returned, so the error is always nil and "" can
+// also mean every lookup failed.
 func (c *Client) FetchCurrentItcLeagueIDForEvent(ctx context.Context, leagueIDs []string) (string, error) {
 	for _, id := range leagueIDs {
 		info, err := c.FetchLeagueInfo(ctx, id)
@@ -153,8 +143,9 @@ func (c *Client) fetchItcRankingUncached(ctx context.Context, leagueID, bcpUserI
 	durableKey := itcRankingDurableKey(leagueID, bcpUserID)
 	if c.durable != nil {
 		var stored itcRankingCacheEntry
-		found, _, err := c.durable.GetFresh(ctx, durableKey, CacheSchemaVersion, itcRankingRefetchInterval, &stored)
+		found, cachedAt, err := c.durable.GetFresh(ctx, durableKey, CacheSchemaVersion, itcRankingRefetchInterval, &stored)
 		if err == nil && found {
+			noteStoredAt(ctx, cachedAt)
 			return stored.Ranking, nil
 		}
 	}

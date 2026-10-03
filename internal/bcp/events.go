@@ -126,6 +126,9 @@ func (c *Client) fetchEventInfoUncached(ctx context.Context, eventID string) (Ev
 		var cached EventInfo
 		found, cachedAt, err := c.durable.GetFresh(ctx, eventInfoDurableKey(eventID), CacheSchemaVersion, 0, &cached)
 		if err == nil && found && (cached.Ended || time.Since(cachedAt) < eventInfoTTL(cached)) {
+			if !cached.Ended {
+				noteStoredAt(ctx, cachedAt)
+			}
 			return cached, nil
 		}
 	}
@@ -206,11 +209,10 @@ func (c *Client) fetchEventInfoFromBCP(ctx context.Context, eventID string) (Eve
 	// where Started/CurrentRound move and a Postgres write per request
 	// would buy nothing.
 	//
-	// Storing the far-off ones is what makes the policy actually work.
-	// Their in-memory TTL is six hours, but the container sleeps after
-	// ten minutes — so before this, an event two months away was
-	// re-fetched from BCP by every cold process, forever, because the
-	// only cache that held it never lived long enough to be used.
+	// Storing the far-off ones is what makes the policy work. Their
+	// in-memory TTL is six hours, but the container sleeps after ten
+	// minutes, so without a durable row every cold process would
+	// re-fetch them from BCP.
 	//
 	// A failed write just means this gets asked of BCP again next time;
 	// not worth failing the request over.
@@ -228,10 +230,11 @@ func (c *Client) FetchEventInfo(ctx context.Context, eventID string) (EventInfo,
 
 // FetchEventLeagueIDs returns the leagues an event is scored under.
 //
-// Durable rows written before EventInfo.LeagueIDs was serialized carry
-// none, so an event with no leagues is asked of BCP once more; that
-// rewrites the durable row and replaces the in-memory entry, so the next
-// call is answered from cache. This is narrower than bumping
+// Durable rows written before EventInfo.LeagueIDs was serialized decode
+// it as nil, so such an event is asked of BCP once more; that rewrites
+// the durable row and replaces the in-memory entry, so the next call is
+// answered from cache, including for an event with no leagues ([]).
+// This is narrower than bumping
 // CacheSchemaVersion, which would refetch every durable row of every
 // type at once (12s for one My Events load when measured locally).
 func (c *Client) FetchEventLeagueIDs(ctx context.Context, eventID string) ([]string, error) {
@@ -239,7 +242,7 @@ func (c *Client) FetchEventLeagueIDs(ctx context.Context, eventID string) ([]str
 	if err != nil {
 		return nil, err
 	}
-	if len(info.LeagueIDs) > 0 {
+	if info.LeagueIDs != nil {
 		return info.LeagueIDs, nil
 	}
 	fresh, err := c.fetchEventInfoFromBCP(ctx, eventID)

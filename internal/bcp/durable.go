@@ -6,56 +6,47 @@ import (
 	"time"
 )
 
-// DurableCache is the persistence layer a Client optionally writes
-// permanently-cacheable BCP responses to and reads them back from —
-// implemented against Postgres by internal/bcpcache (see
-// internal/db/migrations/0004_bcp_durable_cache.sql), kept as a small
-// interface here so this package doesn't need to depend on pgx directly.
+// DurableCache is the persistence layer a Client optionally writes BCP
+// responses to and reads them back from — implemented against Postgres
+// by internal/bcpcache, kept as a small interface here so this package
+// doesn't need to depend on pgx directly.
 //
 // A nil DurableCache (the default — NewClient/NewClientWithBaseURL don't
-// set one) just means every fetch behaves exactly as it always has: real
-// BCP calls, deduped/rate-limited only by the in-memory Cache in
-// cache.go. Every fetch* function across this package that supports
-// durable caching (events.go, players.go, pairings.go, placings.go,
-// itc.go) checks for nil before touching it, so this is entirely
-// optional and every existing test (which never sets one) is unaffected.
+// set one) means every fetch goes to BCP, deduped and rate-limited only
+// by the in-memory Cache in cache.go. Every fetch* function in this
+// package that supports durable caching (events.go, players.go,
+// pairings.go, placings.go, itc.go, history.go) checks for nil before
+// touching it, so tests that never set one are unaffected.
 //
-// Get decodes the stored JSON into dest (a pointer) and reports whether
-// a value was found at all — false both when nothing is stored under
-// key and when something is but under a different version than the one
-// passed in (see CacheSchemaVersion below). Set marshals value as JSON
-// and stores it, tagged with version — callers only ever call Set once
-// they've confirmed the underlying BCP data can never change again (an
-// already-concluded event's info, roster, pairings, placings; a
-// league's gw_itc/hobby classification, which is effectively
-// permanent). Because of that, a version match is trusted
-// unconditionally on read — there's no TTL or "is this still valid"
-// check beyond the version, unlike the in-memory Cache.
+// Set marshals value as JSON and stores it, tagged with version. Rows
+// come in two kinds:
 //
-// GetFresh, GetMany and Delete exist for the two kinds of durable value
-// that *aren't* permanent:
+//   - Permanent: data that can't change again — a concluded event's
+//     roster, pairings and placings, and a league's gw_itc/hobby
+//     classification. These are read with Get, which decodes the stored
+//     JSON into dest (a pointer) and reports whether a row was found
+//     under key at the current version (see CacheSchemaVersion). A
+//     version match is trusted with no age check.
+//   - With a lifetime: a player's event and placing history
+//     (history.go), ITC rankings (itc.go), and event info for an event
+//     that hasn't concluded yet (events.go, see eventInfoTTL). These are
+//     read with GetFresh or GetMany, which return when the row was
+//     written so the caller can judge its age.
 //
-//   - GetFresh is Get plus a maximum age, for data that does change —
-//     a player's own event/placing history (history.go), which gains
-//     entries whenever they register for something. It also returns when
-//     the row was written, so an entry seeded from it can carry its real
-//     age rather than claiming it was just fetched. The cached_at column
-//     has existed since migration 0004 and this is the first thing to
-//     read it back.
-//   - GetMany reads a whole set of keys in one query, each with the time
-//     it was written — callers holding values that expire need the age
-//     to judge them, not just the bytes. Callers that know
-//     their key set up front (see Client.PrewarmEventInfo) use it to
-//     avoid one round trip per key — with a cold in-memory cache, a
-//     player's stats page was doing one SELECT per event they'd ever
-//     attended, sequentially.
-//   - Delete drops a row so a user-initiated refresh isn't immediately
-//     undone by reloading the same stale value from Postgres.
+// GetFresh is Get plus a maximum age (0 means no bound, for callers that
+// apply their own rule to the returned timestamp). The timestamp also
+// lets an entry seeded from the row carry its real age rather than
+// claiming it was just fetched.
 //
-// DurableRow is one stored value and when it was written. The timestamp
-// matters because not everything in this cache is permanent: an event
-// that hasn't started yet is stored with a lifetime (see eventInfoTTL),
-// so a reader has to know how old the row is before trusting it.
+// GetMany reads a whole set of keys in one query, each with the time it
+// was written. Callers that know their key set up front (see
+// Client.PrewarmEventInfo) use it to avoid one sequential round trip per
+// key when the in-memory cache is cold.
+//
+// Delete drops a row so a user-initiated refresh isn't immediately
+// undone by reloading the same stale value from Postgres.
+//
+// DurableRow is one stored value and when it was written.
 type DurableRow struct {
 	Data     json.RawMessage
 	CachedAt time.Time
@@ -74,14 +65,10 @@ type DurableCache interface {
 // (EventInfo, Player, PairingRecord, PlacingEntry, LeagueInfo,
 // PlayerEventRecord, PlacingHistoryEntry) gains or
 // changes a field that existing callers should stop trusting — every
-// previously-written row (including rows written before this version
-// column even existed, which the 0012 migration backfilled to 0) then
-// simply stops matching on its next read and gets transparently
-// refetched from BCP and re-cached at the new version. This is what
-// caught PlacingEntry's Faction/SubFaction fields (added in commit
-// b6b26da) being permanently absent from any event durably cached
-// before that change shipped — see that incident's write-up before
-// assuming a durable row is safe to read as-is after any schema change.
+// row written at an older version then stops matching on its next read
+// and is refetched from BCP and re-cached at the new version. Without a
+// bump, a permanent row keeps whatever shape it was written with
+// forever, so a new field would stay empty on it.
 const CacheSchemaVersion = 1
 
 // SetDurableCache installs c's durable cache. Call once, right after
@@ -92,29 +79,27 @@ func (c *Client) SetDurableCache(d DurableCache) {
 }
 
 // durableWriteTimeout bounds one background write. Generous relative to
-// a measured ~70-90ms round trip to Neon; this exists so a wedged
+// one Neon round trip (DurableReadCost); this exists so a wedged
 // connection can't hold a goroutine open indefinitely, not to enforce
 // anything.
 const durableWriteTimeout = 15 * time.Second
 
 // maxConcurrentDurableWrites bounds how many background writes are in
-// flight at once, so a burst of cache misses can't open more
-// connections against Neon than the request path itself is allowed.
+// flight at once, so a burst of cache misses can't take over the shared
+// pgx pool that request handlers also draw from.
 const maxConcurrentDurableWrites = 4
 
 // storeDurably writes value under key without making the caller wait.
 //
-// These writes used to sit on the request's critical path: a cold
-// fetch paid a BCP round trip and then a Neon write before answering,
-// and /api/me/events does that for every pending event at once. None of
-// it is data the response depends on — the value being written is
-// already in hand and already being returned.
+// Keeping the write off the critical path means a cold fetch answers
+// after the BCP round trip alone, which matters for /api/me/events
+// fetching every pending event at once. The response doesn't depend on
+// the write — the value is already in hand and already being returned.
 //
-// Losing one costs exactly one future BCP request, which is the same
-// thing that happens today when the write isn't attempted at all
-// (see eventEndedWithoutFetching). That is the whole risk, and it is
-// why this can be fire-and-forget while a write the user's own data
-// depended on could not be.
+// Losing one costs exactly one future BCP request, the same as when the
+// write isn't attempted at all (see eventEndedWithoutFetching). That is
+// the whole risk, and it is why this can be fire-and-forget while a
+// write the user's own data depended on could not be.
 //
 // Detached from the request context on purpose — the caller's request
 // completing is the normal case, not a reason to abandon the write —
@@ -153,9 +138,9 @@ func (c *Client) FlushDurableWrites() {
 // normal per-key fetch path to handle.
 //
 // Seeded entries carry the row's own cached_at, and the decode function
-// is free to reject a row that's too old for what it holds — event info
-// is no longer all-permanent, since an event that hasn't started yet is
-// now stored with a lifetime rather than not stored at all.
+// is free to reject a row that's too old for what it holds, such as
+// event info for an event that hasn't concluded yet, which is stored
+// with a lifetime.
 func prewarm[T any](
 	ctx context.Context,
 	d DurableCache,

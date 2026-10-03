@@ -57,7 +57,7 @@ type sendFriendRequestBody struct {
 
 // FriendsHandler wires up mutual friending: sending/accepting/declining
 // requests, listing friends, unfriending, and (the payoff) a friend's
-// own upcoming events. See migration 0014's friend_requests table and
+// own upcoming events. See the friend_requests table and
 // internal/user/friends.go for the storage layer this wraps.
 //
 // Discovery is deliberately *not* a route here: there's no
