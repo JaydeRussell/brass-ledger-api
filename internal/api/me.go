@@ -374,6 +374,11 @@ func classifyMyEvents(ctx context.Context, client bcpClient, bcpUserID string, r
 	// hits already pay for.
 	pending := make([]string, 0, len(registrations))
 	for _, r := range registrations {
+		// A registration the player dropped isn't an event they're going
+		// to: leave it out of Present/Future.
+		if r.Dropped {
+			continue
+		}
 		if !concluded[r.EventID] {
 			pending = append(pending, r.EventID)
 		}
