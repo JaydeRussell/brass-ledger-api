@@ -69,3 +69,14 @@ func cacheFor(c echo.Context, immutable bool) {
 func noCache(c echo.Context) {
 	c.Response().Header().Set(cacheControlHeader, noStore)
 }
+
+// DefaultNoStore marks every response no-store unless its handler calls
+// cacheFor, so a route that forgets to choose never leaves caching to
+// the browser's heuristics. Personal data (dossiers, friends, stats) is
+// mostly what that would cover.
+func DefaultNoStore(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		c.Response().Header().Set(cacheControlHeader, noStore)
+		return next(c)
+	}
+}

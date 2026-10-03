@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
 )
 
@@ -109,5 +111,22 @@ func TestCacheControl_AccountRoutesAreNeverStored(t *testing.T) {
 	rec := getWithSession(t, e, "/api/me/events", cookie)
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("/api/me/events answered with Cache-Control %q, want no-store", got)
+	}
+}
+
+func TestDefaultNoStore(t *testing.T) {
+	e := echo.New()
+	e.Use(DefaultNoStore)
+	e.GET("/plain", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+	e.GET("/cached", func(c echo.Context) error {
+		cacheFor(c, false)
+		return c.NoContent(http.StatusOK)
+	})
+	for path, want := range map[string]string{"/plain": "no-store", "/cached": "private, max-age=60"} {
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := rec.Header().Get("Cache-Control"); got != want {
+			t.Errorf("%s Cache-Control = %q, want %q", path, got, want)
+		}
 	}
 }

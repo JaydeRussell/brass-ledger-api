@@ -244,6 +244,7 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		AllowCredentials: true,
 	}))
 	e.Use(api.RejectForeignOrigin(cfg.FrontendBaseURL))
+	e.Use(api.DefaultNoStore)
 
 	e.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
