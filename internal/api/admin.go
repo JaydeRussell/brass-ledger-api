@@ -113,7 +113,7 @@ func (h *AdminHandler) ListUsers(c echo.Context) error {
 		PageSize: pageSize,
 	})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	items := make([]adminUserResponse, len(result.Items))
 	for i, u := range result.Items {
@@ -150,7 +150,7 @@ func (h *AdminHandler) setStatus(c echo.Context, status string) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid user id"})
 	}
 	if err := h.store.SetStatus(c.Request().Context(), targetID, status); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -184,7 +184,7 @@ func (h *AdminHandler) SetRole(c echo.Context) error {
 	}
 
 	if err := h.store.SetRole(c.Request().Context(), targetID, req.Role); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -232,7 +232,7 @@ func (h *AdminHandler) ListFeedback(c echo.Context) error {
 	}
 	reports, err := h.feedback.List(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	resp := make([]adminFeedbackResponse, len(reports))
 	for i, r := range reports {
@@ -250,7 +250,7 @@ func (h *AdminHandler) FeedbackOpenCount(c echo.Context) error {
 	}
 	count, err := h.feedback.CountOpen(c.Request().Context())
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]int{"count": count})
 }
@@ -274,7 +274,7 @@ func (h *AdminHandler) setFeedbackStatus(c echo.Context, status string) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid feedback id"})
 	}
 	if err := h.feedback.SetStatus(c.Request().Context(), id, status); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

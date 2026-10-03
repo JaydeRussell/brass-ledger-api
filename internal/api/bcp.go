@@ -275,6 +275,3 @@ func (h *BCPHandler) ItcRanking(c echo.Context) error {
 // bcpError maps an upstream BCP failure to a 502 (this service is a
 // working proxy, but the thing it depends on failed) rather than a 500
 // (which would suggest a bug in this service itself).
-func bcpError(c echo.Context, err error) error {
-	return c.JSON(http.StatusBadGateway, map[string]string{"error": err.Error()})
-}

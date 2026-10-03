@@ -15,9 +15,8 @@ import (
 // then cost a real BCP request on every single page load, forever. See
 // Cache.Get's negative-caching note.
 //
-// The message is deliberately unchanged from the string this used to
-// format: internal/api's bcpError puts err.Error() straight into a 502
-// body, so the wording is user-visible.
+// The message is for logs: internal/api's bcpError shows the user its
+// own wording instead, since this one carries the BCP URL.
 type StatusError struct {
 	StatusCode int
 	URL        string

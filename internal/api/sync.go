@@ -65,7 +65,7 @@ func (h *SyncHandler) ListRecentEvents(c echo.Context) error {
 
 	events, err := h.store.ListRecentEvents(c.Request().Context(), u.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	resp := make([]recentEventResponse, len(events))
 	for i, ev := range events {
@@ -96,7 +96,7 @@ func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 	}
 
 	if err := h.store.RecordRecentEvent(c.Request().Context(), u.ID, eventID, req.EventName, req.TeamEvent); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -126,7 +126,7 @@ func (h *SyncHandler) GetRoundNote(c echo.Context) error {
 
 	note, err := h.store.GetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.JSON(http.StatusOK, roundNoteResponse{Note: note})
 }
@@ -150,7 +150,7 @@ func (h *SyncHandler) SetRoundNote(c echo.Context) error {
 	}
 
 	if err := h.store.SetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round, req.Note); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

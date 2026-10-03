@@ -236,10 +236,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
 		defer cancel()
 		if err := pool.Ping(ctx); err != nil {
-			return c.JSON(http.StatusServiceUnavailable, map[string]string{
-				"status": "unavailable",
-				"error":  err.Error(),
-			})
+			// Public route: the reason goes to the log, not the response.
+			log.Printf("readyz: database ping failed: %v", err)
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
 		}
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})

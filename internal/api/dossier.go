@@ -67,7 +67,7 @@ func (h *DossierHandler) Dossier(c echo.Context) error {
 		if errors.Is(err, user.ErrUserNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "dossier not found"})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	if acct.Status != user.StatusApproved || !acct.DossierPublic {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "dossier not found"})

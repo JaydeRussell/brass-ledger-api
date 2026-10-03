@@ -112,7 +112,7 @@ func (h *FriendsHandler) SendRequest(c echo.Context) error {
 		if errors.Is(err, user.ErrUserNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "no account found for that player"})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	if recipient.ID == u.ID {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "can't send a friend request to yourself"})
@@ -123,7 +123,7 @@ func (h *FriendsHandler) SendRequest(c echo.Context) error {
 		if errors.Is(err, user.ErrFriendRequestAlreadyExists) {
 			return c.JSON(http.StatusConflict, map[string]string{"error": err.Error()})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"id": fr.ID, "status": fr.Status})
 }
@@ -137,7 +137,7 @@ func (h *FriendsHandler) ListIncomingRequests(c echo.Context) error {
 	}
 	requests, err := h.store.ListIncomingFriendRequests(c.Request().Context(), u.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.JSON(http.StatusOK, toFriendRequestResponses(requests))
 }
@@ -166,7 +166,7 @@ func (h *FriendsHandler) AcceptRequest(c echo.Context) error {
 		if errors.Is(err, user.ErrFriendRequestNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -185,7 +185,7 @@ func (h *FriendsHandler) DeclineRequest(c echo.Context) error {
 		if errors.Is(err, user.ErrFriendRequestNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -199,7 +199,7 @@ func (h *FriendsHandler) ListFriends(c echo.Context) error {
 	}
 	friends, err := h.store.ListFriends(c.Request().Context(), u.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.JSON(http.StatusOK, toFriendResponses(friends))
 }
@@ -217,7 +217,7 @@ func (h *FriendsHandler) RemoveFriend(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id must be a positive integer"})
 	}
 	if err := h.store.RemoveFriend(c.Request().Context(), u.ID, friendUserID); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -247,12 +247,12 @@ func (h *FriendsHandler) Events(c echo.Context) error {
 		if errors.Is(err, user.ErrUserNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 
 	areFriends, err := h.store.AreFriends(ctx, u.ID, friendAccount.ID)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return internalError(c, err)
 	}
 	if !areFriends {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "not found"})
