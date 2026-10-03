@@ -80,22 +80,22 @@ func main() {
 		log.Fatalf("running database migrations: %v", err)
 	}
 
-	// Nothing ever removed a row from the durable cache. Most of what
-	// it holds is permanent on purpose, but the two per-user history
-	// feeds, ITC rankings and never-ended events all expire, and those
-	// simply accumulated. Pruned once at startup rather than on a timer:
-	// the container is recycled often enough that this runs regularly on
-	// its own, and a cheap indexed DELETE at boot costs nothing a cold
-	// start doesn't already pay.
-	//
-	// Non-fatal. A cache that failed to shrink is not a reason to refuse
-	// to serve.
+	// The two per-user history feeds, ITC rankings and never-ended events
+	// expire; the rest of the durable cache is permanent. Pruned once per
+	// process, in the background so a cold start doesn't wait on a
+	// DELETE that grows with the table. The container is recycled often
+	// enough that this runs regularly. Non-fatal: a cache that failed to
+	// shrink is not a reason to refuse to serve.
 	durableCache := bcpcache.New(pool)
-	if removed, err := durableCache.Prune(ctx, durableCacheRetention); err != nil {
-		log.Printf("pruning the durable BCP cache failed (continuing): %v", err)
-	} else if removed > 0 {
-		log.Printf("pruned %d expired rows from the durable BCP cache", removed)
-	}
+	go func() {
+		pruneCtx, cancelPrune := context.WithTimeout(context.Background(), time.Minute)
+		defer cancelPrune()
+		if removed, err := durableCache.Prune(pruneCtx, durableCacheRetention); err != nil {
+			log.Printf("pruning the durable BCP cache failed (continuing): %v", err)
+		} else if removed > 0 {
+			log.Printf("pruned %d expired rows from the durable BCP cache", removed)
+		}
+	}()
 
 	bcpClient := bcp.NewClient()
 	// Persists the subset of BCP responses that are genuinely immutable
@@ -122,13 +122,22 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := e.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("shutdown: %v", err)
+		log.Printf("shutdown: %v", err)
 	}
 	// Durable cache writes happen off the request path, so in-flight
 	// ones can outlive the request that started them. Losing one only
-	// costs a future BCP call, but a deploy is the moment most of them
-	// are in flight, and waiting costs nothing when there are none.
-	bcpClient.FlushDurableWrites()
+	// costs a future BCP call, so the wait is bounded: queued writes
+	// would otherwise hold the process for 15s per batch of four.
+	flushed := make(chan struct{})
+	go func() {
+		bcpClient.FlushDurableWrites()
+		close(flushed)
+	}()
+	select {
+	case <-flushed:
+	case <-time.After(5 * time.Second):
+		log.Printf("shutdown: gave up waiting for durable cache writes")
+	}
 }
 
 // newServer wires up the Echo instance and routes. Split out from main
