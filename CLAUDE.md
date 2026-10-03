@@ -254,7 +254,7 @@ stale, rather than appending to it forever.
   never flip BCP's own "ended" switch even once an event is clearly over,
   which used to leave it stuck in the "Ongoing"/Present bucket forever.
   `internal/api/me.go` now has `isStaleEvent(endDate string) bool` /
-  `staleEventAfter` (currently 3 days) / `parseBCPDate` (tries both date
+  `staleEventAfter` (24 hours) / `parseBCPDate` (tries both date
   shapes BCP actually sends — see its doc comment): a registered-but-not-
   yet-placed event that's `Started && !Ended` but whose listed end date
   is more than `staleEventAfter` in the past is now classified into Past
