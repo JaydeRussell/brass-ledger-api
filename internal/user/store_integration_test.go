@@ -403,11 +403,14 @@ func TestStore_DossierPublic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertUserFromGoogle: %v", err)
 	}
-	// Migration 0014's DEFAULT clause.
-	if !u.DossierPublic {
-		t.Fatal("new user DossierPublic = false, want true (DEFAULT clause)")
+	// Migration 0020's DEFAULT clause: new accounts start private.
+	if u.DossierPublic {
+		t.Fatal("new user DossierPublic = true, want false (DEFAULT clause)")
 	}
 
+	if err := store.SetDossierPublic(ctx, u.ID, true); err != nil {
+		t.Fatalf("SetDossierPublic(true): %v", err)
+	}
 	if err := store.SetDossierPublic(ctx, u.ID, false); err != nil {
 		t.Fatalf("SetDossierPublic: %v", err)
 	}

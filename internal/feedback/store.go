@@ -32,10 +32,10 @@ type Report struct {
 	ContactEmail string
 	// SubmittedByUserID is 0 if the submitter wasn't signed in (or their
 	// session cookie wasn't valid) at submission time — see
-	// internal/api/feedback.go's Submit. SubmittedByName/Email are
-	// captured then too, rather than joined against the users table
-	// live, so a report still reads correctly even if that account is
-	// later renamed or deleted.
+	// internal/api/feedback.go's Submit. New reports store only the id;
+	// List reads the name and email from the account, so they follow a
+	// rename and go when the account is deleted. Older rows still carry
+	// a copy, used only when the account no longer exists.
 	SubmittedByUserID int64
 	SubmittedByName   string
 	SubmittedByEmail  string
@@ -78,11 +78,13 @@ func (s *Store) Create(ctx context.Context, r Report) (Report, error) {
 // user.Store.ListUsers.
 func (s *Store) List(ctx context.Context) ([]Report, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, kind, message, page, contact_email,
-		       COALESCE(submitted_by_user_id, 0), submitted_by_name, submitted_by_email,
-		       status, created_at
-		FROM feedback
-		ORDER BY (status = 'open') DESC, created_at DESC
+		SELECT f.id, f.kind, f.message, f.page, f.contact_email,
+		       COALESCE(f.submitted_by_user_id, 0),
+		       COALESCE(u.name, f.submitted_by_name), COALESCE(u.email, f.submitted_by_email),
+		       f.status, f.created_at
+		FROM feedback f
+		LEFT JOIN users u ON u.id = f.submitted_by_user_id
+		ORDER BY (f.status = 'open') DESC, f.created_at DESC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("listing feedback: %w", err)

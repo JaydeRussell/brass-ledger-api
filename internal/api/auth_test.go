@@ -313,7 +313,7 @@ func TestGoogleLogin(t *testing.T) {
 func TestGoogleCallback_Success(t *testing.T) {
 	google := stubGoogleServer(t,
 		`{"access_token": "tok-abc"}`,
-		`{"sub": "google-sub-1", "email": "anna@example.com", "name": "Anna Adams", "picture": "https://example.com/pic.jpg"}`,
+		`{"sub": "google-sub-1", "email": "anna@example.com", "name": "Anna Adams", "picture": "https://example.com/pic.jpg", "email_verified": true}`,
 	)
 	store := newFakeUserStore()
 	e := newTestEcho(google, store)
@@ -366,7 +366,7 @@ func TestGoogleCallback_Success(t *testing.T) {
 func TestGoogleCallback_AdminEmailBootstrap(t *testing.T) {
 	google := stubGoogleServer(t,
 		`{"access_token": "tok-abc"}`,
-		`{"sub": "google-sub-1", "email": "Admin@Example.com", "name": "Admin Person", "picture": ""}`,
+		`{"sub": "google-sub-1", "email": "Admin@Example.com", "name": "Admin Person", "picture": "", "email_verified": true}`,
 	)
 	store := newFakeUserStore()
 	e := newTestEchoWithAdmins(google, store, []string{"admin@example.com"})
@@ -396,7 +396,7 @@ func TestGoogleCallback_AdminEmailBootstrap(t *testing.T) {
 	// what it gets, not admin.
 	google2 := stubGoogleServer(t,
 		`{"access_token": "tok-def"}`,
-		`{"sub": "google-sub-2", "email": "nobody@example.com", "name": "Nobody", "picture": ""}`,
+		`{"sub": "google-sub-2", "email": "nobody@example.com", "name": "Nobody", "picture": "", "email_verified": true}`,
 	)
 	e2 := newTestEchoWithAdmins(google2, store, []string{"admin@example.com"})
 	signInAndGetLocation(t, e2, "/auth/google/login")
@@ -435,7 +435,7 @@ func signInAndGetLocation(t *testing.T, e *echo.Echo, loginPath string) string {
 func TestGoogleCallback_NewSignupNotifiesAdmins(t *testing.T) {
 	google := stubGoogleServer(t,
 		`{"access_token": "tok-abc"}`,
-		`{"sub": "google-sub-new", "email": "newbie@example.com", "name": "Newbie Newman", "picture": ""}`,
+		`{"sub": "google-sub-new", "email": "newbie@example.com", "name": "Newbie Newman", "picture": "", "email_verified": true}`,
 	)
 	store := newFakeUserStore()
 	store.newUserStatus = user.StatusPending
@@ -459,7 +459,7 @@ func TestGoogleCallback_NewSignupNotifiesAdmins(t *testing.T) {
 func TestGoogleCallback_RepeatSignInDoesNotRenotify(t *testing.T) {
 	google := stubGoogleServer(t,
 		`{"access_token": "tok-abc"}`,
-		`{"sub": "google-sub-repeat", "email": "repeat@example.com", "name": "Repeat Ron", "picture": ""}`,
+		`{"sub": "google-sub-repeat", "email": "repeat@example.com", "name": "Repeat Ron", "picture": "", "email_verified": true}`,
 	)
 	store := newFakeUserStore()
 	store.newUserStatus = user.StatusPending
@@ -481,7 +481,7 @@ func TestGoogleCallback_RepeatSignInDoesNotRenotify(t *testing.T) {
 func TestGoogleCallback_AdminSignupDoesNotNotify(t *testing.T) {
 	google := stubGoogleServer(t,
 		`{"access_token": "tok-abc"}`,
-		`{"sub": "google-sub-admin", "email": "admin@example.com", "name": "Admin Person", "picture": ""}`,
+		`{"sub": "google-sub-admin", "email": "admin@example.com", "name": "Admin Person", "picture": "", "email_verified": true}`,
 	)
 	store := newFakeUserStore()
 	store.newUserStatus = user.StatusPending
@@ -873,5 +873,25 @@ func TestSessionCookieDomain_OnlyTheSessionCookieIsWidened(t *testing.T) {
 					name, c.Domain)
 			}
 		}
+	}
+}
+
+// An ADMIN_EMAILS match only counts when Google says the email is
+// verified.
+func TestGoogleCallback_AdminEmailRequiresVerifiedEmail(t *testing.T) {
+	google := stubGoogleServer(t,
+		`{"access_token": "tok-abc"}`,
+		`{"sub": "google-sub-unverified", "email": "admin@example.com", "name": "Not Admin", "picture": "", "email_verified": false}`,
+	)
+	store := newFakeUserStore()
+	e := newTestEchoWithAdmins(google, store, []string{"admin@example.com"})
+	signInAndGetLocation(t, e, "/auth/google/login")
+
+	u, ok := store.byGoogle["google-sub-unverified"]
+	if !ok {
+		t.Fatal("user not created")
+	}
+	if u.Role == user.RoleAdmin {
+		t.Error("unverified email was promoted to admin")
 	}
 }
