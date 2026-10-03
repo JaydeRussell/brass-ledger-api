@@ -67,12 +67,13 @@ type EventInfo struct {
 	PlayerCount       *int     `json:"playerCount,omitempty"`
 	Circuits          []string `json:"circuits,omitempty"`
 	// League ids this event is scored under (BCP's own "leagues" array on
-	// the event) — backend-internal only (json:"-"), used to resolve the
-	// current flagship ITC league anchored on this specific event rather
-	// than searching BCP's full game-system-wide leagues list, which no
-	// longer reliably surfaces it (see itc.go's
-	// FetchCurrentItcLeagueIDForEvent doc comment for the full story).
-	LeagueIDs []string `json:"-"`
+	// the event), used to resolve the current flagship ITC league anchored
+	// on this specific event rather than searching BCP's full
+	// game-system-wide leagues list, which no longer reliably surfaces it
+	// (see itc.go's FetchCurrentItcLeagueIDForEvent doc comment). It must
+	// serialize: EventInfo round-trips through the durable cache as JSON,
+	// and a dropped field there means no ITC league for any cached event.
+	LeagueIDs []string `json:"leagueIds,omitempty"`
 }
 
 // Player is one registered player's roster entry — deliberately minimal
