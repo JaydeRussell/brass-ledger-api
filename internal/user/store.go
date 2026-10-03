@@ -120,7 +120,8 @@ func NewStore(pool *pgxpool.Pool) *Store {
 
 // UpsertUserFromGoogle creates a user for this Google account on first
 // sign-in, or refreshes their profile (name/avatar can change on
-// Google's side) and last_login_at on every subsequent one. googleSub
+// Google's side) on every subsequent one. No sign-in time is recorded:
+// nothing reads it. googleSub
 // (not email) is the stable identity being matched on — see the users
 // table migration's comment. Takes plain fields rather than an
 // auth.UserInfo so this package doesn't need to know anything about
@@ -143,13 +144,12 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 	var u User
 	var inserted bool
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO users (google_sub, email, name, avatar_url, last_login_at)
-		VALUES ($1, $2, $3, $4, now())
+		INSERT INTO users (google_sub, email, name, avatar_url)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (google_sub) DO UPDATE
 			SET email = EXCLUDED.email,
 				name = EXCLUDED.name,
-				avatar_url = EXCLUDED.avatar_url,
-				last_login_at = now()
+				avatar_url = EXCLUDED.avatar_url
 		RETURNING id, email, name, avatar_url, COALESCE(bcp_user_id, ''), role, status, accent_theme, dossier_public, (xmax = 0) AS inserted
 	`, googleSub, email, name, avatarURL).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic, &inserted)
 	if err != nil {
