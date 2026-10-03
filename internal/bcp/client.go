@@ -273,9 +273,11 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	// most of this client's other caches, a leagueId's gw_itc/hobby flags
 	// aren't even user-specific, so one lookup here effectively serves
 	// every account that has a placing under that league.
-	c.leagueInfo = NewCache(func(ctx context.Context, leagueID string) (*LeagueInfo, error) {
+	// Held for hours in memory too: the durable row is permanent, so a 60s
+	// entry only turned into one Postgres read per league per minute.
+	c.leagueInfo = NewCacheWithTTL(func(ctx context.Context, leagueID string) (*LeagueInfo, error) {
 		return c.fetchLeagueInfoUncached(ctx, leagueID)
-	})
+	}, leagueInfoTTL)
 
 	return c
 }
