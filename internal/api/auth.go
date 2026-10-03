@@ -32,9 +32,15 @@ const (
 // open-redirect vector: rejects an empty path, anything not starting
 // with "/", a protocol-relative path ("//evil.com" — browsers treat that
 // as a same-scheme link to a different host), and anything containing
-// "://" (a full absolute URL to somewhere else entirely).
+// "://" (a full absolute URL to somewhere else entirely), and any
+// backslash or control character, since browsers read a backslash as "/"
+// and drop tabs and newlines (a slash then a backslash then "evil.com"
+// would become "//evil.com").
 func isSafeReturnPath(path string) bool {
 	if path == "" || path[0] != '/' || strings.HasPrefix(path, "//") {
+		return false
+	}
+	if strings.ContainsFunc(path, func(r rune) bool { return r == '\\' || r < 0x20 || r == 0x7f }) {
 		return false
 	}
 	return !strings.Contains(path, "://")
