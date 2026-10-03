@@ -74,8 +74,7 @@ func (s *Store) Create(ctx context.Context, r Report) (Report, error) {
 
 // List returns every report for the admin panel (internal/api/admin.go)
 // — open first (what an admin actually needs to act on), then resolved,
-// newest first within each group. No pagination — same reasoning as
-// user.Store.ListUsers.
+// newest first within each group. Not paginated: the table stays small.
 func (s *Store) List(ctx context.Context) ([]Report, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT f.id, f.kind, f.message, f.page, f.contact_email,

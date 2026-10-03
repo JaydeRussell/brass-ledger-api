@@ -57,9 +57,9 @@ func NewFeedbackHandler(store userStore, reports feedbackStore, notifier feedbac
 }
 
 // Register wires this handler's route onto e. rateLimit is applied
-// here rather than left to the caller to remember, since this is the
-// one route in this whole API an anonymous, unauthenticated visitor can
-// hit repeatedly with no session/approval gate to slow them down first.
+// here rather than left to the caller to remember, since an anonymous,
+// unauthenticated visitor can hit this route repeatedly with no
+// session/approval gate to slow them down first.
 func (h *FeedbackHandler) Register(e *echo.Echo, rateLimit echo.MiddlewareFunc) {
 	e.POST("/api/feedback", h.Submit, rateLimit)
 }

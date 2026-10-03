@@ -483,9 +483,12 @@ func requestedEventDetail(c echo.Context) bool {
 	return c.QueryParam("summary") != "true"
 }
 
-func (h *StatsHandler) Register(e *echo.Echo) {
+// playerStatsLimit, when given, guards /api/players/:bcpUserId/stats:
+// unlike the caller's own stats, its id is free-form, and a player
+// nothing has cached yet costs a crawl of that player's BCP history.
+func (h *StatsHandler) Register(e *echo.Echo, playerStatsLimit ...echo.MiddlewareFunc) {
 	e.GET("/api/me/stats", h.Stats)
-	e.GET("/api/players/:bcpUserId/stats", h.PlayerStats)
+	e.GET("/api/players/:bcpUserId/stats", h.PlayerStats, playerStatsLimit...)
 }
 
 // Stats is GET /api/me/stats: the signed-in account's player-stats

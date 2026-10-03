@@ -240,7 +240,8 @@ func stubBCPHistoryServer(t *testing.T) *httptest.Server {
 			{"event": {"id": "evt-past", "name": "Already Placed"}},
 			{"event": {"id": "evt-present", "name": "Happening Now"}},
 			{"event": {"id": "evt-future", "name": "Not Started Yet"}},
-			{"event": {"id": "evt-stale", "name": "Forgotten About"}}
+			{"event": {"id": "evt-stale", "name": "Forgotten About"}},
+			{"dropped": true, "event": {"id": "evt-dropped", "name": "Dropped Out Of"}}
 		]}`))
 	})
 	mux.HandleFunc("/eventplacings", func(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +251,10 @@ func stubBCPHistoryServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/events/evt-present", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": "evt-present", "name": "Happening Now", "status": {"started": true, "ended": false}}`))
+	})
+	// A registration the player dropped: upcoming, but must not appear.
+	mux.HandleFunc("/events/evt-dropped", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-dropped", "name": "Dropped Out Of", "status": {"started": false, "ended": false}}`))
 	})
 	mux.HandleFunc("/events/evt-future", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id": "evt-future", "name": "Not Started Yet", "status": {"started": false, "ended": false}}`))
@@ -324,7 +329,7 @@ func TestMyEvents_ClassifiesPastPresentFuture(t *testing.T) {
 		t.Errorf("present = %+v, want exactly evt-present (evt-stale should not be here)", resp.Present)
 	}
 	if len(resp.Future) != 1 || resp.Future[0].EventID != "evt-future" {
-		t.Errorf("future = %+v, want exactly evt-future", resp.Future)
+		t.Errorf("future = %+v, want exactly evt-future (evt-dropped was dropped)", resp.Future)
 	}
 }
 
@@ -464,7 +469,7 @@ func TestMyEvents_RefreshQueryParam(t *testing.T) {
 		t.Errorf("present = %+v, want exactly evt-present", resp.Present)
 	}
 	if len(resp.Future) != 1 || resp.Future[0].EventID != "evt-future" {
-		t.Errorf("future = %+v, want exactly evt-future", resp.Future)
+		t.Errorf("future = %+v, want exactly evt-future (evt-dropped was dropped)", resp.Future)
 	}
 }
 

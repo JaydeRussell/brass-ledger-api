@@ -11,7 +11,7 @@
 #
 # Usage: ./scripts/smoke-test.sh (or `make smoke`)
 # Override BACKEND_URL/FRONTEND_URL if the stack isn't on the usual
-# localhost ports — also used as-is in .github/workflows/ci.yml, pointed
+# localhost ports — also used as-is in .github/workflows/deploy.yml, pointed
 # at the real production URLs right after a deploy, so a bad deploy
 # gets caught immediately instead of silently.
 set -uo pipefail

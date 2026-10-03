@@ -162,16 +162,17 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	// the global error handler itself either, just logged whatever error
 	// came back — Echo's own router already invokes it exactly once after
 	// the full middleware chain returns, same as before this migration.
+	// The access log records the route pattern, not the URI, and no client
+	// IP or user agent: URIs carry BCP player ids and admin search terms
+	// (names, emails), and the log ends up in Cloudflare's. Per the privacy
+	// rule, logs hold nothing that identifies a person.
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogRemoteIP:      true,
 		LogMethod:        true,
-		LogURI:           true,
 		LogStatus:        true,
 		LogError:         true,
 		LogLatency:       true,
 		LogContentLength: true,
 		LogResponseSize:  true,
-		LogUserAgent:     true,
 		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
 			errMsg := ""
 			if v.Error != nil {
@@ -181,30 +182,30 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 			// (empty if the request didn't send one) — parsed to a number
 			// to match the old template's `${bytes_in}` output shape.
 			bytesIn, _ := strconv.ParseInt(v.ContentLength, 10, 64)
+			route := c.Path()
+			if route == "" {
+				route = "(no route)"
+			}
 			line, err := json.Marshal(struct {
 				Time         string `json:"time"`
 				Level        string `json:"level"`
-				RemoteIP     string `json:"remote_ip"`
 				Method       string `json:"method"`
-				URI          string `json:"uri"`
+				Route        string `json:"route"`
 				Status       int    `json:"status"`
 				Error        string `json:"error"`
 				LatencyHuman string `json:"latency_human"`
 				BytesIn      int64  `json:"bytes_in"`
 				BytesOut     int64  `json:"bytes_out"`
-				UserAgent    string `json:"user_agent"`
 			}{
 				Time:         v.StartTime.Format(time.RFC3339),
 				Level:        "access",
-				RemoteIP:     v.RemoteIP,
 				Method:       v.Method,
-				URI:          v.URI,
+				Route:        route,
 				Status:       v.Status,
 				Error:        errMsg,
 				LatencyHuman: v.Latency.String(),
 				BytesIn:      bytesIn,
 				BytesOut:     v.ResponseSize,
-				UserAgent:    v.UserAgent,
 			})
 			if err != nil {
 				return err
@@ -319,7 +320,18 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		// Player stats summary (best placing, faction breakdown) — same
 		// session gating, built on the same BCP data "my events" already
 		// fetches.
-		api.NewStatsHandler(userStore, bcpClient).Register(e)
+		// Player stats run the same crawl as a dossier for any id, so they
+		// get a limit too: looser than the dossier's, since it's
+		// signed-in only and a player view makes two calls (summary, then
+		// full) and head-to-head two more, but enough to stop a script
+		// walking a roster's worth of uncached players through BCP.
+		api.NewStatsHandler(userStore, bcpClient).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+				Rate:      30.0 / 60, // ~30 requests/minute, refilled continuously
+				Burst:     15,
+				ExpiresIn: 3 * time.Minute,
+			}),
+		}))
 		// Public player dossiers — deliberately NOT session-gated (see
 		// dossier.go), but only registered once accounts can exist at all
 		// to link a dossier to in the first place. Same rate-limit shape

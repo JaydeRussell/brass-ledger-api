@@ -245,9 +245,12 @@ func (c *Client) InvalidatePlayerEventHistory(bcpUserID string) {
 		return
 	}
 	if c.durable != nil {
-		// Best-effort: if this fails the worst case is the stale row
-		// gets served once more, which is what used to happen anyway.
-		_ = c.durable.Delete(context.Background(), playerEventHistoryDurableKey(bcpUserID))
+		// Best-effort: if this fails the worst case is the stale row gets
+		// served once more. Bounded, because it runs on the refresh
+		// request's path and a stalled database shouldn't hang it.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = c.durable.Delete(ctx, playerEventHistoryDurableKey(bcpUserID))
 	}
 }
 
