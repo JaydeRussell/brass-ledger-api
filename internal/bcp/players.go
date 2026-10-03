@@ -145,3 +145,10 @@ func (c *Client) fetchPlayersUncached(ctx context.Context, eventID string) ([]Pl
 func (c *Client) FetchPlayers(ctx context.Context, eventID string) ([]Player, error) {
 	return c.players.Get(ctx, eventID)
 }
+
+// InvalidatePlayers drops an event's in-memory roster so the next fetch
+// asks BCP (subject to Invalidate's own floor). A no-op for an ended
+// event's roster, which is durably cached and never changes.
+func (c *Client) InvalidatePlayers(eventID string) {
+	c.players.Invalidate(eventID)
+}

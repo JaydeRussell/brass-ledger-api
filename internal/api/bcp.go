@@ -48,7 +48,11 @@ func (h *BCPHandler) Register(e *echo.Echo, requireApproved, requireSession echo
 }
 
 // EventInfo is GET /api/events/:id.
+// ?refresh=true forces a real BCP check, same convention as Pairings.
 func (h *BCPHandler) EventInfo(c echo.Context) error {
+	if c.QueryParam("refresh") == "true" {
+		h.client.InvalidateEventInfo(c.Param("id"))
+	}
 	info, err := h.client.FetchEventInfo(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return bcpError(c, err)
@@ -59,8 +63,12 @@ func (h *BCPHandler) EventInfo(c echo.Context) error {
 	return c.JSON(http.StatusOK, info)
 }
 
-// Players is GET /api/events/:id/players.
+// Players is GET /api/events/:id/players. ?refresh=true forces a real
+// BCP check, same convention as Pairings.
 func (h *BCPHandler) Players(c echo.Context) error {
+	if c.QueryParam("refresh") == "true" {
+		h.client.InvalidatePlayers(c.Param("id"))
+	}
 	players, err := h.client.FetchPlayers(c.Request().Context(), c.Param("id"))
 	if err != nil {
 		return bcpError(c, err)

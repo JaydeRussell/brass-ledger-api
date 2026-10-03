@@ -206,6 +206,9 @@ func TestBCPHandler_Refresh(t *testing.T) {
 		atomic.AddInt32(&placingsCalls, 1)
 		_, _ = w.Write([]byte(`{"active": []}`))
 	})
+	mux.HandleFunc("/events/evt-1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "evt-1", "name": "Test"}`))
+	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := bcp.NewClientWithBaseURL(server.URL)
@@ -225,6 +228,15 @@ func TestBCPHandler_Refresh(t *testing.T) {
 	doBCPRequest(e, http.MethodGet, "/api/events/evt-1/placings?team=false&refresh=true")
 	if placingsCalls != 1 {
 		t.Errorf("placings upstream calls = %d, want 1 (immediate refresh should be throttled)", placingsCalls)
+	}
+
+	// Event info and players accept ?refresh=true too, and answer it
+	// no-store so the browser doesn't cache a forced check.
+	for _, path := range []string{"/api/events/evt-1?refresh=true", "/api/events/evt-1/players?refresh=true"} {
+		rec := doBCPRequest(e, http.MethodGet, path)
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s: Cache-Control = %q, want no-store", path, got)
+		}
 	}
 }
 
