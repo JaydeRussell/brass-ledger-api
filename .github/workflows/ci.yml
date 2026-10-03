@@ -37,7 +37,9 @@ jobs:
       # among others). Not gated to a specific severity: govulncheck only
       # reports symbol-reachable vulnerabilities in the first place, so
       # there's no lower-severity noise to filter the way npm audit needs.
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Pinned so a new govulncheck release can't change CI's result on
+      # unchanged code; dependabot (gomod) doesn't cover go run versions.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       # Self-hosted coverage badge — no external service/account (unlike
       # Codecov) needed. Reads coverage.out from the plain `go test`
       # above (internal/user's own coverage lives in the Postgres-gated
