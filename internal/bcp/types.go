@@ -73,7 +73,10 @@ type EventInfo struct {
 	// (see itc.go's FetchCurrentItcLeagueIDForEvent doc comment). It must
 	// serialize: EventInfo round-trips through the durable cache as JSON,
 	// and a dropped field there means no ITC league for any cached event.
-	LeagueIDs []string `json:"leagueIds,omitempty"`
+	// Always non-nil once fetched, and serialized even when empty, so a
+	// row that predates the field (nil) can be told from an event with no
+	// leagues ([]).
+	LeagueIDs []string `json:"leagueIds"`
 }
 
 // Player is one registered player's roster entry — deliberately minimal
