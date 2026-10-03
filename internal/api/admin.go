@@ -142,12 +142,18 @@ func (h *AdminHandler) Reject(c echo.Context) error {
 }
 
 func (h *AdminHandler) setStatus(c echo.Context, status string) error {
-	if _, err := requireAdmin(c, h.store); err != nil {
+	admin, err := requireAdmin(c, h.store)
+	if err != nil {
 		return err
 	}
 	targetID, err := parseUserID(c)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+	}
+	// Rejecting your own account locks you out of the admin pages that
+	// could undo it — same reasoning as SetRole's self-demotion guard.
+	if targetID == admin.ID && status != user.StatusApproved {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "can't reject your own account"})
 	}
 	if err := h.store.SetStatus(c.Request().Context(), targetID, status); err != nil {
 		return internalError(c, err)

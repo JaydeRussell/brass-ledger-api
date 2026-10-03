@@ -350,6 +350,12 @@ func TestAdminHandler_SetRole(t *testing.T) {
 	if rec := doJSONRequest(e, http.MethodPost, selfDemotePath, `{"role":"user"}`, []*http.Cookie{adminCookie}); rec.Code != http.StatusBadRequest {
 		t.Errorf("self-demote: status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
+
+	// Nor reject it.
+	selfRejectPath := fmt.Sprintf("/api/admin/users/%d/reject", adminID)
+	if rec := doRequest(e, http.MethodPost, selfRejectPath, []*http.Cookie{adminCookie}); rec.Code != http.StatusBadRequest {
+		t.Errorf("self-reject: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
 }
 
 // mustSessionFor issues a fresh session for an existing fake user id, so
