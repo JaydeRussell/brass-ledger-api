@@ -530,6 +530,7 @@ func (c *Cache[T]) Put(key string, data T, fetchedAt time.Time) {
 	defer c.mu.Unlock()
 	c.entries[key] = cacheEntry[T]{data: data, fetchedAt: fetchedAt, ttl: c.ttlOf(data)}
 	delete(c.gone, key)
+	c.evictLocked()
 }
 
 // Fresh reports whether key has an entry Get would actually still serve

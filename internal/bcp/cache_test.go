@@ -637,3 +637,18 @@ func TestCache_NoteStoredAtShortensExpiry(t *testing.T) {
 		t.Errorf("Get after the stored row expired = %q, want fresh", got)
 	}
 }
+
+// Seeding through Put (prewarm, durable reads) is held to the same cap as
+// fetched entries.
+func TestCache_PutRespectsTheCap(t *testing.T) {
+	c := NewCache(func(_ context.Context, key string) (string, error) { return key, nil })
+	for i := 0; i < maxCacheEntries+50; i++ {
+		c.Put(fmt.Sprintf("k%d", i), "v", time.Now())
+	}
+	c.mu.Lock()
+	n := len(c.entries)
+	c.mu.Unlock()
+	if n > maxCacheEntries {
+		t.Errorf("entries = %d after Put, want at most %d", n, maxCacheEntries)
+	}
+}
