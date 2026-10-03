@@ -188,7 +188,7 @@ func TestStore_GetUserBySession_ExpiredSession(t *testing.T) {
 	token := "expired-" + runID
 	if _, err := store.pool.Exec(ctx,
 		`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)`,
-		token, u.ID, time.Now().Add(-time.Hour),
+		hashSessionToken(token), u.ID, time.Now().Add(-time.Hour),
 	); err != nil {
 		t.Fatalf("inserting expired session: %v", err)
 	}
@@ -458,5 +458,59 @@ func TestStore_GetUserByBcpUserID(t *testing.T) {
 	}
 	if got.ID != u.ID {
 		t.Fatalf("GetUserByBcpUserID returned id %d, want %d", got.ID, u.ID)
+	}
+}
+
+func TestStore_SessionTokenStoredHashed(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "h@example.com", "Hana", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	token, err := store.CreateSession(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	var raw, hashed int
+	if err := store.pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE token = $1), count(*) FILTER (WHERE token = $2) FROM sessions`,
+		token, hashSessionToken(token),
+	).Scan(&raw, &hashed); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if raw != 0 || hashed != 1 {
+		t.Fatalf("raw rows = %d, hashed rows = %d; want 0 and 1", raw, hashed)
+	}
+	if got, err := store.GetUserBySession(ctx, token); err != nil || got.ID != u.ID {
+		t.Fatalf("GetUserBySession: got %v, %v", got.ID, err)
+	}
+}
+
+func TestStore_CreateSessionPurgesExpired(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	runID := uniqueID(t)
+	u, _, err := store.UpsertUserFromGoogle(ctx, "google-sub-"+runID, "p@example.com", "Pia", "")
+	if err != nil {
+		t.Fatalf("UpsertUserFromGoogle: %v", err)
+	}
+	stale := hashSessionToken("stale-" + runID)
+	if _, err := store.pool.Exec(ctx,
+		`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)`,
+		stale, u.ID, time.Now().Add(-time.Hour),
+	); err != nil {
+		t.Fatalf("inserting expired session: %v", err)
+	}
+	if _, err := store.CreateSession(ctx, u.ID); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	var n int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE token = $1`, stale).Scan(&n); err != nil {
+		t.Fatalf("counting: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expired session still present")
 	}
 }

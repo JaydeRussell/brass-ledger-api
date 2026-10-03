@@ -3,7 +3,9 @@ package user
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -156,8 +158,18 @@ func (s *Store) UpsertUserFromGoogle(ctx context.Context, googleSub, email, name
 	return u, inserted, nil
 }
 
+// hashSessionToken is what the sessions table stores in place of the
+// token itself, so a copy of the database holds no usable sessions. The
+// token is 32 random bytes, so a plain SHA-256 (no salt or stretching)
+// is enough.
+func hashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // CreateSession issues a new session for a user and returns its opaque
-// token — what the caller sets as the session cookie's value.
+// token — what the caller sets as the session cookie's value. It also
+// clears out expired sessions, which nothing else removes.
 func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error) {
 	token, err := newSessionToken()
 	if err != nil {
@@ -165,10 +177,13 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, $3)`,
-		token, userID, time.Now().Add(SessionDuration),
+		hashSessionToken(token), userID, time.Now().Add(SessionDuration),
 	); err != nil {
 		return "", fmt.Errorf("creating session: %w", err)
 	}
+	// Best effort: a failure here leaves expired rows for next time, and
+	// GetUserBySession already ignores them.
+	_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= now()`)
 	return token, nil
 }
 
@@ -181,7 +196,7 @@ func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token = $1 AND s.expires_at > now()
-	`, token).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic)
+	`, hashSessionToken(token)).Scan(&u.ID, &u.Email, &u.Name, &u.AvatarURL, &u.BcpUserID, &u.Role, &u.Status, &u.AccentTheme, &u.DossierPublic)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrSessionNotFound
@@ -195,7 +210,7 @@ func (s *Store) GetUserBySession(ctx context.Context, token string) (User, error
 // doesn't exist isn't an error — the caller's desired end state (no
 // such session) already holds either way.
 func (s *Store) DeleteSession(ctx context.Context, token string) error {
-	if _, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, token); err != nil {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, hashSessionToken(token)); err != nil {
 		return fmt.Errorf("deleting session: %w", err)
 	}
 	return nil
