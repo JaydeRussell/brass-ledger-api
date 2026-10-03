@@ -205,3 +205,19 @@ func TestRoundNote_RejectsNonPositiveRound(t *testing.T) {
 		}
 	}
 }
+
+func TestRoundNote_RejectsTooLong(t *testing.T) {
+	store := newFakeUserStore()
+	cookie, _ := signedInSession(t, store)
+	e := newSyncTestEcho(store)
+
+	body := `{"note":"` + strings.Repeat("x", roundNoteMaxLen+1) + `"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/me/events/evt-1/rounds/1/note", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}

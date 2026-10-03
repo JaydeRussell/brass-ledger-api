@@ -35,6 +35,13 @@ type setRoundNoteRequest struct {
 	Note string `json:"note"`
 }
 
+// Upper bounds on stored user text, in bytes. A round note is a few
+// lines of reminders; an event name comes from BCP and is short.
+const (
+	roundNoteMaxLen       = 4000
+	recentEventNameMaxLen = 300
+)
+
 // SyncHandler wires up cross-device sync for the recently-viewed-events
 // list (app/lib/recentEvents.ts) and per-round notes. Every route here is
 // session-gated the same way MeHandler's routes are — a signed-out
@@ -95,6 +102,9 @@ func (h *SyncHandler) RecordRecentEvent(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "eventId is required"})
 	}
 
+	if len(req.EventName) > recentEventNameMaxLen {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "event name too long"})
+	}
 	if err := h.store.RecordRecentEvent(c.Request().Context(), u.ID, eventID, req.EventName, req.TeamEvent); err != nil {
 		return internalError(c, err)
 	}
@@ -149,6 +159,9 @@ func (h *SyncHandler) SetRoundNote(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 	}
 
+	if len(req.Note) > roundNoteMaxLen {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "That note is too long. Keep it under 4,000 characters."})
+	}
 	if err := h.store.SetRoundNote(c.Request().Context(), u.ID, c.Param("eventId"), round, req.Note); err != nil {
 		return internalError(c, err)
 	}

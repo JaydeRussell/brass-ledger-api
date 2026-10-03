@@ -214,6 +214,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		},
 	}))
 	e.Use(middleware.Recover())
+	// No request this API accepts is anywhere near this size; the cap stops
+	// an oversized body being read into memory before handlers validate it.
+	e.Use(middleware.BodyLimit("64K"))
 	// Scoped to the actual frontend origin, with credentials allowed —
 	// required for the session cookie Google sign-in sets to actually
 	// reach this API from the browser at all: a cookie's "same-site"
