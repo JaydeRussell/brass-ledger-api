@@ -351,8 +351,16 @@ func (c *Client) fetchPlacingHistoryUncached(ctx context.Context, bcpUserID stri
 	}
 	warnIfTruncated("placing", bcpUserID, len(entries), nextKey)
 
+	// Most recent first, compared as times: BCP sends both bare dates and
+	// timestamps, which don't order correctly as strings. Unparseable
+	// dates sort last.
 	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].EventDate > entries[j].EventDate // most recent first
+		ti, okI := ParseDate(entries[i].EventDate)
+		tj, okJ := ParseDate(entries[j].EventDate)
+		if okI != okJ {
+			return okI
+		}
+		return ti.After(tj)
 	})
 
 	if c.durable != nil {

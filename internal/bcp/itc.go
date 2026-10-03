@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // --- ITC ranking (score + rank) --------------------------------------
@@ -56,6 +57,9 @@ type bcpLeagueInfoResponse struct {
 	GwItc bool   `json:"gw_itc"`
 	Hobby bool   `json:"hobby"`
 }
+
+// leagueInfoTTL is how long a league's classification stays in memory.
+const leagueInfoTTL = 6 * time.Hour
 
 func leagueInfoDurableKey(leagueID string) string { return "league:" + leagueID }
 

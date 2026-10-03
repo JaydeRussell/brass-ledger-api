@@ -493,3 +493,29 @@ func TestFetchPlacingHistory_StopsAtFirstEmptyPage(t *testing.T) {
 		t.Errorf("BCP requests = %d, want 2 (page 1, then the empty page that ends it)", got)
 	}
 }
+
+// Mixed date shapes sort by time, not by string: a timestamp with an
+// offset that falls on the next UTC day is more recent than that day's
+// bare date, and an unparseable date sorts last.
+func TestFetchPlacingHistory_SortsMixedDateShapesByTime(t *testing.T) {
+	body := `{"data": [
+		{"placing": 1, "event": {"id": "bare", "name": "Bare", "eventDate": "2024-03-02"}},
+		{"placing": 2, "event": {"id": "junk", "name": "Junk", "eventDate": "soon"}},
+		{"placing": 3, "event": {"id": "offset", "name": "Offset", "eventDate": "2024-03-01T23:00:00-05:00"}}
+	]}`
+	server := httptest.NewServer(jsonHandler(http.StatusOK, body))
+	defer server.Close()
+	client := newTestClient(server)
+
+	got, err := client.FetchPlacingHistory(context.Background(), "bcp-user-sort")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, e := range got {
+		order = append(order, e.EventID)
+	}
+	if strings.Join(order, ",") != "offset,bare,junk" {
+		t.Errorf("order = %v, want [offset bare junk]", order)
+	}
+}
