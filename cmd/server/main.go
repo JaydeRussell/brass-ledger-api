@@ -213,6 +213,19 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 			return err
 		},
 	}))
+	// Client IP for the per-IP rate limiters and the access log. Every
+	// request reaches the container through Cloudflare, which sets
+	// CF-Connecting-IP from the real connection and overwrites any value a
+	// client sends. Echo's default instead trusts the first
+	// X-Forwarded-For entry, which a client controls. Without the header
+	// (local development) the direct peer address is used.
+	direct := echo.ExtractIPDirect()
+	e.IPExtractor = func(r *http.Request) string {
+		if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+			return ip
+		}
+		return direct(r)
+	}
 	e.Use(middleware.Recover())
 	// No request this API accepts is anywhere near this size; the cap stops
 	// an oversized body being read into memory before handlers validate it.
