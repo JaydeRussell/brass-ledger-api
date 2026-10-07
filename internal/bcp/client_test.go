@@ -86,3 +86,18 @@ func TestRedactUserIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestDistanceFrom(t *testing.T) {
+	denver := &EventSearchNear{Lat: 39.74, Lon: -104.99, RadiusMiles: 50}
+	// Westminster, CO, about 11 miles north-west of downtown Denver.
+	if got := distanceFrom(denver, []float64{-105.0745677, 39.8838055}); got == nil || *got != 11 {
+		t.Errorf("Denver to Westminster = %v, want 11 miles", got)
+	}
+	// Denver to London is about 4,690 miles.
+	if got := distanceFrom(denver, []float64{-0.1276, 51.5072}); got == nil || *got < 4650 || *got > 4730 {
+		t.Errorf("Denver to London = %v, want about 4690 miles", got)
+	}
+	if distanceFrom(nil, []float64{1, 2}) != nil || distanceFrom(denver, nil) != nil {
+		t.Error("want nil without a search centre or a venue location")
+	}
+}

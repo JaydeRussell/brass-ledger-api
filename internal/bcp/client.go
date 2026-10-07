@@ -279,11 +279,9 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	c.leagueInfo = NewCacheWithTTL(func(ctx context.Context, leagueID string) (*LeagueInfo, error) {
 		return c.fetchLeagueInfoUncached(ctx, leagueID)
 	}, leagueInfoTTL)
-	// Keyed by "query\ncursor" — see SearchEvents.
-	c.eventSearch = NewCacheWithTTL(func(ctx context.Context, key string) (EventSearchPage, error) {
-		query, cursor := splitSearchKey(key)
-		return c.searchEventsUncached(ctx, query, cursor)
-	}, searchTTL)
+	// Keyed by the search params as JSON, a newline, then the cursor — see
+	// SearchEvents.
+	c.eventSearch = NewCacheWithTTL(c.searchEventsByKey, searchTTL)
 
 	return c
 }
@@ -365,11 +363,11 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	return nil
 }
 
-var userIDParam = regexp.MustCompile(`((?:userId(?:\[\]|%5B%5D)?|searchString|nextKey)=)[^&]*`)
+var userIDParam = regexp.MustCompile(`((?:userId(?:\[\]|%5B%5D)?|searchString|nextKey|location)=)[^&]*`)
 
-// redactUserIDs blanks BCP user ids, event-search text and paging cursors
-// (which can encode either) in a request URL before it goes into an error
-// message, since those messages end up in the logs.
+// redactUserIDs blanks BCP user ids, event-search text and locations, and
+// paging cursors (which can encode any of them) in a request URL before it
+// goes into an error message, since those messages end up in the logs.
 func redactUserIDs(rawURL string) string {
 	return userIDParam.ReplaceAllString(rawURL, "${1}redacted")
 }
