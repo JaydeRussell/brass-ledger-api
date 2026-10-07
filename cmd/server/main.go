@@ -288,14 +288,15 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	// immediate.
 	userStore := api.NewCachedUserStore(user.NewStore(pool))
 	// A follow link's token opens the event-data routes for its own event
-	// to someone with no account. Those requests are limited per IP; an
-	// event page makes one request per roster player for ITC ranks, so
-	// the burst is generous.
+	// to someone with no account. Those requests are limited per IP. Reading
+	// a roster makes one ITC lookup per player as cards scroll into view,
+	// several a second from cache, so the limit allows a whole large roster;
+	// the token already bounds the work to one event's roster and league.
 	followStore := follow.New(pool)
 	followAccess := api.NewFollowAccess(followStore, bcpClient, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
-			Rate:      300.0 / 60,
-			Burst:     150,
+			Rate:      600.0 / 60,
+			Burst:     300,
 			ExpiresIn: 3 * time.Minute,
 		}),
 	}))
