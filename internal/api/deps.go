@@ -31,7 +31,7 @@ type bcpClient interface {
 	InvalidateRoundPairings(eventID, pairingType string, round int)
 	InvalidatePlacings(eventID string, teamEvent bool)
 	PlayerEventHistoryFetchedAt(bcpUserID string) (time.Time, bool)
-	SearchEvents(ctx context.Context, query, cursor string) (bcp.EventSearchPage, error)
+	SearchEvents(ctx context.Context, p bcp.EventSearchParams, cursor string) (bcp.EventSearchPage, error)
 	// Best-effort batch loads of the durable cache, called before any
 	// loop that would otherwise resolve one id per round trip. Both are
 	// no-ops on a warm in-memory cache, and on a *bcp.Client with no

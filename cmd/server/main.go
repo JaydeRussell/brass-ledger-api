@@ -32,6 +32,7 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
 	"github.com/JaydeRussell/brass-ledger-api/internal/feedback"
 	"github.com/JaydeRussell/brass-ledger-api/internal/follow"
+	"github.com/JaydeRussell/brass-ledger-api/internal/geocode"
 	"github.com/JaydeRussell/brass-ledger-api/internal/notify"
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
@@ -396,8 +397,9 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 				ExpiresIn: 3 * time.Minute,
 			}),
 		}))
-		// Each new query is one BCP request, so searches are limited too.
-		api.NewSearchHandler(bcpClient).Register(e, api.RequireApproved(userStore), middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		// Each new query is one request to BCP or OpenStreetMap, so searches
+		// are limited too.
+		api.NewSearchHandler(bcpClient, geocode.New()).Register(e, api.RequireApproved(userStore), middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
 				Rate:      20.0 / 60,
 				Burst:     10,
