@@ -398,11 +398,13 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 			}),
 		}))
 		// Each new query is one request to BCP or OpenStreetMap, so searches
-		// are limited too.
+		// are limited too. Searching, a place lookup and each Load more share
+		// this budget, so it allows a person adjusting filters on a phone; a
+		// repeated query is answered from the server cache anyway.
 		api.NewSearchHandler(bcpClient, geocode.New()).Register(e, api.RequireApproved(userStore), middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
 			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
-				Rate:      20.0 / 60,
-				Burst:     10,
+				Rate:      30.0 / 60,
+				Burst:     20,
 				ExpiresIn: 3 * time.Minute,
 			}),
 		}))

@@ -424,8 +424,8 @@ func TestSpectating_ListSplitsNowAndUpcomingAndCascades(t *testing.T) {
 	}
 
 	fx.do(http.MethodDelete, "/api/me/spectating/evt-soon", "", fan, nil)
-	if rec := fx.do(http.MethodGet, "/api/me/spectating/evt-soon", "", fan, nil); rec.Code != http.StatusNotFound {
-		t.Errorf("after removing: status %d, want 404", rec.Code)
+	if rec := fx.do(http.MethodGet, "/api/me/spectating/evt-soon", "", fan, nil); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "null" {
+		t.Errorf("after removing: status %d body %q, want 200 null", rec.Code, rec.Body.String())
 	}
 }
 
@@ -439,5 +439,14 @@ func TestFollow_RefusesAnEventOverAWeekAgo(t *testing.T) {
 	}
 	if code, saved := saveSpectating(t, fx, fan, `{"eventId": "evt-old", "playerId": "p1"}`); code != http.StatusConflict || saved {
 		t.Errorf("follow a player: status %d saved=%t, want 409 and not saved", code, saved)
+	}
+}
+
+func TestFollowLink_NoLinkIsNullNotAnError(t *testing.T) {
+	fx := newFollowFixture(t)
+	owner, _ := fx.signIn(t, "owner", "u-owner")
+	rec := fx.do(http.MethodGet, "/api/events/evt-live/follow-link", "", owner, nil)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "null" {
+		t.Errorf("no link yet: status %d body %q, want 200 null", rec.Code, rec.Body.String())
 	}
 }
