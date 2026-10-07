@@ -248,7 +248,8 @@ var errNotFoundJSON = map[string]string{"error": "not found"}
 var errEventOverJSON = map[string]string{"error": "This event finished more than a week ago."}
 
 // GetLink is GET /api/events/:id/follow-link: the caller's live link for
-// this event, or 404.
+// this event, or null. Having no link is a normal answer, so it isn't a 404
+// that browsers would log as an error on every Mine tab.
 func (h *FollowHandler) GetLink(c echo.Context) error {
 	noCache(c)
 	u, err := requireApprovedUser(c, h.store)
@@ -257,7 +258,7 @@ func (h *FollowHandler) GetLink(c echo.Context) error {
 	}
 	link, err := h.links.GetLinkForUser(c.Request().Context(), u.ID, c.Param("id"))
 	if errors.Is(err, follow.ErrNotFound) {
-		return c.JSON(http.StatusNotFound, errNotFoundJSON)
+		return c.JSON(http.StatusOK, nil)
 	}
 	if err != nil {
 		return internalError(c, err)
@@ -499,7 +500,8 @@ type spectatingOneResponse struct {
 }
 
 // GetSpectating is GET /api/me/spectating/:eventId: who the caller is
-// following in this event, or 404.
+// following in this event, or null. Every event page asks, so "nobody" is a
+// normal answer rather than a 404 logged as an error.
 func (h *FollowHandler) GetSpectating(c echo.Context) error {
 	noCache(c)
 	u, err := requireApprovedUser(c, h.store)
@@ -508,7 +510,7 @@ func (h *FollowHandler) GetSpectating(c echo.Context) error {
 	}
 	sp, err := h.links.GetSpectating(c.Request().Context(), u.ID, c.Param("eventId"))
 	if errors.Is(err, follow.ErrNotFound) {
-		return c.JSON(http.StatusNotFound, errNotFoundJSON)
+		return c.JSON(http.StatusOK, nil)
 	}
 	if err != nil {
 		return internalError(c, err)
