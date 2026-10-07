@@ -2,6 +2,7 @@ package bcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -15,10 +16,12 @@ const warhammer40kGameSystemID = "WGMSzfKFYA"
 
 const (
 	// The window covers events running now and ones coming up, which is
-	// what someone looking to spectate or join is after.
-	searchWindowBefore = 7 * 24 * time.Hour
+	// what someone looking to spectate or join is after. Two days back
+	// catches a weekend event still underway.
+	searchWindowBefore = 2 * 24 * time.Hour
 	searchWindowAfter  = 60 * 24 * time.Hour
-	searchLimit        = 20
+	// Results per page.
+	searchPageSize = 25
 	// Event listings change when an organiser creates or edits an event,
 	// not minute to minute.
 	searchTTL = 10 * time.Minute
@@ -39,8 +42,16 @@ type EventSearchResult struct {
 	Ended       bool   `json:"ended"`
 }
 
+// EventSearchPage is one page of a name search, oldest first. NextCursor
+// is empty on the last page.
+type EventSearchPage struct {
+	Results    []EventSearchResult `json:"results"`
+	NextCursor string              `json:"nextCursor,omitempty"`
+}
+
 type bcpEventListResponse struct {
-	Data []struct {
+	NextKey json.RawMessage `json:"nextKey"`
+	Data    []struct {
 		ID               string `json:"id"`
 		Name             string `json:"name"`
 		EventDate        string `json:"eventDate"`
@@ -63,13 +74,20 @@ func NormalizeSearchQuery(q string) string {
 	return strings.ToLower(strings.Join(strings.Fields(q), " "))
 }
 
-// SearchEvents returns 40k events whose name contains query, from a week
-// ago to two months ahead. query must already be normalized.
-func (c *Client) SearchEvents(ctx context.Context, query string) ([]EventSearchResult, error) {
-	return c.eventSearch.Get(ctx, query)
+// SearchEvents returns one page of 40k events whose name contains query,
+// from two days ago to two months ahead. query must already be
+// normalized; cursor is a previous page's NextCursor, or empty for the
+// first page.
+func (c *Client) SearchEvents(ctx context.Context, query, cursor string) (EventSearchPage, error) {
+	return c.eventSearch.Get(ctx, query+"\n"+cursor)
 }
 
-func (c *Client) searchEventsUncached(ctx context.Context, query string) ([]EventSearchResult, error) {
+func splitSearchKey(key string) (query, cursor string) {
+	query, cursor, _ = strings.Cut(key, "\n")
+	return query, cursor
+}
+
+func (c *Client) searchEventsUncached(ctx context.Context, query, cursor string) (EventSearchPage, error) {
 	now := time.Now().UTC()
 	params := url.Values{}
 	params.Set("searchString", query)
@@ -78,11 +96,14 @@ func (c *Client) searchEventsUncached(ctx context.Context, query string) ([]Even
 	params.Set("endDate", now.Add(searchWindowAfter).Format("2006-01-02")+"T23:59:59Z")
 	params.Set("sortKey", "eventDate")
 	params.Set("sortAscending", "true")
-	params.Set("limit", fmt.Sprint(searchLimit))
+	params.Set("limit", fmt.Sprint(searchPageSize))
+	if cursor != "" {
+		params.Set("nextKey", cursor)
+	}
 
 	var body bcpEventListResponse
 	if err := c.get(ctx, c.apiBaseV1+"/events?"+params.Encode(), &body); err != nil {
-		return nil, err
+		return EventSearchPage{}, err
 	}
 
 	results := make([]EventSearchResult, 0, len(body.Data))
@@ -106,5 +127,15 @@ func (c *Client) searchEventsUncached(ctx context.Context, query string) ([]Even
 			Ended:       e.Ended,
 		})
 	}
-	return results, nil
+	page := EventSearchPage{Results: results}
+	// BCP can hand back a cursor on its last page that only leads to an
+	// empty one, so a short page is the end too.
+	if len(body.Data) == searchPageSize {
+		next, err := decodeNextKey(body.NextKey)
+		if err != nil {
+			return EventSearchPage{}, err
+		}
+		page.NextCursor = next
+	}
+	return page, nil
 }

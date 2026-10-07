@@ -437,7 +437,7 @@ func TestSearch_NormalizesValidatesAndCaches(t *testing.T) {
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		gotQuery.Store(r.URL.Query().Get("searchString"))
-		_, _ = w.Write([]byte(`{"data": [{"id": "e1", "name": "Kawartha Open", "eventDate": "2026-11-07", "city": "Lindsay", "country": "Canada", "totalPlayers": 24}]}`))
+		_, _ = w.Write([]byte(`{"data": [{"id": "e1", "name": "Kawartha Open", "eventDate": "2026-11-07", "city": "Lindsay", "country": "Canada", "totalPlayers": 24}], "nextKey": "abc"}`))
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -458,6 +458,9 @@ func TestSearch_NormalizesValidatesAndCaches(t *testing.T) {
 	if rec := get(strings.Repeat("a", 101)); rec.Code != http.StatusBadRequest {
 		t.Errorf("101-character query: status %d, want 400", rec.Code)
 	}
+	if rec := get("open&cursor=" + strings.Repeat("c", 2049)); rec.Code != http.StatusBadRequest {
+		t.Errorf("oversized cursor: status %d, want 400", rec.Code)
+	}
 
 	rec := get("%20Kawartha%20%20Open")
 	if rec.Code != http.StatusOK {
@@ -466,15 +469,68 @@ func TestSearch_NormalizesValidatesAndCaches(t *testing.T) {
 	if q := gotQuery.Load(); q != "kawartha open" {
 		t.Errorf("BCP got searchString %q, want lowercase and trimmed", q)
 	}
-	var results []bcp.EventSearchResult
-	_ = json.Unmarshal(rec.Body.Bytes(), &results)
-	if len(results) != 1 || results[0].Location != "Lindsay, Canada" || results[0].PlayerCount == nil || *results[0].PlayerCount != 24 {
-		t.Errorf("results = %+v", results)
+	var page bcp.EventSearchPage
+	_ = json.Unmarshal(rec.Body.Bytes(), &page)
+	if len(page.Results) != 1 || page.Results[0].Location != "Lindsay, Canada" || page.Results[0].PlayerCount == nil || *page.Results[0].PlayerCount != 24 {
+		t.Errorf("results = %+v", page.Results)
+	}
+	if page.NextCursor != "" {
+		t.Errorf("a short page has next cursor %q, want none", page.NextCursor)
 	}
 
 	get("kawartha%20open")
 	if n := calls.Load(); n != 1 {
 		t.Errorf("BCP calls = %d, want 1 (the repeat query is cached)", n)
+	}
+}
+
+func TestSearch_PagesWithBCPsCursor(t *testing.T) {
+	var gotKeys []string
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("nextKey")
+		mu.Lock()
+		gotKeys = append(gotKeys, key)
+		mu.Unlock()
+		n, next := 25, `"page-2"`
+		if key == "page-2" {
+			n, next = 3, `"page-3"`
+		}
+		items := make([]string, n)
+		for i := range items {
+			items[i] = fmt.Sprintf(`{"id": "%s-%d", "name": "Open %d"}`, key, i, i)
+		}
+		_, _ = fmt.Fprintf(w, `{"data": [%s], "nextKey": %s}`, strings.Join(items, ","), next)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	e := echo.New()
+	passThrough := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	NewSearchHandler(bcp.NewClientWithBaseURL(server.URL)).Register(e, passThrough, passThrough)
+	page := func(cursor string) bcp.EventSearchPage {
+		req := httptest.NewRequest(http.MethodGet, "/api/event-search?q=open&cursor="+cursor, nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("cursor %q: status %d", cursor, rec.Code)
+		}
+		var p bcp.EventSearchPage
+		_ = json.Unmarshal(rec.Body.Bytes(), &p)
+		return p
+	}
+
+	first := page("")
+	if len(first.Results) != 25 || first.NextCursor != "page-2" {
+		t.Fatalf("first page: %d results, cursor %q; want 25 and page-2", len(first.Results), first.NextCursor)
+	}
+	second := page(first.NextCursor)
+	if len(second.Results) != 3 || second.NextCursor != "" {
+		t.Errorf("second page: %d results, cursor %q; want 3 and none (a short page is the last)", len(second.Results), second.NextCursor)
+	}
+	if len(gotKeys) != 2 || gotKeys[0] != "" || gotKeys[1] != "page-2" {
+		t.Errorf("BCP got nextKey %q, want [\"\" \"page-2\"]", gotKeys)
 	}
 }
 
