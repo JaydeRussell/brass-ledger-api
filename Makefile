@@ -14,7 +14,7 @@ test: ## Run the test suite
 
 test-integration: ## Run the Postgres-backed integration tests against the local docker-compose Postgres (must be up — see docker-up)
 	DATABASE_URL="postgres://$${POSTGRES_USER:-brassledger}:$${POSTGRES_PASSWORD:-brassledger}@localhost:5432/$${POSTGRES_DB:-brass_ledger}?sslmode=disable" \
-		go test -tags=integration ./internal/user/... ./internal/bcpcache/... ./internal/db/...
+		go test -tags=integration ./internal/user/... ./internal/bcpcache/... ./internal/db/... ./internal/follow/...
 
 regress: ## Full local regression pass before a PR: build, vet, fmt, tests, then the latency map
 	@$(MAKE) --no-print-directory build

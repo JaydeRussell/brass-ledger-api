@@ -10,7 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/JaydeRussell/brass-ledger-api/internal/bcp"
+	"github.com/JaydeRussell/brass-ledger-api/internal/follow"
+	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
 
 // Budgets for the endpoints behind the pages people actually wait on.
@@ -1069,5 +1073,63 @@ func TestLatencyBudget_StatsSummarySkipsThePerEventPass(t *testing.T) {
 	// The history crawl is the irreducible part and both modes pay it.
 	if summaryByPath["/eventplacings"] == 0 {
 		t.Error("summary mode never read the placing history, which is where all of its data comes from")
+	}
+}
+
+// spectatingUpstreamBudget is GET /api/me/spectating for three spectated
+// events: event info, roster and team roster for each, and nothing else.
+const spectatingUpstreamBudget = 3 * 3
+
+// The spectated events are looked up together: in series the list would
+// cost the sum of every event's lookups. The gate makes a serial
+// implementation fail by timeout.
+func TestLatencyBudget_SpectatingLooksUpEventsTogether(t *testing.T) {
+	counts := &countingBCP{watched: map[string]bool{"/events/:id": true}}
+	gate := newBarrier(3)
+	handle := func(path, body string, gated bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			counts.enter(path)
+			defer counts.leave(path)
+			if gated {
+				gate.arrive(barrierTimeout)
+			} else {
+				time.Sleep(stubDwell)
+			}
+			if body == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	mux := http.NewServeMux()
+	ids := []string{"evt-a", "evt-b", "evt-c"}
+	for _, id := range ids {
+		mux.HandleFunc("/events/"+id, handle("/events/:id", fmt.Sprintf(`{"id": %q, "name": %q, "status": {"started": true}}`, id, id), true))
+		mux.HandleFunc("/events/"+id+"/players", handle("/events/:id/players", `{"active": [{"id": "p1", "user": {"id": "u1", "firstName": "A", "lastName": "B"}}]}`, false))
+		mux.HandleFunc("/events/"+id+"/teamplayers", handle("/events/:id/teamplayers", "", false))
+	}
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	users := newFakeUserStore()
+	cookie, userID := newSignedInUser(t, users, "fan", user.RoleUser, user.StatusApproved)
+	links := newFakeFollowStore()
+	for _, id := range ids {
+		_ = links.SaveSpectating(context.Background(), userID, follow.Spectated{EventID: id, PlayerID: "p1", ExpiresAt: time.Now().Add(time.Hour)})
+	}
+	client := bcp.NewClientWithBaseURL(server.URL)
+	passThrough := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	e := echo.New()
+	NewFollowHandler(users, links, client, NewFollowAccess(links, client, passThrough)).Register(e, passThrough)
+
+	getWithSession(t, e, "/api/me/spectating", cookie)
+
+	total, _, byPath := counts.snapshot()
+	if total > spectatingUpstreamBudget {
+		t.Errorf("GET /api/me/spectating made %d upstream requests, budget is %d.\nBy path: %v", total, spectatingUpstreamBudget, byPath)
+	}
+	if peak := counts.watchedPeak(); peak < len(ids) {
+		t.Errorf("event info lookups peaked at %d in flight, want %d: they ran one after another", peak, len(ids))
 	}
 }

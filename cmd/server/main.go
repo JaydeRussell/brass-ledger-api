@@ -31,6 +31,7 @@ import (
 	"github.com/JaydeRussell/brass-ledger-api/internal/config"
 	"github.com/JaydeRussell/brass-ledger-api/internal/db"
 	"github.com/JaydeRussell/brass-ledger-api/internal/feedback"
+	"github.com/JaydeRussell/brass-ledger-api/internal/follow"
 	"github.com/JaydeRussell/brass-ledger-api/internal/notify"
 	"github.com/JaydeRussell/brass-ledger-api/internal/user"
 )
@@ -94,6 +95,16 @@ func main() {
 			log.Printf("pruning the durable BCP cache failed (continuing): %v", err)
 		} else if removed > 0 {
 			log.Printf("pruned %d expired rows from the durable BCP cache", removed)
+		}
+	}()
+
+	// Expired follow links and spectated events are already ignored on
+	// read; this keeps them from accumulating.
+	go func() {
+		sweepCtx, cancelSweep := context.WithTimeout(context.Background(), time.Minute)
+		defer cancelSweep()
+		if err := follow.New(pool).DeleteExpired(sweepCtx); err != nil {
+			log.Printf("deleting expired follow links failed (continuing): %v", err)
 		}
 	}()
 
@@ -275,7 +286,19 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 	// for why it is seconds rather than minutes, and how sign-out stays
 	// immediate.
 	userStore := api.NewCachedUserStore(user.NewStore(pool))
-	api.NewBCPHandler(bcpClient).Register(e, api.RequireApproved(userStore), api.RequireSession(userStore))
+	// A follow link's token opens the event-data routes for its own event
+	// to someone with no account. Those requests are limited per IP; an
+	// event page makes one request per roster player for ITC ranks, so
+	// the burst is generous.
+	followStore := follow.New(pool)
+	followAccess := api.NewFollowAccess(followStore, bcpClient, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+			Rate:      300.0 / 60,
+			Burst:     150,
+			ExpiresIn: 3 * time.Minute,
+		}),
+	}))
+	api.NewBCPHandler(bcpClient).Register(e, followAccess.Or(api.RequireApproved(userStore)), followAccess.Or(api.RequireSession(userStore)))
 
 	// A no-op notifier (see internal/notify.ResendNotifier.enabled)
 	// whenever RESEND_API_KEY/EMAIL_FROM_ADDRESS aren't both set — same
@@ -364,6 +387,23 @@ func newServer(cfg config.Config, pool *pgxpool.Pool, bcpClient *bcp.Client, dur
 		// list, and a friend’s own events — same session gating,
 		// account-graph data no less real than the rest of this app.
 		api.NewFriendsHandler(userStore, bcpClient).Register(e)
+		// Follow links and spectated events. Resolving a token needs no
+		// sign-in, so that route is limited like the dossier's.
+		api.NewFollowHandler(userStore, followStore, bcpClient, followAccess).Register(e, middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+				Rate:      20.0 / 60,
+				Burst:     5,
+				ExpiresIn: 3 * time.Minute,
+			}),
+		}))
+		// Each new query is one BCP request, so searches are limited too.
+		api.NewSearchHandler(bcpClient).Register(e, api.RequireApproved(userStore), middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+			Store: middleware.NewRateLimiterMemoryStoreWithConfig(middleware.RateLimiterMemoryStoreConfig{
+				Rate:      20.0 / 60,
+				Burst:     10,
+				ExpiresIn: 3 * time.Minute,
+			}),
+		}))
 		// Access-control management plus feedback
 		// triage — admin-only, same reason it only makes sense once
 		// sign-in itself is enabled.
