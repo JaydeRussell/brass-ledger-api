@@ -131,7 +131,7 @@ func followBCPServer(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	event := func(id string, started bool) {
 		mux.HandleFunc("/events/"+id, func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, `{"id": %q, "name": "Cup %s", "status": {"started": %t}, "dates": {"start": "2026-10-10", "end": "2026-10-11"}, "leagues": [{"id": "league-1", "name": "ITC"}]}`, id, id, started)
+			_, _ = fmt.Fprintf(w, `{"id": %q, "name": "Cup %s", "status": {"started": %t}, "dates": {"start": "2026-10-10", "end": "2026-10-11"}, "leagues": [{"id": "league-1", "name": "ITC"}]}`, id, id, started)
 		})
 		mux.HandleFunc("/events/"+id+"/players", func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"active": [
