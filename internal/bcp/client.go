@@ -95,7 +95,7 @@ type Client struct {
 	playerEventHistory *Cache[[]PlayerEventRecord]
 	placingHistory     *Cache[[]PlacingHistoryEntry]
 	leagueInfo         *Cache[*LeagueInfo]
-	eventSearch        *Cache[[]EventSearchResult]
+	eventSearch        *Cache[EventSearchPage]
 
 	// See conditional.go — ETags and their response bodies, so a
 	// refetch of something unchanged costs a 304 instead of a payload.
@@ -279,9 +279,10 @@ func newClientWithBases(apiBaseV1, apiBaseV2, siteBase string) *Client {
 	c.leagueInfo = NewCacheWithTTL(func(ctx context.Context, leagueID string) (*LeagueInfo, error) {
 		return c.fetchLeagueInfoUncached(ctx, leagueID)
 	}, leagueInfoTTL)
-	// Keyed by the normalized query — see SearchEvents.
-	c.eventSearch = NewCacheWithTTL(func(ctx context.Context, query string) ([]EventSearchResult, error) {
-		return c.searchEventsUncached(ctx, query)
+	// Keyed by "query\ncursor" — see SearchEvents.
+	c.eventSearch = NewCacheWithTTL(func(ctx context.Context, key string) (EventSearchPage, error) {
+		query, cursor := splitSearchKey(key)
+		return c.searchEventsUncached(ctx, query, cursor)
 	}, searchTTL)
 
 	return c
@@ -364,11 +365,11 @@ func (c *Client) get(ctx context.Context, rawURL string, out any) error {
 	return nil
 }
 
-var userIDParam = regexp.MustCompile(`((?:userId(?:\[\]|%5B%5D)?|searchString)=)[^&]*`)
+var userIDParam = regexp.MustCompile(`((?:userId(?:\[\]|%5B%5D)?|searchString|nextKey)=)[^&]*`)
 
-// redactUserIDs blanks BCP user ids and event-search text in a request URL
-// before it goes into an error message, since those messages end up in
-// the logs.
+// redactUserIDs blanks BCP user ids, event-search text and paging cursors
+// (which can encode either) in a request URL before it goes into an error
+// message, since those messages end up in the logs.
 func redactUserIDs(rawURL string) string {
 	return userIDParam.ReplaceAllString(rawURL, "${1}redacted")
 }
